@@ -1,0 +1,43 @@
+{
+  "_source": {
+    "url": "https://minecraft.wiki/w/Pack_format",
+    "checked_on": "2026-09-30",
+    "latest_stable_version": "26.3",
+    "cross_checks": [
+      "https://www.minecraft.net/en-us/article/minecraft-snapshot-25w31a",
+      "https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-9",
+      "https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-11",
+      "https://www.minecraft.net/en-us/article/minecraft-java-edition-26-1",
+      "https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2",
+      "https://www.minecraft.net/en-us/article/minecraft-java-edition-26-3"
+    ]
+  },
+  "formats": [
+    { "from": "1.6.1", "to": "1.8.9", "pack_format": 1, "metadata": "pack_format" },
+    { "from": "1.9", "to": "1.10.2", "pack_format": 2, "metadata": "pack_format" },
+    { "from": "1.11", "to": "1.12.2", "pack_format": 3, "metadata": "pack_format" },
+    { "from": "1.13", "to": "1.14.4", "pack_format": 4, "metadata": "pack_format" },
+    { "from": "1.15", "to": "1.16.1", "pack_format": 5, "metadata": "pack_format" },
+    { "from": "1.16.2", "to": "1.16.5", "pack_format": 6, "metadata": "pack_format" },
+    { "from": "1.17", "to": "1.17.1", "pack_format": 7, "metadata": "pack_format" },
+    { "from": "1.18", "to": "1.18.2", "pack_format": 8, "metadata": "pack_format" },
+    { "from": "1.19", "to": "1.19.2", "pack_format": 9, "metadata": "pack_format" },
+    { "from": "1.19.3", "to": "1.19.3", "pack_format": 12, "metadata": "pack_format" },
+    { "from": "1.19.4", "to": "1.19.4", "pack_format": 13, "metadata": "pack_format" },
+    { "from": "1.20", "to": "1.20.1", "pack_format": 15, "metadata": "pack_format" },
+    { "from": "1.20.2", "to": "1.20.2", "pack_format": 18, "metadata": "pack_format" },
+    { "from": "1.20.3", "to": "1.20.4", "pack_format": 22, "metadata": "pack_format" },
+    { "from": "1.20.5", "to": "1.20.6", "pack_format": 32, "metadata": "pack_format" },
+    { "from": "1.21", "to": "1.21.1", "pack_format": 34, "metadata": "pack_format" },
+    { "from": "1.21.2", "to": "1.21.3", "pack_format": 42, "metadata": "pack_format" },
+    { "from": "1.21.4", "to": "1.21.4", "pack_format": 46, "metadata": "pack_format" },
+    { "from": "1.21.5", "to": "1.21.5", "pack_format": 55, "metadata": "pack_format" },
+    { "from": "1.21.6", "to": "1.21.6", "pack_format": 63, "metadata": "pack_format" },
+    { "from": "1.21.7", "to": "1.21.8", "pack_format": 64, "metadata": "pack_format" },
+    { "from": "1.21.9", "to": "1.21.10", "pack_format": [69, 0], "metadata": "format_range" },
+    { "from": "1.21.11", "to": "1.21.11", "pack_format": [75, 0], "metadata": "format_range" },
+    { "from": "26.1", "to": "26.1", "pack_format": 84, "metadata": "format_range" },
+    { "from": "26.2", "to": "26.2", "pack_format": [88, 0], "metadata": "format_range" },
+    { "from": "26.3", "to": "26.3", "pack_format": [97, 1], "metadata": "format_range" }
+  ]
+}

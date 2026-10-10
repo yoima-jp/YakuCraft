@@ -1,0 +1,123 @@
+.export-completion {
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-lg);
+}
+
+.export-completion__details {
+  display: grid;
+  gap: var(--spacing-md);
+  margin: 0;
+}
+
+.export-completion__details > div {
+  display: grid;
+  grid-template-columns: minmax(6rem, 8rem) minmax(0, 1fr);
+  gap: var(--spacing-md);
+}
+
+.export-completion__details dt,
+.export-completion__counts p {
+  color: var(--color-text-secondary);
+}
+
+.export-completion__details dd {
+  min-inline-size: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.export-completion__counts {
+  display: grid;
+  gap: var(--spacing-xs);
+}
+
+.export-completion__counts p,
+.export-completion__instruction {
+  margin: 0;
+}
+
+.export-completion__counts p:first-child {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+.export-completion__missing,
+.export-completion__instruction {
+  color: var(--color-text-secondary);
+}
+
+.export-completion__section {
+  display: grid;
+  gap: var(--spacing-sm);
+  margin: 0;
+}
+
+.export-completion__section h2,
+.export-completion__section summary {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.export-completion__section ul {
+  display: grid;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding-inline-start: var(--spacing-lg);
+}
+
+.export-completion__section li {
+  overflow-wrap: anywhere;
+}
+
+.export-completion__mod-results,
+.export-completion__conflicts {
+  list-style: none;
+  padding: 0 !important;
+}
+
+.export-completion__mod-results li,
+.export-completion__conflicts li {
+  display: grid;
+  gap: var(--spacing-xs);
+  border-block-end: 1px solid var(--color-border);
+  padding-block: var(--spacing-sm);
+}
+
+.export-completion__mod-results li > span,
+.export-completion__conflicts li > span,
+.export-completion__mod-results li > p {
+  color: var(--color-text-secondary);
+}
+
+.export-completion__mod-results code,
+.export-completion__conflicts code {
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.export-completion__mod-results p {
+  margin: 0;
+}
+
+.export-completion__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-block-start: var(--spacing-md);
+}
+
+@media (max-width: 42rem) {
+  .export-completion__details > div {
+    grid-template-columns: 1fr;
+    gap: var(--spacing-xs);
+  }
+
+  .export-completion__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

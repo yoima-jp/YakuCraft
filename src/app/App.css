@@ -1,0 +1,36 @@
+.app-main__screen {
+  display: contents;
+}
+
+.app-main__screen[hidden] {
+  display: none;
+}
+
+.app-brand {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  appearance: none;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.app-brand:not(:disabled) {
+  cursor: pointer;
+}
+
+.app-brand:disabled {
+  cursor: default;
+}
+
+.app-brand:not(:disabled):hover {
+  color: var(--color-primary-dark);
+}
+
+.app-brand:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}

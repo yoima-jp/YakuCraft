@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "メインウィンドウでJAR選択と出力先選択に使います。core:event の listen / unlisten は Home のJARドラッグ&ドロップ検知（onDragDropEvent）が使うため削除しないこと。",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "dialog:allow-open", "dialog:allow-save", "updater:allow-check", "updater:allow-download", "updater:allow-install", "process:allow-restart", {"identifier": "opener:allow-open-url", "allow": [{"url": "https://auth.openai.com/*"}]}]
+}

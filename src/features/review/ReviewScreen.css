@@ -1,0 +1,90 @@
+.review-details.review-details--mods {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.review-mod-list {
+  position: relative;
+  inline-size: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  list-style: none;
+  background: var(--color-surface);
+}
+
+.review-mod-list__space {
+  position: relative;
+  inline-size: 1px;
+  pointer-events: none;
+}
+
+.review-mod-list__item {
+  position: absolute;
+  inset-block-start: 0;
+  display: grid;
+  inline-size: 100%;
+  align-content: center;
+  gap: var(--spacing-xs);
+  min-block-size: 76px;
+  border-block-end: 1px solid var(--color-border);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.review-mod-list__item strong,
+.review-mod-list__version {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-mod-list__item strong {
+  font-size: 0.875rem;
+}
+
+.review-mod-list__version {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.review-mod-list__namespaces {
+  display: flex;
+  min-inline-size: 0;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+}
+
+.review-mod-list__namespace {
+  max-inline-size: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--spacing-xs);
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.review-nested__bulk-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.review-nested__groups {
+  max-block-size: min(42vh, 28rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.review-nested__group {
+  border-block-end: 1px solid var(--color-border);
+}
+
+.review-nested__group .review-options {
+  max-block-size: 20rem;
+  overflow: auto;
+}

@@ -1,0 +1,20 @@
+[package]
+name = "yc-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+aho-corasick = "1"
+csv = "1"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+yc-archive = { path = "../yc-archive" }
+yc-language = { path = "../yc-language" }

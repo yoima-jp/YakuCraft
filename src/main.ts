@@ -1,0 +1,12 @@
+// CSPで外部CDNを許可しないため、必要な文字セットとウェイトのフォントを同梱する。
+import "@fontsource/m-plus-rounded-1c/japanese-500.css";
+import "@fontsource/m-plus-rounded-1c/japanese-700.css";
+import "@fontsource/m-plus-rounded-1c/japanese-800.css";
+import "@fontsource/m-plus-rounded-1c/latin-500.css";
+import "@fontsource/m-plus-rounded-1c/latin-700.css";
+import "@fontsource/m-plus-rounded-1c/latin-800.css";
+import "./styles/reset.css";
+import "./styles/tokens.css";
+import "./styles/typography.css";
+import "./styles/global.css";
+import "./app/bootstrap";

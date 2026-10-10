@@ -1,0 +1,300 @@
+.preview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 264px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.preview__toolbar {
+  z-index: 2;
+  display: flex;
+  flex: 0 0 calc(var(--size-click-target) + var(--spacing-sm) + 1px);
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.preview__toolbar button {
+  min-width: 48px;
+  min-height: var(--size-click-target);
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.preview__toolbar button[aria-selected="true"] {
+  background: var(--color-primary-surface);
+  color: var(--color-primary-dark);
+  font-weight: 700;
+}
+
+.preview__toolbar button:disabled {
+  color: var(--color-disabled);
+  cursor: default;
+}
+
+.preview__toolbar button:focus-visible,
+.preview__viewport button:focus-visible,
+.preview__viewport .select__trigger:focus-visible,
+.preview__viewport .checkbox__input:focus-visible + .checkbox__indicator,
+.preview__canvas:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.preview__viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 220px;
+  overflow: hidden;
+  background: var(--color-preview-background);
+}
+
+.preview__canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.preview__canvas:active {
+  cursor: grabbing;
+}
+
+.preview__canvas:not(.preview__canvas--active) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.preview__layer {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.preview__layer--active {
+  display: flex;
+}
+
+.preview__fallback:empty {
+  display: none;
+}
+
+.preview__fallback {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-direction: column;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.preview__fallback p,
+.preview__notice {
+  margin: 0;
+}
+
+.preview__fallback strong {
+  color: var(--color-text-primary);
+}
+
+.preview__fallback button {
+  min-block-size: var(--size-click-target);
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-primary-dark);
+  font: inherit;
+  cursor: pointer;
+}
+
+.preview__texture-view {
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px 24px;
+}
+
+.preview__texture-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.preview__texture-image--checker {
+  background-color: var(--color-preview-checker-background);
+  background-image:
+    linear-gradient(45deg, var(--color-preview-checker-cell) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--color-preview-checker-cell) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--color-preview-checker-cell) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--color-preview-checker-cell) 75%);
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
+}
+
+.preview__texture-select {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.preview__texture-select .select {
+  min-inline-size: 0;
+  flex: 1;
+}
+
+.preview__checker-toggle {
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
+  display: flex;
+  min-block-size: var(--size-click-target);
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.preview__checker-toggle .checkbox__text {
+  font-size: inherit;
+}
+
+.preview__candidate,
+.preview__missing {
+  position: absolute;
+  left: 9px;
+  bottom: 8px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.preview__missing {
+  top: 26px;
+  bottom: auto;
+  color: var(--color-red);
+}
+
+.preview__notice {
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.preview__model-view {
+  overflow: auto;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px;
+  gap: 8px;
+  background: var(--color-surface);
+  font-size: 11px;
+}
+
+.preview__model-view dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.preview__model-view dl div {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview__model-view dt {
+  color: var(--color-text-secondary);
+}
+
+.preview__model-view dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.preview__model-view pre {
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: 10px/1.45 ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.editor-inspector__preview-area {
+  display: grid;
+  min-inline-size: 0;
+  gap: 8px;
+}
+
+.preview__variant-list {
+  display: grid;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.preview__variant-list > div {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.preview__variant-list .select {
+  inline-size: 100%;
+}
+
+.preview__loading {
+  min-inline-size: 0;
+  min-block-size: var(--size-click-target);
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-preview-background);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview *,
+  .preview *::before,
+  .preview *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+  }
+}

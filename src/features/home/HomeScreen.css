@@ -1,0 +1,134 @@
+.home-screen--drag-invalid .drop-area {
+  border-color: var(--color-red);
+  background: var(--color-surface);
+  transform: none;
+}
+
+.home-screen--drag-invalid .drop-area__icon {
+  stroke: var(--color-red);
+}
+
+.home-screen__drop-message {
+  display: block;
+  color: var(--color-red);
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.home-screen__update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  border-block-end: 1px solid var(--color-border);
+  padding: var(--spacing-sm) var(--spacing-xs);
+}
+
+.home-screen__update-progress {
+  display: grid;
+  min-inline-size: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--spacing-xs) var(--spacing-md);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.home-screen__update-progress progress {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  inline-size: 100%;
+  accent-color: var(--color-primary);
+}
+
+.home-screen__update-error {
+  flex-basis: 100%;
+  color: var(--color-red);
+  font-size: 0.8125rem;
+}
+
+.home-screen__actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.recent-projects {
+  display: grid;
+  gap: var(--spacing-md);
+}
+
+.recent-projects h2 {
+  font-size: 0.9375rem;
+  font-weight: 800;
+}
+
+.recent-projects__list {
+  display: grid;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recent-projects__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  border-block-end: 1px solid var(--color-border);
+  padding: var(--spacing-sm) var(--spacing-xs);
+}
+
+.home-screen__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.recent-projects__open {
+  display: grid;
+  min-inline-size: 0;
+  flex: 1;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs);
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: start;
+  cursor: pointer;
+}
+
+.recent-projects__open:hover .recent-projects__name {
+  color: var(--color-primary-dark);
+}
+
+.recent-projects__name {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-projects__name-input {
+  inline-size: min(28rem, 100%);
+  min-block-size: var(--size-click-target);
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding-inline: var(--spacing-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: 800;
+}
+
+.recent-projects__meta,
+.recent-projects__date {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+}

@@ -1,0 +1,18 @@
+[package]
+name = "yc-analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+yc-archive = { path = "../yc-archive" }
+yc-metadata = { path = "../yc-metadata" }
+yc-language = { path = "../yc-language" }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

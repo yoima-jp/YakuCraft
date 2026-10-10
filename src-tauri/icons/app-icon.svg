@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="196 196 632 668" fill="none">
+  <defs>
+    <clipPath id="rightHalf">
+      <rect x="512" y="0" width="512" height="1024" />
+    </clipPath>
+  </defs>
+
+  <!-- Black left branch and stem -->
+  <path d="M300 300 L512 512 L512 760"
+        stroke="#111315"
+        stroke-width="128"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Green right branch, clipped at the centerline for a clean merge -->
+  <path d="M724 300 L512 512"
+        stroke="#94E625"
+        stroke-width="128"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        clip-path="url(#rightHalf)"/>
+</svg>

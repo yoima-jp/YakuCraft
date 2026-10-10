@@ -1,0 +1,165 @@
+.glossary-panel {
+  display: grid;
+  inline-size: min(68rem, calc(100vw - 3rem));
+  max-block-size: min(74vh, 52rem);
+  gap: var(--spacing-md);
+  user-select: none;
+}
+
+.dialog:has(.glossary-panel) {
+  inline-size: min(72rem, calc(100vw - 2rem));
+  max-inline-size: none;
+}
+
+.glossary-panel__toolbar,
+.glossary-panel__candidate-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.glossary-panel__toolbar input,
+.glossary-panel__add > input,
+.glossary-panel__term-row input:not([type="checkbox"]) {
+  min-inline-size: 0;
+  min-block-size: var(--size-click-target);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding-inline: var(--spacing-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: inherit;
+  user-select: text;
+}
+
+.glossary-panel__toolbar > input {
+  flex: 1 1 auto;
+}
+
+.glossary-panel__close {
+  display: grid;
+  inline-size: var(--size-click-target);
+  min-inline-size: var(--size-click-target);
+  block-size: var(--size-click-target);
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.glossary-panel__close:hover {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.glossary-panel__close svg {
+  inline-size: 1.25rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
+.glossary-panel__add {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1fr) minmax(8rem, 1fr) auto auto;
+  align-items: center;
+  gap: var(--spacing-sm);
+  border-block-end: 1px solid var(--color-border);
+  padding-block-end: var(--spacing-md);
+}
+
+.glossary-panel__add label,
+.glossary-panel__term-row label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  white-space: nowrap;
+}
+
+.glossary-panel__candidate-actions {
+  justify-content: space-between;
+}
+
+.glossary-panel__list {
+  min-block-size: 8rem;
+  block-size: min(48vh, 36rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.glossary-panel__row {
+  display: flex;
+  align-items: center;
+  border-block-end: 1px solid var(--color-border);
+  padding: var(--spacing-sm);
+}
+
+.glossary-panel__term-row {
+  display: grid;
+  inline-size: 100%;
+  grid-template-columns: minmax(6rem, 1fr) minmax(6rem, 1fr) minmax(5rem, 1fr) auto auto auto;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.glossary-panel__source-field {
+  display: grid;
+  min-inline-size: 0;
+  gap: var(--spacing-xs);
+}
+
+.glossary-panel__source-field > input {
+  inline-size: 100%;
+}
+
+.glossary-panel__source-field > input[aria-invalid="true"] {
+  border-color: var(--color-red);
+}
+
+.glossary-panel__term-error {
+  color: var(--color-red);
+  font-size: 0.75em;
+}
+
+.glossary-panel__candidate-row {
+  display: flex;
+  inline-size: 100%;
+  align-items: center;
+  gap: var(--spacing-sm);
+  cursor: pointer;
+  user-select: text;
+}
+
+.glossary-panel__candidate-row > span:nth-child(2) {
+  flex: 1 1 auto;
+}
+
+.glossary-panel__candidate-count,
+.glossary-panel__message,
+.glossary-panel__empty {
+  color: var(--color-text-secondary);
+}
+
+.glossary-panel__message,
+.glossary-panel__empty {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .glossary-panel__add {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .glossary-panel__term-row {
+    grid-template-columns: 1fr 1fr auto auto;
+  }
+
+  .glossary-panel__term-row > input:nth-child(3) {
+    grid-column: span 2;
+  }
+}
