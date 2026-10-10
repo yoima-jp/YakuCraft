@@ -10,7 +10,7 @@ yc-archive = { path = "../yc-archive" }
 yc-metadata = { path = "../yc-metadata" }
 yc-language = { path = "../yc-language" }
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 tracing = "0.1"
 
