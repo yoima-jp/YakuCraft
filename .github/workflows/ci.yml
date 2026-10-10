@@ -45,3 +45,22 @@ jobs:
 
       - run: npm ci
       - run: npm run test:e2e
+
+      # E2E は WebDriver のセッション作成で失敗すると原因がログに残らない。
+      # アプリ単体が起動できるか、WebView2 と driver の版が合っているかを切り分ける。
+      - name: Diagnose E2E failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -Directory | Select-Object Name
+          Get-ChildItem e2e\.cache\msedgedriver -ErrorAction SilentlyContinue | Select-Object Name
+          $env:YAKUCRAFT_DATA_DIR = Join-Path $env:RUNNER_TEMP "yakucraft-diagnose"
+          $app = Start-Process target\debug\yakucraft.exe -PassThru -RedirectStandardError stderr.txt -RedirectStandardOutput stdout.txt
+          Start-Sleep -Seconds 20
+          $app.Refresh()
+          "alive=$(-not $app.HasExited) exit=$($app.ExitCode) title='$($app.MainWindowTitle)'"
+          Get-Content stderr.txt, stdout.txt
+          Get-ChildItem $env:YAKUCRAFT_DATA_DIR -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 10 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, ProviderName, Message
