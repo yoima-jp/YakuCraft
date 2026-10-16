@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 tracing = "0.1"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
