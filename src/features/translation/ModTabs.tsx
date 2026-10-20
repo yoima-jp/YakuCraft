@@ -169,6 +169,7 @@ export function ModTabs({
 }: ModTabsProps) {
   const tabsRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
+  const measuredSidebarCollapsedRef = useRef(sidebarCollapsed);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDialogElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -242,9 +243,9 @@ export function ModTabs({
     overscan: 4,
   });
 
+  // mod IDをキーに実測幅が保持されるため、並び替え時に全件のサイズキャッシュを消す必要はない。
+  // measure()はキャッシュを消す一方、マウント済み要素のrefを再実行しないため、横タブは推定幅に戻ってしまう。
   useLayoutEffect(() => {
-    // Keep cached widths attached to mod IDs after reorder so tab offsets and drop targets stay aligned.
-    tabVirtualizer.measure();
     if (skipHorizontalScrollRef.current) {
       skipHorizontalScrollRef.current = false;
       // Keep the drop position after edge auto-scroll instead of jumping back to an unchanged active tab.
@@ -529,8 +530,14 @@ export function ModTabs({
 
   useLayoutEffect(() => {
     if (orientation !== "vertical") return;
-    // Section and row heights must be remeasured against their new positions after a reorder.
-    sidebarVirtualizer.measure();
+    if (measuredSidebarCollapsedRef.current !== sidebarCollapsed) {
+      // 折りたたみだけは行高が変わるため、古い高さを破棄して表示中の行を同期再計測する。
+      sidebarVirtualizer.measure();
+      measuredSidebarCollapsedRef.current = sidebarCollapsed;
+      sidebarRef.current?.querySelectorAll<HTMLElement>("[data-index]").forEach((element) => {
+        sidebarVirtualizer.measureElement(element);
+      });
+    }
     if (skipSidebarScrollRef.current) {
       skipSidebarScrollRef.current = false;
       // Reordering must not scroll the active icon back into view while preserving the drop position.
@@ -538,7 +545,7 @@ export function ModTabs({
     }
     const activeIndex = sidebarRows.findIndex((row) => row.type === "unit" && row.unit.id === activeUnitId);
     if (activeIndex >= 0) sidebarVirtualizer.scrollToIndex(activeIndex, { align: "auto" });
-  }, [activeUnitId, orientation, sidebarRows, sidebarVirtualizer]);
+  }, [activeUnitId, orientation, sidebarCollapsed, sidebarRows, sidebarVirtualizer]);
 
   const focusTab = (direction: "next" | "previous" | "first" | "last", current: HTMLButtonElement) => {
     if (shownTabs.length === 0) return;
