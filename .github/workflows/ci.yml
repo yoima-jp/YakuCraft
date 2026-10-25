@@ -31,6 +31,64 @@ jobs:
       - run: npm run lint
       - run: npm test
 
+  checks-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+      - run: npm run check:version
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  checks-windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Add Visual Studio clang to PATH
+        shell: pwsh
+        run: |
+          $InputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
+          if (-not $vsPath) { throw 'Visual Studio with the clang component was not found.' }
+          $clangPath = Join-Path $vsPath 'VC\Tools\Llvm\ARM64\bin'
+          if (-not (Test-Path (Join-Path $clangPath 'clang.exe'))) { throw "clang.exe was not found in $clangPath" }
+          Add-Content -Encoding utf8 -Path $env:GITHUB_PATH -Value $clangPath
+      - name: Add Rust ARM64 target
+        run: rustup target add aarch64-pc-windows-msvc
+      - name: Check Windows ARM64 target
+        run: cargo check --workspace --target aarch64-pc-windows-msvc
+
   e2e:
     # GitHub の Windows runner では、アプリ単体は起動できるのに WebDriver のセッション作成だけが
     # 失敗する（DevToolsActivePort が作られない）。原因が分かるまで手動実行だけにして、
@@ -67,3 +125,43 @@ jobs:
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
           Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 10 -ErrorAction SilentlyContinue |
             Format-List TimeCreated, ProviderName, Message
+
+  e2e-linux:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri and WebDriver system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            dbus-x11 \
+            fonts-noto-cjk \
+            gnome-keyring \
+            libgl1-mesa-dri \
+            patchelf \
+            webkit2gtk-driver \
+            wget \
+            xdg-utils \
+            xvfb
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+      - name: Run E2E with Secret Service
+        run: dbus-run-session -- bash -euc 'source scripts/linux-verify/start-keyring.sh; xvfb-run -a npm run test:e2e'
+
+      - name: Verify Linux Secret Service
+        run: bash scripts/linux-verify/verify-secret-service.sh

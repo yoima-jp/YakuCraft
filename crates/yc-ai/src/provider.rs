@@ -8,7 +8,7 @@ use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use yc_validation::{AiTranslation, RequestedEntry, validate_ai_batch};
+use yc_validation::{AiTranslation, ProfiledRequestedEntry, validate_ai_batch_with_profiles};
 
 use crate::{
     AiError, Result, TranslationContext, TranslationEntry, TranslationOutcome, TranslationProgress,
@@ -205,12 +205,13 @@ pub async fn translate_entries(
     }
     let requested: Vec<_> = entries
         .iter()
-        .map(|entry| RequestedEntry {
+        .map(|entry| ProfiledRequestedEntry {
             id: entry.id,
             source: entry.source.clone(),
+            format_profile: entry.format_profile,
         })
         .collect();
-    let validation = validate_ai_batch(&requested, &responses);
+    let validation = validate_ai_batch_with_profiles(&requested, &responses);
     let request_order: HashMap<i64, usize> = entries
         .iter()
         .enumerate()

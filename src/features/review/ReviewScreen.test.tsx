@@ -211,4 +211,56 @@ describe("Review setup flow", () => {
     expect(screen.queryByText("不足キーを補完しますか？")).toBeNull();
     expect(screen.queryByText("プレビュー用アセット")).toBeNull();
   });
+
+  it("Patchouli本文だけの同梱名前空間を選択して保存する", async () => {
+    const patchouliDetails = details();
+    patchouliDetails.namespaces = [
+      patchouliDetails.namespaces[0]!,
+      { modUnitId: 1, namespace: "guidebook", containerPath: "META-INF/jars/guidebook.jar", included: false, entryCount: 1 },
+    ];
+    patchouliDetails.languages = patchouliDetails.languages.filter((language) => language.namespace !== "library");
+    patchouliDetails.nestedArchives = [{
+      modUnitId: 1,
+      archivePath: "META-INF/jars/guidebook.jar",
+      modId: "guidebook",
+      name: "Guidebook",
+      version: "1",
+      hasLanguages: false,
+      skippedReason: null,
+    }];
+    patchouliDetails.includedNamespaces = [{ modUnitId: 1, namespace: "fixture" }];
+    useProjectStore.getState().setProjectDetails(patchouliDetails);
+    vi.mocked(getReviewAssetSummary).mockResolvedValue({
+      existingJapaneseTranslationCount: 0,
+      missingSourceKeysCount: 0,
+      assets: {
+        total: 0,
+        blockModels: 0,
+        itemModels: 0,
+        entityTextures: 0,
+        geometryModels: 0,
+        unresolvedEntries: 0,
+      },
+    });
+
+    render(<ReviewScreen />);
+    expect(screen.getByText("同梱Mod 1件")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "翻訳対象に含める" }));
+    const namespaceCheckbox = screen.getByRole("checkbox", { name: "guidebook · 1" });
+    expect(namespaceCheckbox).toHaveProperty("checked", false);
+    fireEvent.click(namespaceCheckbox);
+    expect(namespaceCheckbox).toHaveProperty("checked", true);
+
+    await waitFor(() => expect(getReviewAssetSummary).toHaveBeenCalledWith(expect.objectContaining({
+      includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }, { modUnitId: 1, namespace: "guidebook" }],
+    }), expect.any(Function)));
+    await waitFor(() => expect(screen.getByTestId("review-next")).toHaveProperty("disabled", false));
+    fireEvent.click(screen.getByRole("button", { name: "次へ" }));
+    fireEvent.click(screen.getByRole("button", { name: "翻訳を始める" }));
+
+    await waitFor(() => expect(saveReviewSettings).toHaveBeenCalledWith(expect.objectContaining({
+      includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }, { modUnitId: 1, namespace: "guidebook" }],
+    }), expect.any(Function)));
+    await waitFor(() => expect(useAppStore.getState().route).toBe("editor"));
+  });
 });

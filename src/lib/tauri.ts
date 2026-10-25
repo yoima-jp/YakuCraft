@@ -78,6 +78,10 @@ export function getAppInfo() {
   return invokeApp<AppInfoDto>("get_app_info");
 }
 
+export function automaticUpdatesSupported() {
+  return invokeApp<boolean>("automatic_updates_supported");
+}
+
 export function clearCache() {
   return invokeApp<void>("clear_cache");
 }
@@ -96,6 +100,10 @@ export function deleteAiProvider(provider: AiProviderId) {
 
 export function testAiProvider(provider: AiProviderId) {
   return invokeApp<void>("test_ai_provider", { provider });
+}
+
+export function listAiModels(provider: AiProviderId, baseUrl: string, apiKey?: string) {
+  return invokeApp<string[]>("list_ai_models", { provider, baseUrl, apiKey });
 }
 
 export function startChatgptLogin() {
@@ -138,10 +146,11 @@ export function createProjectFromJars(
   paths: string[],
   instancePath: string | null,
   onEvent: (event: AnalysisChannelEvent) => void,
+  includeModpack = false,
 ) {
   const channel = new Channel<AnalysisChannelEvent>();
   channel.onmessage = onEvent;
-  return invokeApp<string>("create_project_from_jars", { paths, instancePath, channel });
+  return invokeApp<string>("create_project_from_jars", { paths, instancePath, includeModpack, channel });
 }
 
 export function cancelAnalysis(jobId: string) {
@@ -197,6 +206,10 @@ export function getModUnitRemovalInfo(modUnitId: number) {
 
 export function removeModUnit(modUnitId: number, confirmUnrestoredReplacements: boolean) {
   return invokeApp<ProjectSummaryDto>("remove_mod_unit", { modUnitId, confirmUnrestoredReplacements });
+}
+
+export function refreshModpackUnit(modUnitId: number) {
+  return invokeApp<void>("refresh_modpack_unit", { modUnitId });
 }
 
 export function deleteProject(projectId: string) {
@@ -257,6 +270,7 @@ export function entryFromProject(entry: EditorEntryDto): TranslationEntry {
   return {
     id: entry.id,
     modUnitId: entry.modUnitId,
+    entryKind: entry.entryKind,
     namespace: entry.namespace,
     key: entry.key,
     sourceText: entry.sourceText,

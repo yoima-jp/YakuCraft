@@ -56,19 +56,26 @@ describe("翻訳表の大量行スクロール", () => {
     const inspectorPreview = await $(".editor-inspector__preview-area");
     const previewTop = (await rectOf(inspectorPreview)).y;
     const scrollRect = await rectOf(await $(".editor-table__scroll"));
-    await browser.performActions([{
-      type: "wheel",
-      id: "table-scroll",
-      actions: [{
-        type: "scroll",
-        x: Math.round(scrollRect.x + scrollRect.width / 2),
-        y: Math.round(scrollRect.y + scrollRect.height / 2),
-        deltaX: 0,
-        deltaY: 30_000,
-        duration: 500,
-      }],
-    }]);
-    await browser.releaseActions();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const reachedBottom = await browser.execute(() => {
+        const scroller = document.querySelector(".editor-table__scroll");
+        return Boolean(scroller && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2);
+      });
+      if (reachedBottom) break;
+      await browser.performActions([{
+        type: "wheel",
+        id: "table-scroll",
+        actions: [{
+          type: "scroll",
+          x: Math.round(scrollRect.x + scrollRect.width / 2),
+          y: Math.round(scrollRect.y + scrollRect.height / 2),
+          deltaX: 0,
+          deltaY: 1_200,
+          duration: 100,
+        }],
+      }]);
+      await browser.releaseActions();
+    }
 
     const rowCount = Number(await grid.getAttribute("aria-rowcount"));
     const lastRow = await $(`[role="row"][aria-rowindex="${rowCount}"]`);

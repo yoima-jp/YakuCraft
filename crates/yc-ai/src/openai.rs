@@ -84,7 +84,7 @@ impl TranslationProvider for OpenAiProvider {
             "input": [
                 {
                     "role": "system",
-                    "content": [{"type": "input_text", "text": prompt::system_instruction(context, false)}]
+                    "content": [{"type": "input_text", "text": prompt::system_instruction(context, entries, false)}]
                 },
                 {
                     "role": "user",

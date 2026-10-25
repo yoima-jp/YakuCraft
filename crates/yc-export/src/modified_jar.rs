@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::Write,
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -10,9 +10,10 @@ use yc_language::{language_export_filename, write_language_file};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    ExportError, ExportInput, ExportKind, ExportValidationRequest, ValidationIssueCode,
-    ValidationSeverity, atomic_write_file, language_filename_is_safe, language_format_for_filename,
-    namespace_has_exportable_entries, validate_export, validate_zip, writer_options_for_namespace,
+    ExportError, ExportInput, ExportKind, ExportValidationRequest, PatchouliDocumentArtifact,
+    ValidationIssueCode, ValidationSeverity, atomic_write_file, create_patchouli_document_files,
+    language_filename_is_safe, language_format_for_filename, namespace_has_exportable_entries,
+    namespace_has_language_entries, validate_export, validate_zip, writer_options_for_namespace,
 };
 
 /// Modified JARの標準名を元JARのbasenameから作る。
@@ -81,6 +82,9 @@ pub(crate) fn export_modified_jar_validated(
         .collect();
     namespaces.sort_by(|left, right| left.namespace.cmp(&right.namespace));
     for namespace in namespaces {
+        if !namespace_has_language_entries(input, &namespace.namespace) {
+            continue;
+        }
         let file_name = language_export_filename(
             input.language_files,
             &namespace.namespace,
@@ -109,6 +113,42 @@ pub(crate) fn export_modified_jar_validated(
         }
     }
 
+    let mut nested_documents = HashMap::<String, Vec<PatchouliDocumentArtifact>>::new();
+    for artifact in create_patchouli_document_files(input)? {
+        if artifact.container_path.is_empty() {
+            if generated
+                .insert(artifact.path.clone(), artifact.bytes)
+                .is_some()
+            {
+                return Err(ExportError::DuplicateTargetEntry(artifact.path));
+            }
+        } else {
+            nested_documents
+                .entry(artifact.container_path.clone())
+                .or_default()
+                .push(artifact);
+        }
+    }
+    for (container_path, documents) in nested_documents {
+        if yc_archive::normalize_archive_path(&container_path).as_deref()
+            != Ok(container_path.as_str())
+        {
+            return Err(ExportError::UnsafeArchivePath(container_path));
+        }
+        let source_file = File::open(original_jar_path)?;
+        let mut source = ZipArchive::new(source_file)?;
+        let mut nested = source.by_name(&container_path)?;
+        let mut nested_bytes = Vec::new();
+        nested.read_to_end(&mut nested_bytes)?;
+        let rewritten = rewrite_nested_documents(&nested_bytes, &documents)?;
+        if generated
+            .insert(container_path.clone(), rewritten)
+            .is_some()
+        {
+            return Err(ExportError::DuplicateTargetEntry(container_path));
+        }
+    }
+
     let expected_entries: Vec<_> = generated.keys().cloned().collect();
     let mut expected_entries = expected_entries;
     expected_entries.sort();
@@ -125,6 +165,46 @@ pub(crate) fn export_modified_jar_validated(
         "modified JAR exported"
     );
     Ok(output_path.to_path_buf())
+}
+
+fn rewrite_nested_documents(
+    source_bytes: &[u8],
+    documents: &[PatchouliDocumentArtifact],
+) -> Result<Vec<u8>, ExportError> {
+    let replacements: HashMap<_, _> = documents
+        .iter()
+        .map(|document| (document.path.as_str(), document.bytes.as_slice()))
+        .collect();
+    let mut source = ZipArchive::new(Cursor::new(source_bytes))?;
+    let mut output = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let mut replaced = HashSet::new();
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index)?;
+        let name = entry.name().to_owned();
+        if let Some(bytes) = replacements.get(name.as_str()) {
+            output.start_file(&name, options)?;
+            output.write_all(bytes)?;
+            replaced.insert(name);
+            continue;
+        }
+        if entry.is_dir() {
+            output.add_directory(&name, options)?;
+        } else {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            output.start_file(&name, options)?;
+            output.write_all(&bytes)?;
+        }
+    }
+    for document in documents {
+        if replaced.contains(&document.path) {
+            continue;
+        }
+        output.start_file(&document.path, options)?;
+        output.write_all(&document.bytes)?;
+    }
+    Ok(output.finish()?.into_inner())
 }
 
 fn copy_jar_with_replacements(

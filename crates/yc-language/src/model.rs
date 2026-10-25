@@ -102,6 +102,7 @@ pub enum EntryFlag {
     MalformedSource,
     AssetAmbiguous,
     AssetMissing,
+    PatchouliText,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -122,7 +123,6 @@ pub struct TranslationEntry {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriterOptions {
-    pub include_empty_translations: bool,
     /// 原文の`.lang`がForge拡張形式なら、書き出しでもその形式を維持する。
     pub legacy_parse_escapes: bool,
 }

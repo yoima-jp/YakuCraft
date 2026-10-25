@@ -574,6 +574,26 @@ fn lightweight_scan_reports_no_language_files_and_broken_archives() {
 }
 
 #[test]
+fn lightweight_scan_keeps_patchouli_only_jars_selectable() {
+    let jar = temporary_jar(&[
+        (
+            "assets/guidebook/patchouli_books/guide/book.json",
+            br#"{"name":"Guide","i18n":false}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/en_us/entries/basics/start.json",
+            br#"{"name":"Start","pages":[{"type":"patchouli:text","text":"Read this"}]}"#,
+        ),
+    ]);
+
+    let result = scan_mod_jar(&jar.0, &ScanOptions::default());
+
+    assert_eq!(result.source_key_count, 2);
+    assert_eq!(result.translated_key_count, 0);
+    assert!(matches!(result.status, ModLanguageStatus::Untranslated));
+}
+
+#[test]
 fn lightweight_scan_parses_legacy_lang_files() {
     let jar = temporary_jar(&[
         (

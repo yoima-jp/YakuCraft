@@ -16,6 +16,13 @@ const PROVIDER_LABELS: Record<AiProviderId, string> = {
   "openai-compatible": "OpenAI互換プロバイダー",
   deepl: "DeepL",
   chatgpt: "ChatGPT",
+  anthropic: "Claude",
+  gemini: "Gemini",
+  openrouter: "OpenRouter",
+  deepseek: "DeepSeek",
+  groq: "Groq",
+  ollama: "Ollama",
+  "lm-studio": "LM Studio",
 };
 
 let unitScopedAiJobActive = false;

@@ -26,6 +26,20 @@ pub enum ProviderId {
     DeepL,
     #[serde(rename = "chatgpt")]
     ChatGpt,
+    #[serde(rename = "gemini")]
+    Gemini,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    #[serde(rename = "groq")]
+    Groq,
+    #[serde(rename = "ollama")]
+    Ollama,
+    #[serde(rename = "lm-studio")]
+    LmStudio,
+    #[serde(rename = "anthropic")]
+    Anthropic,
 }
 
 impl ProviderId {
@@ -35,6 +49,13 @@ impl ProviderId {
             Self::OpenAiCompatible => "openai-compatible",
             Self::DeepL => "deepl",
             Self::ChatGpt => "chatgpt",
+            Self::Gemini => "gemini",
+            Self::OpenRouter => "openrouter",
+            Self::DeepSeek => "deepseek",
+            Self::Groq => "groq",
+            Self::Ollama => "ollama",
+            Self::LmStudio => "lm-studio",
+            Self::Anthropic => "anthropic",
         }
     }
 
@@ -109,7 +130,7 @@ pub struct CredentialManager {
 impl CredentialManager {
     pub fn new(backend: impl CredentialBackend) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
-        // Windows Credential Manager は並行操作の順序を保証しないため、同期 API をこの専用 thread に集約する。
+        // OS credential storeの同期APIを専用threadに集約し、UI/runtime threadを塞がない。
         thread::Builder::new()
             .name("yc-ai-credential-store".to_owned())
             .spawn(move || credential_worker(backend, receiver))
@@ -124,6 +145,12 @@ impl CredentialManager {
     #[cfg(windows)]
     pub fn windows() -> Result<Self> {
         Self::new(WindowsCredentialBackend::new()?)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn linux() -> Result<Self> {
+        // D-Bus接続は操作時に専用threadから行い、Secret Serviceがない環境でも起動を妨げない。
+        Self::new(SecretServiceCredentialBackend { store: None })
     }
 
     pub async fn status(&self, provider: ProviderId) -> Result<CredentialStatus> {
@@ -176,7 +203,7 @@ impl CredentialManager {
         self.get(provider).await.map(|secret| secret.map(Secret))
     }
 
-    /// OAuth credentialもAPI Keyと同じWindows Credential Managerへ保存する。
+    /// OAuth credentialもAPI Keyと同じOSのcredential storeへ保存する。
     /// SQLiteやRendererへtokenを渡さず、refresh時もこの経路だけを使う。
     pub async fn save_chatgpt_credential(&self, credential: &str) -> Result<CredentialStatus> {
         crate::chatgpt::validate_serialized_credential(credential)?;
@@ -300,6 +327,11 @@ struct WindowsCredentialBackend {
     store: std::sync::Arc<windows_native_keyring_store::Store>,
 }
 
+#[cfg(target_os = "linux")]
+struct SecretServiceCredentialBackend {
+    store: Option<std::sync::Arc<zbus_secret_service_keyring_store::Store>>,
+}
+
 // Windows Credential Manager の credential blob は 2,560 バイトまでで、keyring は password を
 // UTF-16 で保存するため 1 件あたり約 1,280 文字しか入らない（実測: 1,300 文字で TooLong）。
 // ChatGPT の OAuth credential は JWT を含みこれを超えるので、長い値は複数の credential に分割する。
@@ -307,14 +339,20 @@ struct WindowsCredentialBackend {
 //
 // v2 は本体に世代 UUID と分割数を置き、世代ごとのキーに断片を保存する。
 // v1 の世代なし断片も引き続き読み込む。短い値は本体に直接保存する。
+#[cfg(windows)]
 const MAX_SINGLE_CREDENTIAL_UTF16: usize = 1_200;
+#[cfg(windows)]
 const CHUNK_UTF16: usize = 1_000;
+#[cfg(windows)]
 const CHUNK_MARKER_PREFIX: &str = "yc-chunked:v1:";
+#[cfg(windows)]
 const CHUNK_MARKER_V2_PREFIX: &str = "yc-chunked:v2:";
 // 壊れた marker で大量の credential を読みに行かないための上限（64 KiB 相当）。
+#[cfg(windows)]
 const MAX_CHUNKS: usize = 64;
 
 /// 値を Credential Manager に収まる断片へ分ける。UTF-16 の長さで数え、文字の途中では切らない。
+#[cfg(windows)]
 fn split_credential(secret: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -334,11 +372,13 @@ fn split_credential(secret: &str) -> Vec<String> {
     chunks
 }
 
+#[cfg(windows)]
 struct ChunkMarker {
     generation: Option<uuid::Uuid>,
     count: usize,
 }
 
+#[cfg(windows)]
 impl ChunkMarker {
     fn parse(stored: &str) -> std::result::Result<Option<Self>, CredentialStoreError> {
         let (generation, count) = if let Some(count) = stored.strip_prefix(CHUNK_MARKER_PREFIX) {
@@ -379,6 +419,7 @@ impl ChunkMarker {
 }
 
 /// account 単位の読み書き。分割の規則をこの層に閉じ込め、in-memory 実装でテストできるようにする。
+#[cfg(windows)]
 trait AccountStore {
     fn read(&mut self, account: &str) -> std::result::Result<Option<String>, CredentialStoreError>;
     fn write(
@@ -389,6 +430,7 @@ trait AccountStore {
     fn remove(&mut self, account: &str) -> std::result::Result<(), CredentialStoreError>;
 }
 
+#[cfg(windows)]
 fn read_chunked(
     store: &mut impl AccountStore,
     account: &str,
@@ -411,6 +453,7 @@ fn read_chunked(
     Ok(Some(secret))
 }
 
+#[cfg(windows)]
 fn write_chunked(
     store: &mut impl AccountStore,
     account: &str,
@@ -459,6 +502,7 @@ fn write_chunked(
     Ok(())
 }
 
+#[cfg(windows)]
 fn remove_chunked(
     store: &mut impl AccountStore,
     account: &str,
@@ -487,6 +531,26 @@ impl WindowsCredentialBackend {
     ) -> std::result::Result<keyring_core::Entry, CredentialStoreError> {
         use keyring_core::api::CredentialStoreApi;
         CredentialStoreApi::build(self.store.as_ref(), CREDENTIAL_SERVICE, account, None)
+            .map_err(|_| CredentialStoreError)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SecretServiceCredentialBackend {
+    fn entry(
+        &mut self,
+        account: &str,
+    ) -> std::result::Result<keyring_core::Entry, CredentialStoreError> {
+        use keyring_core::api::CredentialStoreApi;
+
+        if self.store.is_none() {
+            self.store = Some(
+                zbus_secret_service_keyring_store::Store::new()
+                    .map_err(|_| CredentialStoreError)?,
+            );
+        }
+        let store = self.store.as_ref().ok_or(CredentialStoreError)?;
+        CredentialStoreApi::build(store.as_ref(), CREDENTIAL_SERVICE, account, None)
             .map_err(|_| CredentialStoreError)
     }
 }
@@ -541,7 +605,39 @@ impl CredentialBackend for WindowsCredentialBackend {
     }
 }
 
-#[cfg(test)]
+#[cfg(target_os = "linux")]
+impl CredentialBackend for SecretServiceCredentialBackend {
+    fn get(
+        &mut self,
+        provider: ProviderId,
+    ) -> std::result::Result<Option<String>, CredentialStoreError> {
+        match self.entry(&provider.account())?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(_) => Err(CredentialStoreError),
+        }
+    }
+
+    fn set(
+        &mut self,
+        provider: ProviderId,
+        secret: &str,
+    ) -> std::result::Result<(), CredentialStoreError> {
+        // Secret ServiceはWindows Credential Managerのblob上限を持たないため、値を分割せず保存する。
+        self.entry(&provider.account())?
+            .set_password(secret)
+            .map_err(|_| CredentialStoreError)
+    }
+
+    fn delete(&mut self, provider: ProviderId) -> std::result::Result<(), CredentialStoreError> {
+        match self.entry(&provider.account())?.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(_) => Err(CredentialStoreError),
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
 mod chunk_tests {
     use std::collections::HashMap;
 

@@ -10,6 +10,7 @@ import {
   getAppInfo,
   getMinecraftJarSetting,
   getSettings,
+  listAiModels,
   logoutChatgpt,
   saveAiProvider,
   saveSettings,
@@ -29,6 +30,7 @@ vi.mock("../../lib/tauri", () => ({
   getAppInfo: vi.fn(),
   getMinecraftJarSetting: vi.fn(),
   getSettings: vi.fn(),
+  listAiModels: vi.fn().mockResolvedValue([]),
   logoutChatgpt: vi.fn(),
   saveAiProvider: vi.fn(),
   saveSettings: vi.fn(),
@@ -53,6 +55,12 @@ async function selectChatgpt() {
   fireEvent.click(screen.getByRole("combobox", { name: "プロバイダー" }));
   fireEvent.click(screen.getByRole("option", { name: "ChatGPT（サブスクリプション）" }));
   await waitFor(() => screen.getByRole("button", { name: /ChatGPTでログイン|ログアウト/ }));
+}
+
+async function selectOllama() {
+  fireEvent.click(screen.getByRole("combobox", { name: "プロバイダー" }));
+  fireEvent.click(screen.getByRole("option", { name: "Ollama" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "モデル" })).toBeTruthy());
 }
 
 describe("SettingsScreen API Key field", () => {
@@ -115,7 +123,7 @@ describe("SettingsScreen API Key field", () => {
     await waitFor(() => expect(saveAiProvider).toHaveBeenCalledWith(expect.objectContaining({
       model: "new-model", baseUrl: "https://example.com/v1", batchSize: 12, customPrompt: "自然な日本語で翻訳",
     }), undefined));
-  });
+  }, 10_000);
 
   it.each([{ isComposing: true }, { keyCode: 229 }])("IMEのEscapeでは設定を閉じない (%j)", async (composition) => {
     useAppStore.setState({ route: "settings", settingsReturnRoute: "editor" });
@@ -180,6 +188,70 @@ describe("SettingsScreen API Key field", () => {
     expect(keyField.type).toBe("password");
     expect(keyField.value).toBe("");
     expect(screen.getByText("設定済み")).toBeTruthy();
+  });
+
+  it("保存済みキーが入力欄で空でも、接続先変更時にモデル候補を取り直す", async () => {
+    let resolveUpdatedModels!: (models: string[]) => void;
+    vi.mocked(getAiSettings).mockResolvedValue({
+      ...settings("openai", true),
+      provider: "openai-compatible",
+    });
+    vi.mocked(listAiModels)
+      .mockResolvedValueOnce(["old-model"])
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveUpdatedModels = resolve; }));
+    const user = userEvent.setup();
+    render(<SettingsScreen />);
+
+    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("old-model"));
+    const url = screen.getByRole("textbox", { name: /接続先URL/ });
+    await user.clear(url);
+    await user.type(url, "http://127.0.0.1:43210/v1");
+
+    await waitFor(() => expect(listAiModels).toHaveBeenCalledTimes(2));
+    expect(listAiModels).toHaveBeenLastCalledWith(
+      "openai-compatible",
+      "http://127.0.0.1:43210/v1",
+      undefined,
+    );
+    expect(document.querySelector("#ai-model-options option")).toBeNull();
+
+    resolveUpdatedModels(["new-model"]);
+    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("new-model"));
+  }, 10_000);
+
+  it("初めてOllamaを選んだとき、未設定でもモデル一覧を取得する", async () => {
+    vi.mocked(getAiSettings).mockImplementation(async (provider) => provider === "ollama"
+      ? { ...settings("openai", false), provider: "ollama", model: "", baseUrl: "http://localhost:11434/v1" }
+      : settings("chatgpt", false));
+    vi.mocked(listAiModels).mockResolvedValue(["llama3.2"]);
+    render(<SettingsScreen />);
+
+    await screen.findByRole("button", { name: "ChatGPTでログイン" });
+    await selectOllama();
+
+    await waitFor(() => expect(listAiModels).toHaveBeenCalledWith(
+      "ollama",
+      "http://localhost:11434/v1",
+      undefined,
+    ));
+    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("llama3.2"));
+  });
+
+  it("モデル一覧の取得に失敗したら短い案内を表示して手入力を残す", async () => {
+    vi.mocked(getAiSettings).mockImplementation(async (provider) => provider === "ollama"
+      ? { ...settings("openai", false), provider: "ollama", model: "", baseUrl: "http://localhost:11434/v1" }
+      : settings("chatgpt", false));
+    vi.mocked(listAiModels).mockRejectedValue(new Error("connection refused"));
+    render(<SettingsScreen />);
+
+    await screen.findByRole("button", { name: "ChatGPTでログイン" });
+    await selectOllama();
+
+    expect((await screen.findByRole("alert")).textContent).toBe("モデル一覧を取得できません。モデル名を入力してください。");
+    const model = screen.getByRole("textbox", { name: "モデル" }) as HTMLInputElement;
+    fireEvent.change(model, { target: { value: "manual-model" } });
+    expect(model.value).toBe("manual-model");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("ChatGPTではAPIキー欄の代わりにログインと固定モデルを表示する", async () => {

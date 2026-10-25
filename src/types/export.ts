@@ -1,11 +1,12 @@
 import type { MinecraftVersionDetectionDto } from "./project";
 
-export type ExportKind = "languageFile" | "resourcePack" | "modifiedJar";
+export type ExportKind = "languageFile" | "resourcePack" | "modifiedJar" | "modpackFiles";
 
 export interface ExportIssueDto {
   severity: "warning" | "error";
   code: string;
   message: string;
+  displayLabel?: string | null;
 }
 
 export interface ExportValidationDto {

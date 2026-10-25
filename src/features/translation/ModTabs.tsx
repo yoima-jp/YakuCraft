@@ -40,6 +40,7 @@ interface ModTabsProps {
   onTogglePin: (modUnitId: number) => void;
   onReorder: (modUnitId: number, insertionIndex: number, targetPinned: boolean) => boolean;
   onTranslateMissing: (modUnitId: number) => void;
+  onRefreshModpack: (modUnitId: number) => void;
   onRemove: (modUnitId: number) => void;
   orientation?: "horizontal" | "vertical";
   sidebarWidth?: number;
@@ -84,6 +85,7 @@ export function clearModIconCacheInUi() {
 }
 
 function unitName(unit: ModUnitSummaryDto) {
+  if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
   return unit.name?.trim() || unit.sourceFilename;
 }
 
@@ -159,6 +161,7 @@ export function ModTabs({
   onTogglePin,
   onReorder,
   onTranslateMissing,
+  onRefreshModpack,
   onRemove,
   orientation = "horizontal",
   sidebarWidth = 256,
@@ -981,6 +984,8 @@ export function ModTabs({
           selectionDisabled={selectionDisabled}
           showTabActions={contextMenuTarget?.source === "tab"}
           onTranslate={() => onTranslateMissing(menuUnit.id)}
+          showRefreshModpack={menuUnit.sourceKind === "modpack" && menuUnit.id === activeUnitId}
+          onRefreshModpack={() => onRefreshModpack(menuUnit.id)}
           onTogglePin={() => onTogglePin(menuUnit.id)}
           onCloseTab={() => onClose(menuUnit.id)}
           onCloseOthers={() => onCloseOthers(menuUnit.id)}
@@ -1005,7 +1010,9 @@ function ModUnitContextMenu({
   actionsDisabled,
   selectionDisabled = false,
   showTabActions = false,
+  showRefreshModpack = false,
   onTranslate,
+  onRefreshModpack,
   onTogglePin,
   onCloseTab,
   onCloseOthers,
@@ -1023,7 +1030,9 @@ function ModUnitContextMenu({
   actionsDisabled: boolean;
   selectionDisabled?: boolean;
   showTabActions?: boolean;
+  showRefreshModpack?: boolean;
   onTranslate: () => void;
+  onRefreshModpack: () => void;
   onTogglePin: () => void;
   onCloseTab?: () => void;
   onCloseOthers?: () => void;
@@ -1033,6 +1042,9 @@ function ModUnitContextMenu({
   return (
     <ContextMenu label={`${name}の操作`} position={position} onClose={onClose}>
       <ContextMenuItem disabled={actionsDisabled} onClick={onTranslate}>このmodの未翻訳をAIで翻訳</ContextMenuItem>
+      {showRefreshModpack && (
+        <ContextMenuItem disabled={actionsDisabled} onClick={onRefreshModpack}>Modpack を再取り込み</ContextMenuItem>
+      )}
       <ContextMenuItem onClick={onTogglePin}>{pinned ? "ピン留めを外す" : "ピン留め"}</ContextMenuItem>
       {showTabActions && (
         <>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { join as joinPath } from "@tauri-apps/api/path";
 
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
@@ -11,19 +12,23 @@ import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { setExportRunDetails } from "./completionData";
+import { displayPath } from "./pathDisplay";
 import {
   ExportCommandError,
   exportSelectedLanguageFile,
   exportSelectedLanguageFiles,
   exportSelectedMergedResourcePack,
   exportSelectedModifiedJars,
+  exportModpackFiles,
   getExportOverview,
+  restoreModpackFile,
   restoreModifiedJar,
   validateSelectedProject,
   type ExportIssueDto,
   type SelectedExportValidationDto,
   type ExportOverviewDto,
   type ModExportResultDto,
+  type FileDeploymentDto,
 } from "./exportApi";
 import "./ExportScreen.css";
 
@@ -31,6 +36,7 @@ const EXPORT_OPTIONS: Array<{ value: ExportKind; label: string; description: str
   { value: "resourcePack", label: "リソースパック", description: "複数のmodを1つのZIPにまとめる" },
   { value: "modifiedJar", label: "Mod JARに埋め込む", description: "日本語ファイルをJARに追加する" },
   { value: "languageFile", label: "言語ファイル", description: "言語ファイルだけを書き出す" },
+  { value: "modpackFiles", label: "Modpack ファイル", description: "クエスト・KubeJS の翻訳を書き出す" },
 ];
 
 function safeFileComponent(value: string) {
@@ -84,7 +90,8 @@ function minecraftVersionEvidence(detection: MinecraftVersionDetectionDto | null
   return `リソース構造から推定${detection.rounded ? "（近いバージョン）" : ""}`;
 }
 
-function unitTitle(unit: { sourceFilename: string; name: string | null; version?: string | null }) {
+function unitTitle(unit: { sourceKind?: "jar" | "modpack"; sourceFilename: string; name: string | null; version?: string | null }) {
+  if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
   const name = unit.name?.trim() || unit.sourceFilename;
   return unit.version?.trim() ? `${name} ${unit.version}` : name;
 }
@@ -203,6 +210,7 @@ type ValidationVirtualRow =
     severity: "warning" | "error";
     namespace: string;
     key: string;
+    label: string;
     sourceText: string;
     targetText: string;
   };
@@ -247,8 +255,8 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
               key={row.id}
               style={style}
             >
-              <code className="selectable" title={`${row.namespace}:${row.key}`}>
-                {row.severity === "error" ? "エラー" : "注意"} · {row.namespace}:{row.key}
+              <code className="selectable" title={row.label}>
+                {row.severity === "error" ? "エラー" : "注意"} · {row.label}
               </code>
               <p><strong>原文</strong><span className="selectable" title={row.sourceText}>{row.sourceText}</span></p>
               <p><strong>訳文</strong><span className="selectable" title={row.targetText}>{row.targetText}</span></p>
@@ -364,6 +372,17 @@ export function ExportScreen() {
       : undefined
   ), [manualFormatMajor, manualFormatMinor, manualMinecraftVersion]);
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const hasJarUnit = modUnits.some((unit) => unit.sourceKind !== "modpack");
+  const hasModpackUnit = modUnits.some((unit) => unit.sourceKind === "modpack");
+  const selectableUnits = kind === "modifiedJar"
+    ? modUnits.filter((unit) => unit.sourceKind !== "modpack")
+    : modUnits;
+  const selectedJarIds = modUnits
+    .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind !== "modpack")
+    .map((unit) => unit.id);
+  const selectedFtbQuestEntries = modUnits
+    .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "modpack")
+    .reduce((total, unit) => total + (unit.ftbQuestEntries ?? 0), 0);
   const includedNamespaces = useMemo(() => [...new Set(
     (details?.includedNamespaces ?? [])
       .filter((selection) => selectedIdSet.has(selection.modUnitId))
@@ -375,7 +394,8 @@ export function ExportScreen() {
     ...modUnits.map((unit) => unit.minecraftVersion?.trim() ?? "").filter(Boolean),
   ])], [details?.supportedMinecraftVersions, modUnits]);
   const eligibleForInPlace = Boolean(overview?.instancePath)
-    && overview?.units.some((unit) => selectedIdSet.has(unit.id) && unit.originalExists);
+    && overview?.units.some((unit) => selectedIdSet.has(unit.id)
+      && unit.sourceKind !== "modpack" && unit.originalExists);
 
   const validate = useCallback(async (
     nextKind = kind,
@@ -498,6 +518,25 @@ export function ExportScreen() {
     }
   };
 
+  const restoreFile = async (deploymentId: number) => {
+    const startingProjectId = projectId;
+    if (!startingProjectId || loadedProjectId !== startingProjectId || !isCurrentProject(startingProjectId)) return;
+    setRestoringId(deploymentId);
+    setRestoreError(null);
+    try {
+      await restoreModpackFile(startingProjectId, deploymentId);
+      if (!isCurrentProject(startingProjectId)) return;
+      await refreshOverview(startingProjectId);
+      if (!isCurrentProject(startingProjectId)) return;
+    } catch (cause: unknown) {
+      if (!isProjectChangedError(cause) && isCurrentProject(startingProjectId)) {
+        setRestoreError(errorMessage(cause));
+      }
+    } finally {
+      if (isCurrentProject(startingProjectId)) setRestoringId(null);
+    }
+  };
+
   const beginExport = async () => {
     const startingProjectId = projectId;
     if (
@@ -526,17 +565,52 @@ export function ExportScreen() {
         )
         : kind === "modifiedJar"
           ? "改変済みmod"
-          : "言語ファイル";
+          : kind === "modpackFiles" ? "Modpack 翻訳" : "言語ファイル";
       const defaultPath = defaultExportDirectory
-        ? `${defaultExportDirectory.replace(/[\\/]+$/, "")}\\${defaultName}`
+        ? await joinPath(defaultExportDirectory, defaultName)
         : defaultName;
       let outputPaths: string[] = [];
       let modResults: ModExportResultDto[] = [];
       let conflicts: Array<{ namespace: string; key: string; keptFrom: string; droppedFrom: string }> = [];
       let directlyInstalled = false;
       let inPlaceReplacement = false;
+      let translatedCount = kind === "modpackFiles" ? details.counts.translated : result.counts.translated;
+      let missingCount = kind === "modpackFiles" ? details.counts.missing : result.counts.missing;
 
-      if (kind === "resourcePack") {
+      if (kind === "modpackFiles") {
+        let outputPath: string | null = null;
+        if (destination === "folder") {
+          outputPath = await saveFileDialog({ defaultPath: `${defaultPath}.zip`, filters: [{ name: "ZIP", extensions: ["zip"] }] });
+          if (!isCurrentProject(startingProjectId)) return;
+          if (!outputPath) return;
+        } else if (!window.confirm(
+          "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+        )) {
+          return;
+        }
+        let outcome = await exportModpackFiles(
+          startingProjectId, selectedIds, outputPath, destination === "instance", false,
+        );
+        if (!isCurrentProject(startingProjectId)) return;
+        if (outcome.status === "overwriteRequired") {
+          const confirmed = window.confirm(
+            `既存のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
+          );
+          if (!confirmed) return;
+          if (!isCurrentProject(startingProjectId)) return;
+          outcome = await exportModpackFiles(
+            startingProjectId, selectedIds, outputPath, destination === "instance", true,
+          );
+          if (!isCurrentProject(startingProjectId)) return;
+        }
+        if (outcome.status !== "completed") return;
+        outputPaths = outcome.outputPath ? [outcome.outputPath] : [];
+        directlyInstalled = outcome.directlyInstalled;
+        if (directlyInstalled) {
+          await refreshOverview(startingProjectId);
+          if (!isCurrentProject(startingProjectId)) return;
+        }
+      } else if (kind === "resourcePack") {
         let outputPath: string | null = null;
         if (destination === "folder") {
           outputPath = await saveFileDialog({ defaultPath, filters: [{ name: "ZIP", extensions: ["zip"] }] });
@@ -594,7 +668,7 @@ export function ExportScreen() {
           // 単体modは従来どおりファイル名を指定して出力し、mod別サブフォルダを挟まない。
           const fileName = languageFileNameForNamespace(details, selectedNamespace);
           const defaultPath = defaultExportDirectory
-            ? `${defaultExportDirectory.replace(/[\\/]+$/, "")}\\${fileName}`
+            ? await joinPath(defaultExportDirectory, fileName)
             : fileName;
           const outputPath = await saveFileDialog({
             defaultPath,
@@ -618,8 +692,8 @@ export function ExportScreen() {
       setExportCompletion({
         kind,
         outputPath: outputPaths[0] ?? (kind === "resourcePack" ? "" : defaultExportDirectory),
-        translatedCount: result.counts.translated,
-        missingCount: result.counts.missing,
+        translatedCount,
+        missingCount,
         namespace: selectedNamespace,
         autoOpenOutputFolder: autoOpenOutputFolder && outputPaths.length > 0,
       });
@@ -676,6 +750,7 @@ export function ExportScreen() {
         severity: issue.severity,
         namespace: issue.namespace ?? "",
         key: issue.key ?? issue.message,
+        label: issue.displayLabel ?? `${issue.namespace ?? ""}:${issue.key ?? issue.message}`,
         sourceText: issue.sourceText ?? "",
         targetText: issue.targetText ?? "",
       })),
@@ -724,7 +799,10 @@ export function ExportScreen() {
         name="export-kind"
         value={kind}
         onChange={(value) => setKind(value as ExportKind)}
-        options={EXPORT_OPTIONS.map((option) => ({
+        options={EXPORT_OPTIONS
+          .filter((option) => option.value !== "modifiedJar" || hasJarUnit)
+          .filter((option) => option.value !== "modpackFiles" || hasModpackUnit)
+          .map((option) => ({
           ...option,
           description: option.value === "languageFile"
             ? `${languageFileNameForNamespace(details, selectedNamespace)}を書き出す`
@@ -736,9 +814,9 @@ export function ExportScreen() {
         }))}
       />
 
-      {modUnits.length > 1 && (
+      {selectableUnits.length > 1 && (
         <ModUnitSelector
-          units={modUnits}
+          units={selectableUnits}
           selectedIds={selectedIds}
           onChange={(ids) => {
             setSelectedIds(ids);
@@ -833,6 +911,40 @@ export function ExportScreen() {
         </>
       )}
 
+      {kind === "resourcePack" && selectedFtbQuestEntries > 0 && (
+        <p className="export-screen__hint">
+          FTB Quests のクエストはリソースパックに含まれません。「Modpack ファイル」から書き出してください。
+        </p>
+      )}
+
+      {kind === "modpackFiles" && (
+        <fieldset className="export-destination">
+          <legend>保存先</legend>
+          <label>
+            <input
+              type="radio"
+              name="modpack-files-destination"
+              value="folder"
+              checked={destination === "folder"}
+              onChange={() => setDestination("folder")}
+            />
+            ZIP に書き出す
+          </label>
+          {overview?.instancePath && (
+            <label>
+              <input
+                type="radio"
+                name="modpack-files-destination"
+                value="instance"
+                checked={destination === "instance"}
+                onChange={() => setDestination("instance")}
+              />
+              インスタンスに直接配置
+            </label>
+          )}
+        </fieldset>
+      )}
+
       {kind === "languageFile" && includedNamespaces.length > 1 && (
         <div className="export-screen__field">
           <span>名前空間</span>
@@ -872,10 +984,10 @@ export function ExportScreen() {
         {placeholderCount > 0 && (
           <details className="export-validation__details" onToggle={(event) => setPlaceholderDetailsOpen(event.currentTarget.open)}>
             <summary>
-              Placeholder エラー {placeholderErrorCount.toLocaleString("ja-JP")} 件・注意 {placeholderWarningCount.toLocaleString("ja-JP")} 件
+              書式エラー {placeholderErrorCount.toLocaleString("ja-JP")} 件・注意 {placeholderWarningCount.toLocaleString("ja-JP")} 件
             </summary>
             {placeholderDetailsOpen && (
-              <VirtualValidationList rows={placeholderRows} label="Placeholder の確認事項" />
+              <VirtualValidationList rows={placeholderRows} label="書式の確認事項" />
             )}
           </details>
         )}
@@ -894,7 +1006,9 @@ export function ExportScreen() {
         <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>戻る</SecondaryButton>
         <PrimaryButton
           data-testid="export-start"
-          disabled={busy || loadedProjectId !== projectId || selectedIds.length === 0 || (kind === "languageFile" && !selectedNamespace)}
+          disabled={busy || loadedProjectId !== projectId || selectedIds.length === 0
+            || (kind === "languageFile" && !selectedNamespace)
+            || (kind === "modifiedJar" && selectedJarIds.length === 0)}
           onClick={() => void beginExport()}
         >
           {busy ? "書き出し中…" : "書き出す"}
@@ -911,7 +1025,7 @@ export function ExportScreen() {
                 <li key={replacement.id}>
                   <div>
                     <strong>{unit ? unitTitle(unit) : `mod ${replacement.modUnitId}`}</strong>
-                    <span className="selectable">{replacement.targetPath}</span>
+                    <span className="selectable">{displayPath(replacement.targetPath)}</span>
                   </div>
                   <SecondaryButton
                     disabled={restoringId !== null}
@@ -922,6 +1036,27 @@ export function ExportScreen() {
                 </li>
               );
             })}
+          </ul>
+          {restoreError && <p className="status-message" role="alert">{restoreError}</p>}
+        </section>
+      )}
+      {!!overview?.activeFileDeployments?.length && (
+        <section className="export-replacements" aria-labelledby="export-file-deployments-title">
+          <h2 id="export-file-deployments-title">配置した Modpack ファイル</h2>
+          <ul>
+            {overview.activeFileDeployments.map((deployment: FileDeploymentDto) => (
+              <li key={deployment.id}>
+                <div>
+                  <span className="selectable">{displayPath(deployment.targetPath)}</span>
+                </div>
+                <SecondaryButton
+                  disabled={restoringId !== null}
+                  onClick={() => void restoreFile(deployment.id)}
+                >
+                  {restoringId === deployment.id ? "復元中…" : "元に戻す"}
+                </SecondaryButton>
+              </li>
+            ))}
           </ul>
           {restoreError && <p className="status-message" role="alert">{restoreError}</p>}
         </section>

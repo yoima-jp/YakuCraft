@@ -96,6 +96,10 @@
   font-weight: 500;
 }
 
+.settings-field__hint--error {
+  color: var(--color-red);
+}
+
 .settings-path-field,
 .settings-actions {
   display: flex;

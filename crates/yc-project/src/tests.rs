@@ -436,7 +436,7 @@ fn empty_version_zero_database_is_backed_up_before_migration() {
     let current_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(current_version, 4);
+    assert_eq!(current_version, 5);
     drop(connection);
 
     let backup_path = temporary.path().join("project.sqlite.backup");
@@ -452,6 +452,88 @@ fn empty_version_zero_database_is_backed_up_before_migration() {
         |row| row.get(0),
     ).expect("check backup schema");
     assert!(!project_meta_exists);
+}
+
+#[test]
+fn v010_database_migrates_and_keeps_legacy_entries_readable_and_writable() {
+    let temporary = TestDirectory::new();
+    let database_path = temporary.path().join("project.sqlite");
+    let old_database = Connection::open(&database_path).expect("create v0.1.0 database");
+    old_database
+        .execute_batch(include_str!("../migrations/20261004122242_init.sql"))
+        .expect("apply init migration");
+    old_database
+        .execute_batch(include_str!(
+            "../migrations/20261004141408_jar_replacements.sql"
+        ))
+        .expect("apply jar replacements migration");
+    old_database
+        .execute_batch(include_str!("../migrations/20261005124747_glossary.sql"))
+        .expect("apply glossary migration");
+    old_database
+        .execute_batch(include_str!(
+            "../migrations/20261005232035_asset_type_counts.sql"
+        ))
+        .expect("apply asset counts migration");
+    old_database
+        .execute_batch(
+            "INSERT INTO project_meta (
+                id, schema_version, created_at, updated_at, display_name
+             ) VALUES ('legacy-project', 4, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 'Legacy');
+             INSERT INTO mod_units (
+                id, sort_index, source_filename, source_sha256, stored_path,
+                original_path, created_at
+             ) VALUES (7, 0, 'legacy.jar', 'jar-hash', 'sources/7.jar', 'legacy.jar',
+                       '2026-10-01T00:00:00Z');
+             INSERT INTO translation_entries (
+                id, mod_unit_id, namespace, translation_key, source_text,
+                target_text, target_origin, sort_index, updated_at
+             ) VALUES (11, 7, 'legacy', 'legacy.key', 'Legacy source', '旧訳',
+                       'existing', 0, '2026-10-01T00:00:00Z');
+             PRAGMA user_version = 4;",
+        )
+        .expect("insert legacy project rows");
+    drop(old_database);
+
+    let connection = open_database(&database_path).expect("migrate legacy project");
+    let user_version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read migrated user_version");
+    let schema_version: i64 = connection
+        .query_row("SELECT schema_version FROM project_meta", [], |row| {
+            row.get(0)
+        })
+        .expect("read migrated schema_version");
+    assert_eq!(user_version, 5);
+    assert_eq!(schema_version, user_version);
+    drop(connection);
+
+    let repository = crate::Repository::new(&database_path);
+    let entries = repository.list_entries(None).expect("read legacy entry");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].target_text.as_deref(), Some("旧訳"));
+    assert!(
+        repository
+            .list_document_entries(None)
+            .expect("read legacy document entries")
+            .is_empty()
+    );
+    assert_eq!(
+        repository.list_mod_units().expect("read legacy unit")[0].source_kind,
+        crate::ModUnitSourceKind::Jar
+    );
+
+    let writer = crate::ProjectWriter::start(&database_path).expect("start migrated writer");
+    writer
+        .update_entry(EntryUpdate {
+            id: 11,
+            target_text: "更新訳".to_owned(),
+            origin: UpdateOrigin::Manual,
+        })
+        .expect("write legacy entry");
+    let updated = repository.list_entries(None).expect("read updated entry");
+    assert_eq!(updated[0].target_text.as_deref(), Some("更新訳"));
+    assert_eq!(updated[0].origin, yc_language::TranslationOrigin::Edited);
 }
 
 #[test]

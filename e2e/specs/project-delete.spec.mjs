@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
 
@@ -110,6 +110,7 @@ function makePreviewFixture() {
 }
 
 async function projectDirectories(projectsPath) {
+  await mkdir(projectsPath, { recursive: true });
   const entries = await readdir(projectsPath, { withFileTypes: true });
   return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".trash-")).map((entry) => entry.name);
 }
@@ -136,7 +137,13 @@ describe("Recentから開いたプロジェクトを削除", () => {
         window.__YAKUCRAFT_E2E__ = { jarPath };
       }, fixturePath);
       await $('[data-testid="home-open-jar"]').click();
-      await $(".review-screen h1").waitForDisplayed({ timeout: 60_000 });
+      const reviewHeading = await $(".review-screen h1");
+      try {
+        await reviewHeading.waitForDisplayed({ timeout: 60_000 });
+      } catch (error) {
+        console.error(`JAR選択後の画面:\n${await browser.execute(() => document.body.innerText)}`);
+        throw error;
+      }
 
       const reviewNext = $('[data-testid="review-next"]');
       let startedTranslation = false;
@@ -180,7 +187,9 @@ describe("Recentから開いたプロジェクトを削除", () => {
       const recentCard = await $(recentCardSelector);
       await recentCard.waitForDisplayed({ timeout: 15_000 });
       if (cycle === 1) {
-        await recentCard.click({ button: "right" });
+        await browser.execute((element) => element.focus(), recentCard);
+        assert.equal(await recentCard.isFocused(), true, "Recent項目にフォーカスできませんでした。");
+        await browser.keys(["Shift", "F10"]);
         const contextMenu = await $("[role=\"menu\"]");
         await contextMenu.waitForDisplayed({ timeout: 5_000 });
         const menuItems = await contextMenu.$$("[role=\"menuitem\"]");

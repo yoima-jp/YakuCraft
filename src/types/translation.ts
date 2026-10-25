@@ -1,4 +1,5 @@
 export type TranslationOrigin = "missing" | "existing" | "ai" | "edited";
+export type EntryKind = "lang" | "patchouli" | "ftbquests";
 
 export type EntryFlag =
   | "source_fallback"
@@ -6,7 +7,8 @@ export type EntryFlag =
   | "placeholder_error"
   | "malformed_source"
   | "asset_ambiguous"
-  | "asset_missing";
+  | "asset_missing"
+  | "patchouli_text";
 
 export interface AssetSummary {
   type: string;
@@ -39,6 +41,7 @@ export interface GlossaryCandidate {
 
 export interface TranslationEntry {
   id: number;
+  entryKind?: EntryKind;
   /** Project由来のEntryはunitを識別できる。fixture等の単体UIデータでは未指定の場合がある。 */
   modUnitId?: number;
   namespace: string;

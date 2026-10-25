@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ManualPackFormatDto } from "../../types/export";
+import type { ExportKind, ManualPackFormatDto } from "../../types/export";
 import type { MinecraftVersionDetectionDto } from "../../types/project";
 
 export interface JarReplacementDto {
@@ -16,6 +16,7 @@ export interface JarReplacementDto {
 
 export interface ExportUnitStatusDto {
   id: number;
+  sourceKind?: "jar" | "modpack";
   sourceFilename: string;
   name: string | null;
   version: string | null;
@@ -28,6 +29,19 @@ export interface ExportOverviewDto {
   instancePath: string | null;
   units: ExportUnitStatusDto[];
   activeReplacements: JarReplacementDto[];
+  activeFileDeployments?: FileDeploymentDto[];
+}
+
+export interface FileDeploymentDto {
+  id: number;
+  modUnitId: number;
+  targetPath: string;
+  existedBefore: boolean;
+  previousSha256: string | null;
+  backupPath: string | null;
+  deployedSha256: string;
+  deployedAt: string;
+  restoredAt: string | null;
 }
 
 export interface ModExportResultDto {
@@ -57,6 +71,12 @@ export type RestoreJarOutcomeDto =
   | { status: "confirmationRequired"; targetPath: string }
   | { status: "restored"; targetPath: string };
 
+export type ModpackFilesExportOutcomeDto =
+  | { status: "overwriteRequired"; targetPath: string }
+  | { status: "completed"; outputPath: string; directlyInstalled: boolean; fileCount: number };
+
+export type RestoreFileDeploymentOutcomeDto = { status: "restored"; targetPath: string };
+
 export interface SelectedExportValidationDto {
   issues: ExportIssueDto[];
   minecraftVersionDetection: MinecraftVersionDetectionDto | null;
@@ -73,6 +93,7 @@ export interface ExportIssueDto {
   count: number | null;
   namespace: string | null;
   key: string | null;
+  displayLabel?: string | null;
   sourceText: string | null;
   targetText: string | null;
 }
@@ -108,7 +129,7 @@ export function getExportOverview(projectId: string) {
 
 export function validateSelectedProject(
   projectId: string,
-  kind: "languageFile" | "resourcePack" | "modifiedJar",
+  kind: ExportKind,
   modUnitIds: number[],
   minecraftVersion?: string,
   namespace?: string,
@@ -181,5 +202,28 @@ export function restoreModifiedJar(projectId: string, replacementId: number, con
     projectId,
     replacementId,
     confirmChanged,
+  });
+}
+
+export function exportModpackFiles(
+  projectId: string,
+  modUnitIds: number[],
+  outputPath: string | null,
+  directInstall: boolean,
+  overwrite: boolean,
+) {
+  return invokeExport<ModpackFilesExportOutcomeDto>("export_modpack_files", {
+    projectId,
+    modUnitIds,
+    outputPath,
+    directInstall,
+    overwrite,
+  });
+}
+
+export function restoreModpackFile(projectId: string, deploymentId: number) {
+  return invokeExport<RestoreFileDeploymentOutcomeDto>("restore_modpack_file", {
+    projectId,
+    deploymentId,
   });
 }

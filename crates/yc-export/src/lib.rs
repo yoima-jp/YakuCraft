@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use yc_language::{
     DiscoveredLanguageFile, LanguageFileFormat, TranslationEntry, WriterOptions,
-    language_export_filename, write_language_file,
+    is_empty_translation, language_export_filename, patchouli_target_document_path,
+    rebuild_document_with_warnings, write_language_file,
 };
 
 pub use deployment::{
@@ -57,6 +58,34 @@ pub struct ExportInput<'a> {
     pub malformed_translation_files: &'a [String],
     /// Placeholder検証側ですでに検出した警告。
     pub placeholder_warnings: &'a [PlaceholderWarning],
+    pub patchouli_documents: &'a [PatchouliDocumentExport],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchouliDocumentTranslation {
+    pub key: String,
+    pub pointer: String,
+    pub source_text: String,
+    pub target_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchouliDocumentExport {
+    pub namespace: String,
+    /// Empty for the main JAR, otherwise the path of the nested JAR in its parent.
+    pub container_path: String,
+    pub source_path: String,
+    pub target_path: String,
+    pub source_bytes: Vec<u8>,
+    pub translations: Vec<PatchouliDocumentTranslation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchouliDocumentArtifact {
+    pub namespace: String,
+    pub container_path: String,
+    pub path: String,
+    pub bytes: Vec<u8>,
 }
 
 /// 生成したLanguage Fileとそのnamespace。
@@ -68,12 +97,109 @@ pub struct LanguageFileArtifact {
 }
 
 pub(crate) fn namespace_has_exportable_entries(input: &ExportInput<'_>, namespace: &str) -> bool {
-    // Output membership follows the same empty-value policy as the writer, so empty namespaces
-    // neither force source-file lookup nor produce language files with no translated entries.
-    input.entries.iter().any(|entry| {
-        entry.namespace == namespace
-            && (input.writer_options.include_empty_translations || !entry.target_text.is_empty())
-    })
+    // Empty values are untranslated, so they must not make an output namespace appear translated.
+    input
+        .entries
+        .iter()
+        .any(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
+        || input.patchouli_documents.iter().any(|document| {
+            document.namespace == namespace
+                && document
+                    .translations
+                    .iter()
+                    .any(|translation| !is_empty_translation(&translation.target_text))
+        })
+}
+
+pub(crate) fn namespace_has_language_entries(input: &ExportInput<'_>, namespace: &str) -> bool {
+    input
+        .entries
+        .iter()
+        .any(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
+}
+
+/// Rebuild translated Patchouli JSON documents from their original bytes.
+pub fn create_patchouli_document_files(
+    input: &ExportInput<'_>,
+) -> Result<Vec<PatchouliDocumentArtifact>, ExportError> {
+    let included: std::collections::HashSet<_> = input
+        .namespaces
+        .iter()
+        .filter(|namespace| namespace.included)
+        .map(|namespace| namespace.namespace.as_str())
+        .collect();
+    let mut files = Vec::new();
+    for document in input
+        .patchouli_documents
+        .iter()
+        .filter(|document| included.contains(document.namespace.as_str()))
+    {
+        let translations: std::collections::HashMap<_, _> = document
+            .translations
+            .iter()
+            .filter(|translation| !is_empty_translation(&translation.target_text))
+            .map(|translation| (translation.pointer.clone(), translation.target_text.clone()))
+            .collect();
+        if translations.is_empty() {
+            continue;
+        }
+        let rebuilt = rebuild_document_with_warnings(&document.source_bytes, &translations);
+        if let Some(warning) = rebuilt.warnings.first() {
+            return Err(ExportError::ValidationFailed(format!(
+                "Patchouli document could not be rebuilt: {}",
+                warning.reason
+            )));
+        }
+        let target_path =
+            patchouli_target_document_path(&document.source_path, "en_us", "ja_jp")
+                .ok_or_else(|| ExportError::UnsafeArchivePath(document.target_path.clone()))?;
+        if target_path != document.target_path
+            || yc_archive::normalize_archive_path(&target_path).as_deref()
+                != Ok(target_path.as_str())
+        {
+            return Err(ExportError::UnsafeArchivePath(target_path));
+        }
+        files.push(PatchouliDocumentArtifact {
+            namespace: document.namespace.clone(),
+            container_path: document.container_path.clone(),
+            path: target_path,
+            bytes: rebuilt.bytes,
+        });
+    }
+    files.sort_by(|left, right| {
+        (&left.container_path, &left.path).cmp(&(&right.container_path, &right.path))
+    });
+    Ok(files)
+}
+
+/// Writes Patchouli documents under their normal archive-relative paths.
+pub fn write_patchouli_document_files(
+    output_directory: impl AsRef<Path>,
+    files: &[PatchouliDocumentArtifact],
+    overwrite: bool,
+) -> Result<Vec<PathBuf>, ExportError> {
+    let root = output_directory.as_ref();
+    let mut written = Vec::with_capacity(files.len());
+    for artifact in files {
+        if yc_archive::normalize_archive_path(&artifact.path).as_deref()
+            != Ok(artifact.path.as_str())
+        {
+            return Err(ExportError::UnsafeArchivePath(artifact.path.clone()));
+        }
+        let path = root.join(&artifact.path);
+        atomic_write_file(
+            &path,
+            overwrite,
+            |file| {
+                use std::io::Write;
+                file.write_all(&artifact.bytes)?;
+                Ok(())
+            },
+            |_| Ok(()),
+        )?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 pub(crate) fn writer_options_for_namespace(
@@ -86,7 +212,6 @@ pub(crate) fn writer_options_for_namespace(
                 .legacy_parse_escapes_namespaces
                 .iter()
                 .any(|candidate| candidate == namespace),
-        ..input.writer_options
     }
 }
 
@@ -129,7 +254,7 @@ pub fn create_language_files(
         .namespaces
         .iter()
         .filter(|namespace| {
-            namespace.included && namespace_has_exportable_entries(input, &namespace.namespace)
+            namespace.included && namespace_has_language_entries(input, &namespace.namespace)
         })
         .collect();
     namespaces.sort_by(|left, right| left.namespace.cmp(&right.namespace));

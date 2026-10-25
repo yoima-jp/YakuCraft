@@ -13,17 +13,20 @@ use tauri::{AppHandle, State, ipc::Channel};
 use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 use yc_ai::{
-    AiError, CHATGPT_MODELS, ChatGptLogin, ChatGptProvider, CredentialManager, DeepLProvider,
-    MAX_BATCH_ENTRIES, MAX_BATCH_SOURCE_CHARACTERS, OpenAiCompatibleProvider, OpenAiProvider,
-    ProviderId, TranslationContext, TranslationEntry as AiTranslationEntry, TranslationOptions,
-    TranslationOutcome, TranslationProvider, translate_entries,
+    AiError, AnthropicProvider, CHATGPT_MODELS, ChatGptLogin, ChatGptProvider, CredentialManager,
+    DeepLProvider, MAX_BATCH_ENTRIES, MAX_BATCH_SOURCE_CHARACTERS, OpenAiCompatibleProvider,
+    OpenAiProvider, ProviderId, TranslationContext, TranslationEntry as AiTranslationEntry,
+    TranslationOptions, TranslationOutcome, TranslationProvider, translate_entries,
 };
 use yc_language::{EntryFlag, TranslationOrigin};
 use yc_project::{
-    AppSettings, EntryUpdate, OpenedProject, ProjectEntry, UpdateOrigin, load_settings,
+    AppSettings, DocumentProjectEntry, EntryUpdate, OpenedProject, ProjectEntry,
+    TranslationEntryKind, UpdateOrigin, load_settings,
 };
+use yc_validation::PlaceholderProfile;
 
 use crate::{
+    commands::editor::EditorEntry,
     error::AppError,
     state::{AiJobControl, AppState},
 };
@@ -105,6 +108,13 @@ fn chatgpt_login_control() -> &'static ChatGptLoginControl {
 const DEFAULT_OPENAI_MODEL: &str = "gpt-6-luna";
 const DEFAULT_CHATGPT_MODEL: &str = "gpt-6-luna";
 const DEFAULT_COMPATIBLE_URL: &str = "https://api.openai.com/v1";
+const GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/";
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
+const DEEPSEEK_URL: &str = "https://api.deepseek.com";
+const GROQ_URL: &str = "https://api.groq.com/openai/v1";
+const OLLAMA_URL: &str = "http://localhost:11434/v1";
+const LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+const ANTHROPIC_URL: &str = "https://api.anthropic.com";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,7 +171,7 @@ pub enum AiJobEvent {
     },
     BatchResult {
         job_id: String,
-        entries: Vec<ProjectEntry>,
+        entries: Vec<EditorEntry>,
         rejected: Vec<AiRejectedEntry>,
     },
     Completed {
@@ -188,6 +198,16 @@ struct AiJobEntry {
     mod_name: String,
     before_target: String,
     before_origin: TranslationOrigin,
+}
+
+struct AiSourceEntry {
+    id: i64,
+    mod_unit_id: i64,
+    namespace: String,
+    key: String,
+    source_text: Option<String>,
+    source_locale: Option<String>,
+    format_profile: PlaceholderProfile,
 }
 
 struct AiJobRunContext<'a> {
@@ -487,6 +507,51 @@ pub async fn test_ai_provider(
 }
 
 #[tauri::command]
+pub async fn list_ai_models(
+    provider: String,
+    base_url: String,
+    api_key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let provider = parse_provider(&provider)?;
+    let credential = match api_key.filter(|key| !key.trim().is_empty()) {
+        Some(key) => Some(key),
+        None => load_provider_credential(state.credentials.as_deref(), provider).await?,
+    };
+    let cancellation = CancellationToken::new();
+    let models = match provider {
+        ProviderId::OpenAi => {
+            yc_ai::openai_compatible::list_models(
+                DEFAULT_COMPATIBLE_URL,
+                credential.as_deref(),
+                &cancellation,
+            )
+            .await
+        }
+        ProviderId::OpenAiCompatible
+        | ProviderId::Gemini
+        | ProviderId::OpenRouter
+        | ProviderId::DeepSeek
+        | ProviderId::Groq
+        | ProviderId::Ollama
+        | ProviderId::LmStudio => {
+            yc_ai::openai_compatible::list_models(
+                provider_base_url(provider, &base_url),
+                credential.as_deref(),
+                &cancellation,
+            )
+            .await
+        }
+        ProviderId::Anthropic => match credential.as_deref() {
+            Some(api_key) => AnthropicProvider::list_models(api_key, &cancellation).await,
+            None => Err(AiError::InvalidConfiguration),
+        },
+        ProviderId::DeepL | ProviderId::ChatGpt => Ok(Vec::new()),
+    };
+    models.map_err(ai_error)
+}
+
+#[tauri::command]
 pub async fn start_ai_job(
     entry_ids: Vec<i64>,
     provider: String,
@@ -648,10 +713,50 @@ fn prepare_ai_job_entries(
         return Err(project_changed_error());
     }
     // 翻訳元とnamespaceはProject DBから読み、Mod名は解析済み情報をIPCで受け取ってJAR再解析を省く。
-    let stored_entries = opened
-        .repository()
+    let repository = opened.repository();
+    let mut stored_entries: Vec<_> = repository
         .list_entries(None)
-        .map_err(|error| database_error(error.to_string()))?;
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .map(|entry| {
+            let format_profile = if entry.flags.contains(&EntryFlag::PatchouliText) {
+                PlaceholderProfile::Patchouli
+            } else {
+                PlaceholderProfile::Lang
+            };
+            AiSourceEntry {
+                id: entry.id,
+                mod_unit_id: entry.mod_unit_id,
+                namespace: entry.namespace,
+                key: entry.key,
+                source_text: entry.source_text,
+                source_locale: entry.source_locale,
+                format_profile,
+            }
+        })
+        .collect();
+    stored_entries.extend(
+        repository
+            .list_document_entries(None)
+            .map_err(|error| database_error(error.to_string()))?
+            .into_iter()
+            .map(|entry| {
+                let format_profile = match entry.entry_kind {
+                    TranslationEntryKind::Patchouli => PlaceholderProfile::Patchouli,
+                    TranslationEntryKind::Ftbquests => PlaceholderProfile::FtbQuests,
+                    TranslationEntryKind::Lang => PlaceholderProfile::Lang,
+                };
+                AiSourceEntry {
+                    id: entry.id,
+                    mod_unit_id: entry.mod_unit_id,
+                    namespace: entry.namespace,
+                    key: entry.key,
+                    source_text: entry.source_text,
+                    source_locale: entry.source_locale,
+                    format_profile,
+                }
+            }),
+    );
     let glossary_terms = opened
         .repository()
         .list_glossary_terms()
@@ -684,12 +789,13 @@ fn prepare_ai_job_entries(
             .collect();
         let source_locale = entry.source_locale.as_deref().unwrap_or("en_us");
         entries.push(AiJobEntry {
-            translation: AiTranslationEntry::new(
+            translation: AiTranslationEntry::new_with_profile(
                 entry.id,
                 entry.key.clone(),
                 source,
                 source_locale,
                 "ja_jp",
+                entry.format_profile,
             ),
             glossary_terms: matched_glossary_terms,
             namespace: entry.namespace.clone(),
@@ -813,7 +919,26 @@ async fn run_ai_job(
             if cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
-            apply_outcome_to_project(opened, &batch, &outcome, &cancellation)?
+            let (applied, rejected) =
+                apply_outcome_to_project(opened, &batch, &outcome, &cancellation)?;
+            let applied_ids: HashSet<_> = applied.iter().map(|entry| entry.id).collect();
+            let repository = opened.repository();
+            let mut editor_entries: Vec<_> = repository
+                .list_entries(None)
+                .map_err(|error| database_error(error.to_string()))?
+                .into_iter()
+                .filter(|entry| applied_ids.contains(&entry.id))
+                .map(EditorEntry::from)
+                .collect();
+            editor_entries.extend(
+                repository
+                    .list_document_entries(None)
+                    .map_err(|error| database_error(error.to_string()))?
+                    .into_iter()
+                    .filter(|entry| applied_ids.contains(&entry.id))
+                    .map(EditorEntry::from),
+            );
+            (editor_entries, rejected)
         };
         let batch_event = AiJobEvent::BatchResult {
             job_id: job_id.to_owned(),
@@ -848,10 +973,17 @@ fn apply_outcome_to_project(
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
-    let current = opened
-        .repository()
+    let repository = opened.repository();
+    let mut current: Vec<_> = repository
         .list_entries(None)
         .map_err(|error| database_error(error.to_string()))?;
+    current.extend(
+        repository
+            .list_document_entries(None)
+            .map_err(|error| database_error(error.to_string()))?
+            .into_iter()
+            .map(document_entry_as_project_entry),
+    );
     let mut current_by_id: HashMap<_, _> =
         current.into_iter().map(|entry| (entry.id, entry)).collect();
     let requested_by_id: HashMap<_, _> = batch
@@ -948,6 +1080,23 @@ fn apply_outcome_to_project(
     Ok((applied, rejected))
 }
 
+fn document_entry_as_project_entry(entry: DocumentProjectEntry) -> ProjectEntry {
+    ProjectEntry {
+        id: entry.id,
+        mod_unit_id: entry.mod_unit_id,
+        namespace: entry.namespace,
+        key: entry.key,
+        source_text: entry.source_text,
+        source_locale: entry.source_locale,
+        target_text: entry.target_text,
+        target_original_text: entry.target_original_text,
+        translated_source_text: entry.translated_source_text,
+        origin: entry.origin,
+        sort_index: entry.sort_index,
+        flags: entry.flags,
+    }
+}
+
 fn split_job_batches(entries: Vec<AiJobEntry>, batch_size: usize) -> Vec<Vec<AiJobEntry>> {
     let limit = batch_size.clamp(1, MAX_BATCH_ENTRIES);
     let mut batches = Vec::new();
@@ -992,7 +1141,11 @@ fn ai_settings_from(
         configured,
         account_label,
         model: setting_string(settings, provider, "model", model_default),
-        base_url: setting_string(settings, provider, "baseUrl", DEFAULT_COMPATIBLE_URL),
+        base_url: if provider == ProviderId::OpenAiCompatible {
+            setting_string(settings, provider, "baseUrl", DEFAULT_COMPATIBLE_URL)
+        } else {
+            provider_base_url(provider, DEFAULT_COMPATIBLE_URL).to_owned()
+        },
         batch_size: setting_usize(settings, provider, "batchSize", MAX_BATCH_ENTRIES),
         concurrency: setting_usize(settings, provider, "concurrency", 2).clamp(1, 4),
         custom_prompt: setting_string(settings, provider, "customPrompt", ""),
@@ -1008,12 +1161,62 @@ fn provider_is_configured(
         let model = setting_string(settings, provider, "model", DEFAULT_CHATGPT_MODEL);
         return has_credential && CHATGPT_MODELS.iter().any(|candidate| candidate.id == model);
     }
-    if provider != ProviderId::OpenAiCompatible {
+    if provider == ProviderId::DeepL {
         return has_credential;
     }
-
     let config = ai_settings_from(settings, provider, false, None);
-    OpenAiCompatibleProvider::new(&config.base_url, None, config.model).is_ok()
+    if provider_requires_api_key(provider) && !has_credential {
+        return false;
+    }
+    match provider {
+        ProviderId::OpenAi => {
+            has_credential && OpenAiProvider::new("configured", config.model).is_ok()
+        }
+        ProviderId::Anthropic => {
+            has_credential && AnthropicProvider::new("configured", config.model).is_ok()
+        }
+        ProviderId::OpenAiCompatible
+        | ProviderId::Gemini
+        | ProviderId::OpenRouter
+        | ProviderId::DeepSeek
+        | ProviderId::Groq
+        | ProviderId::Ollama
+        | ProviderId::LmStudio => OpenAiCompatibleProvider::new(
+            provider_base_url(provider, &config.base_url),
+            None,
+            config.model,
+        )
+        .is_ok(),
+        ProviderId::DeepL | ProviderId::ChatGpt => false,
+    }
+}
+
+fn provider_requires_api_key(provider: ProviderId) -> bool {
+    matches!(
+        provider,
+        ProviderId::OpenAi
+            | ProviderId::Gemini
+            | ProviderId::OpenRouter
+            | ProviderId::DeepSeek
+            | ProviderId::Groq
+            | ProviderId::Anthropic
+            | ProviderId::DeepL
+    )
+}
+
+fn provider_base_url(provider: ProviderId, custom_url: &str) -> &str {
+    match provider {
+        ProviderId::OpenAi => DEFAULT_COMPATIBLE_URL,
+        ProviderId::OpenAiCompatible => custom_url,
+        ProviderId::Gemini => GEMINI_URL,
+        ProviderId::OpenRouter => OPENROUTER_URL,
+        ProviderId::DeepSeek => DEEPSEEK_URL,
+        ProviderId::Groq => GROQ_URL,
+        ProviderId::Ollama => OLLAMA_URL,
+        ProviderId::LmStudio => LM_STUDIO_URL,
+        ProviderId::Anthropic => ANTHROPIC_URL,
+        ProviderId::DeepL | ProviderId::ChatGpt => custom_url,
+    }
 }
 
 fn setting_string(
@@ -1064,6 +1267,13 @@ fn parse_provider(provider: &str) -> Result<ProviderId, AppError> {
         "openai-compatible" => Ok(ProviderId::OpenAiCompatible),
         "deepl" => Ok(ProviderId::DeepL),
         "chatgpt" => Ok(ProviderId::ChatGpt),
+        "gemini" => Ok(ProviderId::Gemini),
+        "openrouter" => Ok(ProviderId::OpenRouter),
+        "deepseek" => Ok(ProviderId::DeepSeek),
+        "groq" => Ok(ProviderId::Groq),
+        "ollama" => Ok(ProviderId::Ollama),
+        "lm-studio" => Ok(ProviderId::LmStudio),
+        "anthropic" => Ok(ProviderId::Anthropic),
         _ => Err(AppError::simple(
             "invalid_ai_provider",
             "Providerを選び直してください。",
@@ -1098,8 +1308,25 @@ fn validate_ai_config(config: &SaveAiProviderInput) -> Result<(), AppError> {
             "ChatGPTのモデルを選び直してください。",
         ));
     }
-    if provider == ProviderId::OpenAiCompatible {
-        OpenAiCompatibleProvider::new(&config.base_url, None, &config.model).map_err(ai_error)?;
+    if matches!(
+        provider,
+        ProviderId::OpenAiCompatible
+            | ProviderId::Gemini
+            | ProviderId::OpenRouter
+            | ProviderId::DeepSeek
+            | ProviderId::Groq
+            | ProviderId::Ollama
+            | ProviderId::LmStudio
+    ) {
+        OpenAiCompatibleProvider::new(
+            provider_base_url(provider, &config.base_url),
+            None,
+            &config.model,
+        )
+        .map_err(ai_error)?;
+    }
+    if provider == ProviderId::Anthropic {
+        AnthropicProvider::new("validation-key", &config.model).map_err(ai_error)?;
     }
     Ok(())
 }
@@ -1122,6 +1349,19 @@ fn build_provider(
             OpenAiCompatibleProvider::new(&config.base_url, credential, config.model.clone())
                 .map_err(ai_error)?,
         ),
+        ProviderId::Gemini
+        | ProviderId::OpenRouter
+        | ProviderId::DeepSeek
+        | ProviderId::Groq
+        | ProviderId::Ollama
+        | ProviderId::LmStudio => Box::new(
+            OpenAiCompatibleProvider::new(
+                provider_base_url(provider, &config.base_url),
+                credential,
+                config.model.clone(),
+            )
+            .map_err(ai_error)?,
+        ),
         ProviderId::DeepL => Box::new(
             DeepLProvider::new(credential.ok_or_else(not_configured_error)?).map_err(ai_error)?,
         ),
@@ -1133,6 +1373,13 @@ fn build_provider(
                     .ok_or_else(credential_unavailable)?
                     .as_ref()
                     .clone(),
+            )
+            .map_err(ai_error)?,
+        ),
+        ProviderId::Anthropic => Box::new(
+            AnthropicProvider::new(
+                credential.ok_or_else(not_configured_error)?,
+                config.model.clone(),
             )
             .map_err(ai_error)?,
         ),
@@ -1182,11 +1429,17 @@ fn settings_error(error: impl std::fmt::Display) -> AppError {
 }
 
 fn credential_error(error: AiError) -> AppError {
-    AppError::new(
-        "ai_credential_error",
-        "API Keyを読み書きできませんでした。",
-        Some(error.to_string()),
-    )
+    #[cfg(target_os = "linux")]
+    let user_message = match &error {
+        AiError::CredentialStore => {
+            "資格情報を読み書きできませんでした。GNOME KeyringなどのLinux鍵管理サービスが起動しているか確認してください。"
+        }
+        _ => "API Keyを読み書きできませんでした。",
+    };
+    #[cfg(not(target_os = "linux"))]
+    let user_message = "API Keyを読み書きできませんでした。";
+
+    AppError::new("ai_credential_error", user_message, Some(error.to_string()))
 }
 
 fn credential_unavailable() -> AppError {
@@ -1261,6 +1514,7 @@ mod tests {
     use std::{
         collections::HashMap,
         fs,
+        io::Write,
         path::PathBuf,
         sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
@@ -1268,10 +1522,12 @@ mod tests {
 
     use super::{
         AiEntryBaseline, AiJobEntry, AiSettings, ai_settings_from, apply_outcome_to_project,
-        parse_provider, prepare_ai_job_entries,
+        parse_provider, prepare_ai_job_entries, provider_base_url, provider_from_settings,
     };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+    #[cfg(target_os = "linux")]
+    use yc_ai::AiError;
     use yc_ai::{
         CredentialBackend, CredentialManager, CredentialStoreError, ProviderId, TranslationOutcome,
     };
@@ -1280,7 +1536,11 @@ mod tests {
         AnalysisData, EntryUpdate, GlossaryTermInput, LanguageRecord, ModRecord, NamespaceRecord,
         NestedArchiveRecord, ProjectEntry, UpdateOrigin, create_project, open_project,
     };
-    use yc_validation::{AiTranslation, RequestedEntry, ValidatedTranslation, validate_ai_batch};
+    use yc_validation::{
+        AiTranslation, PlaceholderProfile, ProfiledRequestedEntry, RequestedEntry,
+        ValidatedTranslation, ValidationIssue, validate_ai_batch, validate_ai_batch_with_profiles,
+    };
+    use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
     #[derive(Default)]
     struct MemoryCredentialStore(HashMap<ProviderId, String>);
@@ -1299,6 +1559,15 @@ mod tests {
             self.0.remove(&provider);
             Ok(())
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn credential_store_error_suggests_starting_a_keyring_service() {
+        let error = super::credential_error(AiError::CredentialStore);
+
+        assert!(error.user_message.contains("GNOME Keyring"));
+        assert!(error.user_message.contains("起動しているか確認"));
     }
 
     struct TemporaryDirectory(PathBuf);
@@ -1388,6 +1657,84 @@ mod tests {
         (temporary, opened, entry)
     }
 
+    fn legacy_patchouli_project_with_entry()
+    -> (TemporaryDirectory, yc_project::OpenedProject, ProjectEntry) {
+        let temporary = TemporaryDirectory::create();
+        let source_path = temporary.0.join("patchouli.jar");
+        let file = fs::File::create(&source_path).unwrap();
+        let mut jar = ZipWriter::new(file);
+        jar.start_file(
+            "data/test/patchouli_books/guide/book.json",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+        jar.write_all(br#"{"i18n":true,"landing_text":"book.landing"}"#)
+            .unwrap();
+        jar.finish().unwrap();
+
+        let projects_root = temporary.0.join("projects");
+        let summary =
+            create_project(&projects_root, std::slice::from_ref(&source_path), None).unwrap();
+        let opened = open_project(&projects_root, Uuid::parse_str(&summary.id).unwrap()).unwrap();
+        opened
+            .writer()
+            .save_analysis(
+                1,
+                AnalysisData {
+                    mods: vec![ModRecord {
+                        mod_unit_id: 0,
+                        mod_id: Some("test".into()),
+                        name: Some("Test".into()),
+                        version: None,
+                        loader: None,
+                        minecraft_version: None,
+                        metadata_source: None,
+                    }],
+                    namespaces: vec![NamespaceRecord {
+                        mod_unit_id: 0,
+                        namespace: "test".into(),
+                        container_path: String::new(),
+                        included: true,
+                        entry_count: 1,
+                    }],
+                    nested_archives: Vec::<NestedArchiveRecord>::new(),
+                    languages: vec![LanguageRecord {
+                        mod_unit_id: 0,
+                        namespace: "test".into(),
+                        locale: "en_us".into(),
+                        format: LanguageFileFormat::Json,
+                        container_path: String::new(),
+                        archive_path: "assets/test/lang/en_us.json".into(),
+                        entry_count: 1,
+                        is_target: false,
+                    }],
+                    // A v1.0.0 analysis result had no Patchouli classification flag.
+                    entries: vec![yc_language::TranslationEntry {
+                        namespace: "test".into(),
+                        key: "book.landing".into(),
+                        source_text: Some("Welcome $(bold)world$(/bold)".into()),
+                        source_locale: Some("en_us".into()),
+                        target_text: String::new(),
+                        target_original_text: None,
+                        translated_source_text: None,
+                        origin: TranslationOrigin::Missing,
+                        flags: Vec::new(),
+                        sort_index: 0,
+                    }],
+                },
+            )
+            .unwrap();
+        let entry = opened.repository().list_entries(None).unwrap().remove(0);
+        assert!(!entry.flags.contains(&EntryFlag::PatchouliText));
+        let project_id = Uuid::parse_str(&summary.id).unwrap();
+        drop(opened);
+
+        let opened = open_project(&projects_root, project_id).unwrap();
+        let entry = opened.repository().list_entries(None).unwrap().remove(0);
+        assert!(entry.flags.contains(&EntryFlag::PatchouliText));
+        (temporary, opened, entry)
+    }
+
     #[test]
     fn ai_job_preparation_keeps_only_terms_present_in_the_source() {
         let (_temporary, opened, entry) = project_with_entry();
@@ -1437,6 +1784,51 @@ mod tests {
         assert_eq!(sources, ["Apple"]);
     }
 
+    #[test]
+    fn legacy_patchouli_flag_selects_patchouli_profile_for_ai_validation() {
+        let (_temporary, opened, entry) = legacy_patchouli_project_with_entry();
+        let project_id = opened.summary().id.clone();
+        let active_project = Arc::new(Mutex::new(Some(opened)));
+        let expected = HashMap::from([(
+            entry.id,
+            AiEntryBaseline {
+                id: entry.id,
+                target_text: String::new(),
+                origin: entry.origin,
+            },
+        )]);
+
+        let (_, prepared) = prepare_ai_job_entries(
+            &active_project,
+            &[entry.id],
+            &expected,
+            &HashMap::new(),
+            &project_id,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let translation = &prepared[0].translation;
+        assert_eq!(translation.format_profile, PlaceholderProfile::Patchouli);
+        assert_eq!(translation.placeholders.len(), 2);
+
+        let validation = validate_ai_batch_with_profiles(
+            &[ProfiledRequestedEntry {
+                id: translation.id,
+                source: translation.source.clone(),
+                format_profile: translation.format_profile,
+            }],
+            &[AiTranslation {
+                id: translation.id,
+                translation: "ようこそ 世界".into(),
+            }],
+        );
+        assert!(validation.accepted.is_empty());
+        assert!(matches!(
+            validation.rejected[0].reasons.as_slice(),
+            [ValidationIssue::PlaceholderMismatch { .. }]
+        ));
+    }
+
     #[tokio::test]
     async fn ai_settings_report_credential_status_without_exposing_the_secret() {
         let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
@@ -1460,6 +1852,95 @@ mod tests {
         );
         assert!(!encoded.contains("never-return-this"));
         assert!(!encoded.contains("apiKey"));
+    }
+
+    #[tokio::test]
+    async fn api_keys_are_stored_independently_for_each_provider() {
+        let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
+        manager
+            .save_api_key(ProviderId::Gemini, "gemini-secret")
+            .await
+            .unwrap();
+        manager
+            .save_api_key(ProviderId::OpenRouter, "openrouter-secret")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .load_api_key(ProviderId::Gemini)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "gemini-secret"
+        );
+        assert_eq!(
+            manager
+                .load_api_key(ProviderId::OpenRouter)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "openrouter-secret"
+        );
+        assert!(
+            manager
+                .load_api_key(ProviderId::DeepSeek)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn previously_saved_custom_provider_settings_load_without_migration() {
+        let mut settings = yc_project::AppSettings::new();
+        settings.values.insert(
+            "ai.provider".into(),
+            serde_json::Value::String("openai-compatible".into()),
+        );
+        settings.values.insert(
+            "ai.openai-compatible.model".into(),
+            serde_json::Value::String("legacy-model".into()),
+        );
+        settings.values.insert(
+            "ai.openai-compatible.baseUrl".into(),
+            serde_json::Value::String("https://legacy.example/v1".into()),
+        );
+
+        let provider = provider_from_settings(&settings).unwrap();
+        let config = ai_settings_from(&settings, provider, true, None);
+
+        assert_eq!(provider, ProviderId::OpenAiCompatible);
+        assert_eq!(config.provider, "openai-compatible");
+        assert_eq!(config.model, "legacy-model");
+        assert_eq!(config.base_url, "https://legacy.example/v1");
+    }
+
+    #[test]
+    fn fixed_provider_presets_use_their_expected_api_urls() {
+        let cases = [
+            (ProviderId::OpenAi, "https://api.openai.com/v1"),
+            (ProviderId::OpenAiCompatible, "https://custom.example/v1"),
+            (
+                ProviderId::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+            ),
+            (ProviderId::OpenRouter, "https://openrouter.ai/api/v1"),
+            (ProviderId::DeepSeek, "https://api.deepseek.com"),
+            (ProviderId::Groq, "https://api.groq.com/openai/v1"),
+            (ProviderId::Ollama, "http://localhost:11434/v1"),
+            (ProviderId::LmStudio, "http://localhost:1234/v1"),
+            (ProviderId::Anthropic, "https://api.anthropic.com"),
+        ];
+
+        for (provider, expected_url) in cases {
+            assert_eq!(
+                provider_base_url(provider, "https://custom.example/v1"),
+                expected_url
+            );
+        }
     }
 
     #[test]

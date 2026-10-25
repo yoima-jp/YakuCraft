@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { generateFeatureFixtures } from "../scripts/generate-feature-fixtures.mjs";
 
 const screenshotsRoot = process.env.YAKUCRAFT_SCREENSHOTS_DIR
   ? path.resolve(process.env.YAKUCRAFT_SCREENSHOTS_DIR)
@@ -158,6 +160,31 @@ async function waitForTheme(theme) {
   );
 }
 
+function startScreenshotModelServer() {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(`${request.method} ${request.url}`);
+    if (request.method === "GET" && request.url === "/v1/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [{ id: "screenshot-model" }] }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("モデル一覧用モックサーバーのポートを取得できませんでした。"));
+        return;
+      }
+      resolve({ server, requests, url: `http://127.0.0.1:${address.port}` });
+    });
+  });
+}
+
 async function capture(theme, name, settleDelay = 200) {
   if (settleDelay > 0) await browser.pause(settleDelay);
   const directory = path.join(screenshotsRoot, theme);
@@ -249,7 +276,19 @@ async function selectSettingsCategory(label) {
   assert.fail(`設定カテゴリ「${label}」がありません。`);
 }
 
-async function captureSettings(theme) {
+async function selectAiProvider(value, label) {
+  await $('[role="combobox"][aria-label="プロバイダー"]').click();
+  await $(`[role="option"][data-value="${value}"]`).click();
+  await browser.waitUntil(async () => (
+    await $('[role="combobox"][aria-label="プロバイダー"]').getText()
+  ).includes(label), {
+    timeout: 15_000,
+    interval: 100,
+    timeoutMsg: `プロバイダー「${label}」を選べませんでした。`,
+  });
+}
+
+async function captureSettings(theme, modelServerUrl, modelServerRequests) {
   await $("nav.app-header__actions button").click();
   await $(".settings-screen").waitForDisplayed({ timeout: 10_000 });
 
@@ -279,49 +318,60 @@ async function captureSettings(theme) {
   await $('[role="listbox"][aria-label="プロバイダー"]').waitForDisplayed({ timeout: 5_000 });
   await capture(theme, "settings-ai-select-open");
   await browser.keys("Escape");
+
+  await selectAiProvider("anthropic", "Claude（Anthropic）");
+  await capture(theme, "settings-ai-claude");
+  await selectAiProvider("ollama", "Ollama");
+  assert.equal(await $('[type="password"]').isExisting(), false, "Ollama にAPIキー欄が表示されています。");
+  await capture(theme, "settings-ai-ollama");
+
+  await selectAiProvider("openai-compatible", "OpenAI 互換（カスタム）");
+  await $('[type="url"]').setValue(`${modelServerUrl}/v1`);
+  let modelInput;
+  for (const label of await $$(".settings-fields label")) {
+    if ((await label.getText()).trim().startsWith("モデル")) modelInput = await label.$("input");
+  }
+  assert.ok(modelInput, "モデル入力欄がありません。");
+  await modelInput.setValue("screenshot-model");
+  await $("button=保存").click();
+  await browser.waitUntil(async () => modelServerRequests.includes("GET /v1/models"), {
+    timeout: 20_000,
+    interval: 100,
+    timeoutMsg: "loopback モックからモデル一覧を取得しませんでした。",
+  });
+  await browser.waitUntil(async () => await browser.execute(() => (
+    document.querySelector("#ai-model-options option")?.textContent === "screenshot-model"
+  )), { timeout: 10_000, interval: 100, timeoutMsg: "モデル候補が表示されませんでした。" });
+  await modelInput.setValue("screenshot-model");
+  await modelInput.click();
+  await browser.keys("ArrowDown");
+  await capture(theme, "settings-ai-models");
+  await modelInput.setValue("manually-entered-model");
+  await capture(theme, "settings-ai-model-manual");
 }
 
 // 標準fixtureにはブロック状態がないため、Variant Selectorの撮影用JARを一時生成する。
-function createVariantFixture(outputPath) {
-  const encodedPath = Buffer.from(outputPath, "utf8").toString("base64");
-  const script = `
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$OutputEncoding = [System.Text.UTF8Encoding]::new()
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archivePath = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'))
-$archive = [System.IO.Compression.ZipFile]::Open($archivePath, [System.IO.Compression.ZipArchiveMode]::Create)
-try {
-  function Add-TextEntry($archive, $name, $content) {
-    $entry = $archive.CreateEntry($name)
-    $writer = [System.IO.StreamWriter]::new($entry.Open(), [System.Text.UTF8Encoding]::new($false))
-    $writer.Write($content)
-    $writer.Dispose()
-  }
-  Add-TextEntry $archive 'fabric.mod.json' '{"schemaVersion":1,"id":"sample","name":"Variant Fixture","version":"1.0"}'
-  Add-TextEntry $archive 'assets/sample/lang/en_us.json' '{"block.sample.machine":"Machine"}'
-  Add-TextEntry $archive 'assets/sample/lang/ja_jp.json' '{"block.sample.machine":"機械"}'
-  Add-TextEntry $archive 'assets/sample/blockstates/machine.json' '{"variants":{"facing=north":{"model":"sample:block/machine"},"facing=east":{"model":"sample:block/machine"},"facing=south":{"model":"sample:block/machine"},"facing=west":{"model":"sample:block/machine"}}}'
-  Add-TextEntry $archive 'assets/sample/models/block/machine.json' '{"parent":"minecraft:block/cube_all","textures":{"all":"sample:block/machine"}}'
-  $texture = $archive.CreateEntry('assets/sample/textures/block/machine.png')
-  $stream = $texture.Open()
-  $bytes = [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNgYGAAAAAEAAEnNCcKAAAAAElFTkSuQmCC')
-  $stream.Write($bytes, 0, $bytes.Length)
-  $stream.Dispose()
-} finally {
-  $archive.Dispose()
-}
-`;
-  const powershell = process.env.SystemRoot
-    ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-    : "powershell.exe";
-  const result = spawnSync(powershell, [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
-  ], { encoding: "utf8", windowsHide: true });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Variant fixture を作れませんでした: ${result.stderr || result.stdout}`);
+async function createVariantFixture(outputPath) {
+  const json = (value) => Buffer.from(JSON.stringify(value), "utf8");
+  await writeFile(outputPath, createStoredZip([
+    ["fabric.mod.json", json({ schemaVersion: 1, id: "sample", name: "Variant Fixture", version: "1.0" })],
+    ["assets/sample/lang/en_us.json", json({ "block.sample.machine": "Machine" })],
+    ["assets/sample/lang/ja_jp.json", json({ "block.sample.machine": "機械" })],
+    ["assets/sample/blockstates/machine.json", json({
+      variants: Object.fromEntries(["north", "east", "south", "west"].map((facing) => [
+        `facing=${facing}`,
+        { model: "sample:block/machine" },
+      ])),
+    })],
+    ["assets/sample/models/block/machine.json", json({
+      parent: "minecraft:block/cube_all",
+      textures: { all: "sample:block/machine" },
+    })],
+    ["assets/sample/textures/block/machine.png", Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNgYGAAAAAEAAEnNCcKAAAAAElFTkSuQmCC",
+      "base64",
+    )],
+  ]));
 }
 
 async function captureProjectFlow(theme, fixturePath) {
@@ -555,9 +605,9 @@ async function selectScreenshotModTab(name) {
     if (!target) throw new Error(`mod tab not found: ${targetName}`);
     target.click();
   }, selector, name);
-  await browser.waitUntil(async () => (
-    await $(tabSelector + '[aria-selected="true"]').getText()
-  ).includes(name), { timeout: 10_000, interval: 100 });
+  await browser.waitUntil(async () => browser.execute((targetSelector, targetName) => (
+    document.querySelector(targetSelector)?.textContent.includes(targetName) ?? false
+  ), tabSelector + '[aria-selected="true"]', name), { timeout: 10_000, interval: 100 });
 }
 
 async function captureMultiModFlow(theme, instancePath) {
@@ -668,7 +718,10 @@ async function captureMultiModFlow(theme, instancePath) {
   await $('[aria-label="ホームへ戻る"]').click();
   await $(".recent-projects__item").waitForDisplayed({ timeout: 10_000 });
   await capture(theme, "home-recent-projects");
-  await $(".recent-projects__item").click({ button: "right" });
+  const recentProject = await $(".recent-projects__item");
+  await browser.execute((element) => element.focus(), recentProject);
+  assert.equal(await recentProject.isFocused(), true, "Recent項目にフォーカスできませんでした。");
+  await browser.keys(["Shift", "F10"]);
   await $('[role="menuitem"]').waitForDisplayed({ timeout: 5_000 });
   await capture(theme, "home-recent-project-context-menu");
   await browser.keys("Escape");
@@ -713,8 +766,279 @@ async function captureVariantSelector(theme, fixturePath) {
   await browser.keys("Escape");
 }
 
+async function scanGeneratedInstance(instancePath) {
+  await browser.execute((directoryPath) => {
+    window.__YAKUCRAFT_E2E__ = { ...window.__YAKUCRAFT_E2E__, directoryPath };
+  }, instancePath);
+  await $('[data-testid="home-open-mods-folder"]').click();
+  await $(".scan-screen").waitForDisplayed({ timeout: 60_000 });
+  await browser.waitUntil(async () => (await $$(".scan-screen__row")).length > 0, {
+    timeout: 60_000,
+    interval: 100,
+    timeoutMsg: "生成したfixtureのスキャン結果が表示されませんでした。",
+  });
+}
+
+async function findScanRow(name) {
+  let matchingRow;
+  await browser.waitUntil(async () => {
+    for (const row of await $$(".scan-screen__row")) {
+      if ((await row.getText()).includes(name)) {
+        matchingRow = row;
+        return true;
+      }
+    }
+    return false;
+  }, {
+    timeout: 60_000,
+    interval: 100,
+    timeoutMsg: `スキャン結果に「${name}」がありません。`,
+  });
+  return matchingRow;
+}
+
+async function selectScanRow(name, selected) {
+  const row = await findScanRow(name);
+  const checkbox = await row.$('input[type="checkbox"]');
+  assert.equal(await checkbox.isEnabled(), true, `${name} は選択できるはずです。`);
+  if (await checkbox.isSelected() !== selected) await row.$("label").click();
+  assert.equal(await checkbox.isSelected(), selected);
+}
+
+async function returnHome() {
+  await $('[aria-label="ホームへ戻る"]').click();
+  await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
+}
+
+async function editScreenshotTranslation(key, value) {
+  const target = await $(`[data-testid="translation-target-${key}"]`);
+  await target.waitForDisplayed({ timeout: 30_000 });
+  await target.click();
+  await browser.keys("Enter");
+  const editor = await $(`textarea[aria-label="${key} の日本語訳"]`);
+  await editor.waitForDisplayed({ timeout: 5_000 });
+  await browser.keys(["Control", "A"]);
+  await browser.keys(value);
+  await browser.keys("Enter");
+  await browser.waitUntil(async () => (await target.getText()) === value, {
+    timeout: 10_000,
+    interval: 100,
+    timeoutMsg: `${key} の編集内容が反映されませんでした。`,
+  });
+  await waitForText('[data-testid="editor-save-status"]', "保存済み", 15_000);
+  return target;
+}
+
+async function chooseScreenshotExportKind() {
+  await $('[for="export-option-modpackFiles"]').click();
+  await browser.waitUntil(async () => await $('#export-option-modpackFiles').isSelected(), {
+    timeout: 5_000,
+    interval: 100,
+  });
+}
+
+async function selectOnlyScreenshotModpackUnit() {
+  await $(".export-unit-selector").$("button=全解除").click();
+  for (const label of await $$(".export-unit-selector label")) {
+    if ((await label.getText()).includes("Modpack 固有")) {
+      const checkbox = await label.$('input[type="checkbox"]');
+      await label.click();
+      assert.equal(await checkbox.isSelected(), true);
+      return;
+    }
+  }
+  assert.fail("書き出し対象のModpack unitがありません。");
+}
+
+async function restoreScreenshotDeployment(pathFragment) {
+  const section = await $('[aria-labelledby="export-file-deployments-title"]');
+  await section.waitForDisplayed({ timeout: 15_000 });
+  for (const item of await section.$$("li")) {
+    if ((await item.getText()).replaceAll("\\", "/").includes(pathFragment.replaceAll("\\", "/"))) {
+      await item.$("button").click();
+      await browser.waitUntil(async () => await browser.execute((fragment) => (
+        ![...document.querySelectorAll('[aria-labelledby="export-file-deployments-title"] li')]
+          .some((row) => row.textContent.replaceAll("\\", "/").includes(fragment))
+      ), pathFragment.replaceAll("\\", "/")), {
+        timeout: 20_000,
+        interval: 100,
+        timeoutMsg: `配置ファイル ${pathFragment} を復元できませんでした。`,
+      });
+      return;
+    }
+  }
+  assert.fail(`復元対象の配置ファイル「${pathFragment}」がありません。`);
+}
+
+async function waitForScreenshotExportCompletion() {
+  await browser.waitUntil(async () => (
+    await $(".export-completion h1").isDisplayed()
+    || await $(".export-screen [role='alert']").isDisplayed()
+  ), { timeout: 90_000, interval: 100, timeoutMsg: "書き出し結果が表示されませんでした。" });
+  const error = await $(".export-screen [role='alert']");
+  if (await error.isDisplayed()) assert.fail(`書き出しエラー: ${await error.getText()}`);
+  await waitForText(".export-completion h1", "書き出しました", 10_000);
+}
+
+async function captureGeneratedFeatureScreens(theme, fixtures) {
+  await scanGeneratedInstance(fixtures.singleInstance);
+  const modpackRow = await findScanRow("Modpack 固有（クエスト・KubeJS）");
+  assert.match(await modpackRow.getText(), /3 件/);
+  assert.match(await modpackRow.getText(), /クエスト 2 件 · KubeJS 1 件/);
+  await capture(theme, "scan-modpack-files");
+  await returnHome();
+
+  await scanGeneratedInstance(fixtures.splitInstance);
+  const splitRow = await findScanRow("Modpack 固有（クエスト・KubeJS）");
+  assert.match(await splitRow.getText(), /1 件/);
+  assert.match(await splitRow.getText(), /クエスト 1 件 · KubeJS 0 件/);
+  await capture(theme, "scan-modpack-split");
+  await returnHome();
+
+  await scanGeneratedInstance(fixtures.legacyInstance);
+  const legacyRow = await findScanRow("Modpack 固有（クエスト・KubeJS）");
+  assert.match(await legacyRow.getText(), /クエスト旧形式/);
+  assert.match(await legacyRow.getText(), /この形式のクエストは翻訳できません/);
+  assert.equal(await legacyRow.$('input[type="checkbox"]').isEnabled(), false);
+  await capture(theme, "scan-modpack-legacy-unsupported");
+  await returnHome();
+
+  await scanGeneratedInstance(fixtures.singleInstance);
+  for (const row of await $$(".scan-screen__row")) {
+    const checkbox = await row.$('input[type="checkbox"]');
+    if (await checkbox.isEnabled() && await checkbox.isSelected()) await row.$("label").click();
+  }
+  await selectScanRow("Fixture Body Guide", true);
+  await selectScanRow("Modpack 固有（クエスト・KubeJS）", true);
+  const createProject = await $(".scan-screen__actions button");
+  await browser.waitUntil(async () => (await createProject.getText()).includes("2 件"), {
+    timeout: 5_000,
+    interval: 100,
+    timeoutMsg: "Patchouli本文とModpackの2件が選択されませんでした。",
+  });
+  await createProject.click();
+  await waitForText(".review-screen h1", "Mod情報を確認", 60_000);
+  const reviewUnits = await $(".review-mod-list").getText();
+  assert.match(reviewUnits, /Fixture Body Guide/);
+  assert.match(reviewUnits, /Modpack 固有/);
+  await capture(theme, "review-modpack-namespaces");
+  await advanceReviewToEditor();
+  await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 60_000 });
+
+  const patchouliKey = "body_guide › entries/start.json › pages[0].text";
+  await selectScreenshotModTab("Fixture Body Guide");
+  const patchouliTarget = await $(`[data-testid="translation-target-${patchouliKey}"]`);
+  await patchouliTarget.waitForDisplayed({ timeout: 30_000 });
+  await patchouliTarget.click();
+  await $(".editor-inspector__scroll").waitForDisplayed({ timeout: 5_000 });
+  await browser.execute(() => {
+    const inspector = document.querySelector(".editor-inspector__scroll");
+    if (inspector) inspector.scrollTop = inspector.scrollHeight;
+  });
+  const patchouliInspector = await $(".editor-inspector").getText();
+  assert.match(patchouliInspector, /\$\(item\)/);
+  await capture(theme, "editor-patchouli-body-selected");
+
+  const ftbKey = "quest.fixture › description";
+  await selectScreenshotModTab("Modpack 固有");
+  const ftbTarget = await $(`[data-testid="translation-target-${ftbKey}"]`);
+  await ftbTarget.waitForDisplayed({ timeout: 30_000 });
+  await ftbTarget.click();
+  await capture(theme, "editor-ftb-selected");
+  const ftbEntryId = await ftbTarget.getAttribute("data-entry-id");
+  const ftbWarning = await $(`[role="row"][data-entry-id="${ftbEntryId}"] .editor-table__warning`);
+  await editScreenshotTranslation(ftbKey, "書式を壊したクエストの説明");
+  await browser.waitUntil(async () => await ftbWarning.isExisting(), {
+    timeout: 10_000,
+    interval: 100,
+    timeoutMsg: "FTB Questsの書式警告が表示されませんでした。",
+  });
+  await capture(theme, "editor-ftb-format-warning");
+
+  await $('[data-testid="editor-export"]').click();
+  await $(".export-screen").waitForDisplayed({ timeout: 15_000 });
+  await chooseScreenshotExportKind();
+  await selectOnlyScreenshotModpackUnit();
+  await $('[name="modpack-files-destination"][value="folder"]').click();
+  const originalWindowSize = await browser.getWindowSize();
+  await browser.setWindowSize(originalWindowSize.width, Math.max(originalWindowSize.height, 1000));
+  await capture(theme, "export-modpack-destinations");
+  await browser.setWindowSize(originalWindowSize.width, originalWindowSize.height);
+
+  const placeholderDetails = await $$(".export-validation__details");
+  let placeholderDisclosure;
+  for (const details of placeholderDetails) {
+    if ((await details.$("summary").getText()).includes("書式エラー")) {
+      placeholderDisclosure = details;
+      break;
+    }
+  }
+  assert.ok(placeholderDisclosure, "書式警告の一覧がありません。");
+  await placeholderDisclosure.$("summary").click();
+  await browser.waitUntil(async () => await placeholderDisclosure.getAttribute("open") !== null, {
+    timeout: 5_000,
+    interval: 100,
+    timeoutMsg: "FTB Questsの書式警告一覧を開けませんでした。",
+  });
+  const validationList = await $(".export-validation__list");
+  await validationList.waitForDisplayed({ timeout: 10_000 });
+  assert.match(await validationList.getText(), /\.snbt/, "書式警告のラベルにFTBファイル名がありません。");
+  await browser.execute(() => document.querySelector(".export-validation__details")
+    ?.scrollIntoView({ block: "center", behavior: "instant" }));
+  await capture(theme, "export-ftb-format-warnings");
+
+  await $("button=戻る").click();
+  await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 15_000 });
+  await selectScreenshotModTab("Modpack 固有");
+  await editScreenshotTranslation(ftbKey, "&a遺物を探す {@pagebreak} {image:fixture:map}");
+  await $('[data-testid="editor-export"]').click();
+  await $(".export-screen").waitForDisplayed({ timeout: 15_000 });
+  await chooseScreenshotExportKind();
+  await selectOnlyScreenshotModpackUnit();
+  await $('[name="modpack-files-destination"][value="instance"]').click();
+  await browser.execute(() => { window.confirm = () => true; });
+  await $('[data-testid="export-start"]').click();
+  await waitForScreenshotExportCompletion();
+  await capture(theme, "export-modpack-direct-complete");
+
+  await $("button=別の形式で書き出す").click();
+  const deployments = await $('[aria-labelledby="export-file-deployments-title"]');
+  await deployments.waitForDisplayed({ timeout: 15_000 });
+  await browser.execute(() => document.querySelector('[aria-labelledby="export-file-deployments-title"]')
+    ?.scrollIntoView({ block: "center", behavior: "instant" }));
+  await capture(theme, "export-modpack-restore");
+  await restoreScreenshotDeployment("ja_jp.snbt");
+  await browser.execute(() => document.querySelector('[aria-labelledby="export-file-deployments-title"]')
+    ?.scrollIntoView({ block: "center", behavior: "instant" }));
+  await capture(theme, "export-modpack-restore-result");
+  await restoreScreenshotDeployment("ja_jp.json");
+
+  const ftbPath = path.join(fixtures.singleInstance, "config/ftbquests/quests/lang/ja_jp.snbt");
+  await $('[data-testid="export-start"]').click();
+  await waitForScreenshotExportCompletion();
+  const deployedFtbBytes = await readFile(ftbPath);
+  await writeFile(ftbPath, "externally edited after deployment\n", "utf8");
+  await $("button=別の形式で書き出す").click();
+  await $('[data-testid="export-start"]').click();
+  await browser.waitUntil(async () => await $(".export-screen [role='alert']").isDisplayed(), {
+    timeout: 30_000,
+    interval: 100,
+    timeoutMsg: "外部変更されたFTBファイルへの配置を拒否しませんでした。",
+  });
+  const deployError = await $(".export-screen [role='alert']").getText();
+  assert.match(deployError, /ja_jp\.snbt/);
+  await browser.execute(() => document.querySelector(".export-screen [role='alert']")
+    ?.scrollIntoView({ block: "center", behavior: "instant" }));
+  await capture(theme, "export-modpack-external-change-error");
+  await writeFile(ftbPath, deployedFtbBytes);
+  await restoreScreenshotDeployment("ja_jp.snbt");
+  await restoreScreenshotDeployment("ja_jp.json");
+  await returnHome();
+}
+
 describe("全画面スクリーンショット", () => {
-  it("各画面をライトとダークで保存する", async () => {
+  it("各画面をライトとダークで保存する", async function () {
+    this.timeout(480_000);
     const fixturePath = process.env.YAKUCRAFT_E2E_LARGE_FIXTURE;
     const darkFixturePath = process.env.YAKUCRAFT_E2E_DARK_FIXTURE;
     const exportPath = process.env.YAKUCRAFT_E2E_EXPORT;
@@ -724,28 +1048,38 @@ describe("全画面スクリーンショット", () => {
     const variantFixturePath = path.join(path.dirname(fixturePath), "variant-selector-fixture.jar");
     const multiModInstancePath = path.join(path.dirname(fixturePath), "multi-mod-instance");
     const resourcePackPath = path.join(path.dirname(exportPath), "resource-pack-screenshot.zip");
-    createVariantFixture(variantFixturePath);
-    await createMultiModFixture(multiModInstancePath);
-    await $('[data-testid="home-open-jar"]').waitForClickable({ timeout: 30_000 });
+    const lightFeatureFixtures = await generateFeatureFixtures(path.join(path.dirname(fixturePath), "feature-light"));
+    const darkFeatureFixtures = await generateFeatureFixtures(path.join(path.dirname(fixturePath), "feature-dark"));
+    const modelMock = await startScreenshotModelServer();
+    try {
+      await createVariantFixture(variantFixturePath);
+      await createMultiModFixture(multiModInstancePath);
+      await $('[data-testid="home-open-jar"]').waitForClickable({ timeout: 30_000 });
 
-    await browser.execute((paths) => {
-      window.__YAKUCRAFT_E2E__ = paths;
-    }, { jarPath: fixturePath, exportPath: resourcePackPath });
+      await browser.execute((paths) => {
+        window.__YAKUCRAFT_E2E__ = paths;
+      }, { jarPath: fixturePath, exportPath: resourcePackPath });
 
-    await captureSettings("light");
-    await $('[aria-label="ホームへ戻る"]').click();
-    await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
-    await captureProjectFlow("light", fixturePath);
-    await captureVariantSelector("light", variantFixturePath);
-    await captureMultiModFlow("light", multiModInstancePath);
+      await captureSettings("light", modelMock.url, modelMock.requests);
+      await $('[aria-label="ホームへ戻る"]').click();
+      await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
+      await captureProjectFlow("light", fixturePath);
+      await captureVariantSelector("light", variantFixturePath);
+      await captureMultiModFlow("light", multiModInstancePath);
+      await returnHome();
+      await captureGeneratedFeatureScreens("light", lightFeatureFixtures);
 
-    await $('[aria-label="ホームへ戻る"]').click();
-    await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
-    await captureSettings("dark");
-    await $('[aria-label="ホームへ戻る"]').click();
-    await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
-    await captureProjectFlow("dark", darkFixturePath);
-    await captureVariantSelector("dark", variantFixturePath);
-    await captureMultiModFlow("dark", multiModInstancePath);
+      await captureSettings("dark", modelMock.url, modelMock.requests);
+      await $('[aria-label="ホームへ戻る"]').click();
+      await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
+      await captureProjectFlow("dark", darkFixturePath);
+      await captureVariantSelector("dark", variantFixturePath);
+      await captureMultiModFlow("dark", multiModInstancePath);
+      await returnHome();
+      await captureGeneratedFeatureScreens("dark", darkFeatureFixtures);
+    } finally {
+      modelMock.server.closeAllConnections?.();
+      await new Promise((resolve) => modelMock.server.close(resolve));
+    }
   });
 });

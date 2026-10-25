@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::{PlaceholderComparison, PlaceholderDifference, compare_placeholders};
+use crate::{
+    PlaceholderComparison, PlaceholderDifference, PlaceholderProfile,
+    compare_placeholders_for_profile,
+};
 
 /// 制御文字の Unicode スカラー位置とコードポイント。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -18,6 +21,15 @@ pub struct InvalidControlCharacter {
 pub struct RequestedEntry {
     pub id: i64,
     pub source: String,
+}
+
+/// 書式プロファイルを指定して AI 翻訳を検証するための入力。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfiledRequestedEntry {
+    pub id: i64,
+    pub source: String,
+    pub format_profile: PlaceholderProfile,
 }
 
 /// AI が返した翻訳。
@@ -98,13 +110,29 @@ pub fn validate_ai_batch(
     requested: &[RequestedEntry],
     responses: &[AiTranslation],
 ) -> BatchValidation {
+    let profiled: Vec<_> = requested
+        .iter()
+        .map(|entry| ProfiledRequestedEntry {
+            id: entry.id,
+            source: entry.source.clone(),
+            format_profile: PlaceholderProfile::Lang,
+        })
+        .collect();
+    validate_ai_batch_with_profiles(&profiled, responses)
+}
+
+/// 各エントリの書式プロファイルに従って AI 翻訳を検証する。
+pub fn validate_ai_batch_with_profiles(
+    requested: &[ProfiledRequestedEntry],
+    responses: &[AiTranslation],
+) -> BatchValidation {
     let mut requested_counts = HashMap::new();
     let mut requested_sources = HashMap::new();
     for entry in requested {
         *requested_counts.entry(entry.id).or_insert(0usize) += 1;
         requested_sources
             .entry(entry.id)
-            .or_insert(entry.source.as_str());
+            .or_insert((entry.source.as_str(), entry.format_profile));
     }
 
     let mut response_counts = HashMap::new();
@@ -136,9 +164,10 @@ pub fn validate_ai_batch(
         }
 
         if requested_count == 1
-            && let Some(source) = requested_sources.get(&response.id)
+            && let Some((source, format_profile)) = requested_sources.get(&response.id)
         {
-            let comparison = compare_placeholders(source, &response.translation);
+            let comparison =
+                compare_placeholders_for_profile(source, &response.translation, *format_profile);
             push_placeholder_issue(&mut reasons, comparison);
         }
 
@@ -177,11 +206,20 @@ pub fn validate_ai_batch(
 
 /// 手動編集の Placeholder 不一致を警告として返す。
 pub fn validate_manual_edit(source: &str, translation: &str) -> ManualEditValidation {
+    validate_manual_edit_with_profile(source, translation, PlaceholderProfile::Lang)
+}
+
+/// 指定した書式プロファイルで手動編集の Placeholder 不一致を警告として返す。
+pub fn validate_manual_edit_with_profile(
+    source: &str,
+    translation: &str,
+    format_profile: PlaceholderProfile,
+) -> ManualEditValidation {
     let PlaceholderComparison {
         is_valid,
         difference,
         ..
-    } = compare_placeholders(source, translation);
+    } = compare_placeholders_for_profile(source, translation, format_profile);
     ManualEditValidation {
         placeholder_error: !is_valid,
         difference,
@@ -470,5 +508,37 @@ mod tests {
         assert!(result.rejected.iter().any(|entry| {
             entry.id == 2 && has_issue(entry, |issue| matches!(issue, ValidationIssue::UnknownId))
         }));
+    }
+
+    #[test]
+    fn validates_ai_entries_with_their_format_profiles() {
+        let result = validate_ai_batch_with_profiles(
+            &[ProfiledRequestedEntry {
+                id: 1,
+                source: "$(br) Stone".into(),
+                format_profile: PlaceholderProfile::Patchouli,
+            }],
+            &[AiTranslation {
+                id: 1,
+                translation: "石".into(),
+            }],
+        );
+        assert!(result.accepted.is_empty());
+        assert!(has_issue(&result.rejected[0], |issue| matches!(
+            issue,
+            ValidationIssue::PlaceholderMismatch { .. }
+        )));
+
+        let lang_default = validate_ai_batch(
+            &[RequestedEntry {
+                id: 1,
+                source: "$(br) Stone".into(),
+            }],
+            &[AiTranslation {
+                id: 1,
+                translation: "石".into(),
+            }],
+        );
+        assert_eq!(lang_default.accepted.len(), 1);
     }
 }

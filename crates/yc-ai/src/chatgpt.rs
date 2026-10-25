@@ -804,7 +804,7 @@ impl TranslationProvider for ChatGptProvider {
         let user_payload = prompt::user_payload(context, entries)?;
         let structured = responses_body(
             &self.model,
-            &prompt::system_instruction(context, false),
+            &prompt::system_instruction(context, entries, false),
             &user_payload,
             true,
         );
@@ -814,7 +814,7 @@ impl TranslationProvider for ChatGptProvider {
             if structured_output_rejected(response, cancellation).await? {
                 let fallback = responses_body(
                     &self.model,
-                    &prompt::system_instruction(context, true),
+                    &prompt::system_instruction(context, entries, true),
                     &user_payload,
                     false,
                 );

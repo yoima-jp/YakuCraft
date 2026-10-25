@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use yc_language::{
     LanguageFileFormat, TranslationEntry, WriterOptions, compare_minecraft_versions,
-    resource_pack_language_filename, write_language_file,
+    is_empty_translation, resource_pack_language_filename, write_language_file,
 };
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     ExportError, ExportInput, ExportKind, ExportValidationRequest, ValidationSeverity,
-    atomic_write_file, namespace_has_exportable_entries, validate_export, validate_zip,
-    writer_options_for_namespace,
+    atomic_write_file, create_patchouli_document_files, namespace_has_exportable_entries,
+    namespace_has_language_entries, validate_export, validate_zip, writer_options_for_namespace,
 };
 
 const RESOURCE_PACK_FORMATS: &str = include_str!("resource_pack_formats.json");
@@ -197,6 +197,9 @@ pub fn export_resource_pack(
 
     let mut language_entries = Vec::with_capacity(namespaces.len());
     for namespace in namespaces {
+        if !namespace_has_language_entries(input, &namespace.namespace) {
+            continue;
+        }
         let path = format!("assets/{}/lang/{file_name}", namespace.namespace);
         if yc_archive::normalize_archive_path(&path).as_deref() != Ok(path.as_str()) {
             return Err(ExportError::UnsafeArchivePath(path));
@@ -209,6 +212,11 @@ pub fn export_resource_pack(
         )?;
         language_entries.push((path, bytes));
     }
+    language_entries.extend(
+        create_patchouli_document_files(input)?
+            .into_iter()
+            .map(|artifact| (artifact.path, artifact.bytes)),
+    );
 
     let metadata = pack_metadata(
         pack_format,
@@ -300,6 +308,12 @@ pub fn export_merged_resource_pack(
             namespace.included
                 && namespace_has_exportable_entries(&mod_data.input, &namespace.namespace)
         }) {
+            if !namespace_has_language_entries(&mod_data.input, &namespace.namespace) {
+                namespace_parse_escapes
+                    .entry(namespace.namespace.clone())
+                    .or_insert(false);
+                continue;
+            }
             let source_parse_escapes =
                 writer_options_for_namespace(&mod_data.input, &namespace.namespace)
                     .legacy_parse_escapes;
@@ -324,8 +338,7 @@ pub fn export_merged_resource_pack(
             .collect();
         for entry in mod_data.input.entries.iter().filter(|entry| {
             included_namespaces.contains(entry.namespace.as_str())
-                && (mod_data.input.writer_options.include_empty_translations
-                    || !entry.target_text.is_empty())
+                && !is_empty_translation(&entry.target_text)
         }) {
             let key = (entry.namespace.clone(), entry.key.clone());
             if let Some(index) = entry_indices.get(&key).copied() {
@@ -349,6 +362,12 @@ pub fn export_merged_resource_pack(
     namespaces.sort();
     let mut language_entries = Vec::with_capacity(namespaces.len());
     for namespace in namespaces {
+        if !merged_entries
+            .iter()
+            .any(|entry| entry.namespace == **namespace)
+        {
+            continue;
+        }
         let path = format!("assets/{namespace}/lang/{file_name}");
         if yc_archive::normalize_archive_path(&path).as_deref() != Ok(path.as_str()) {
             return Err(ExportError::UnsafeArchivePath(path));
@@ -363,13 +382,23 @@ pub fn export_merged_resource_pack(
             &entries,
             language_format.clone(),
             WriterOptions {
-                // Per-mod empty filtering was already applied while selecting the winning entry.
-                include_empty_translations: true,
                 legacy_parse_escapes: namespace_parse_escapes[namespace],
             },
         )?;
         language_entries.push((path, bytes));
     }
+
+    let mut merged_documents = HashMap::<String, Vec<u8>>::new();
+    for mod_data in mods {
+        for artifact in create_patchouli_document_files(&mod_data.input)? {
+            merged_documents
+                .entry(artifact.path)
+                .or_insert(artifact.bytes);
+        }
+    }
+    let mut merged_documents: Vec<_> = merged_documents.into_iter().collect();
+    merged_documents.sort_by(|left, right| left.0.cmp(&right.0));
+    language_entries.extend(merged_documents);
 
     let default_description = format!("{} 個の mod の日本語訳", mods.len());
     let metadata = pack_metadata(

@@ -140,18 +140,26 @@ async function scanRowFor(name) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     for (const row of await $$(".scan-screen__row")) {
-      if ((await row.getText()).includes(name)) return row;
+      if (await browser.execute((element, expected) => element.textContent.includes(expected), row, name)) return row;
     }
     await browser.pause(100);
   }
-  assert.fail("スキャン結果に " + name + " がありません。");
+  const rows = [];
+  for (const row of await $$(".scan-screen__row")) rows.push(await row.getText());
+  const screenText = await $(".scan-screen").getText().catch(() => "スキャン画面がありません。");
+  assert.fail("スキャン結果に " + name + " がありません。\n" + rows.join("\n") + "\n" + screenText);
+}
+
+async function translationTargetText(key) {
+  const selector = `[data-testid="translation-target-${key}"]`;
+  return browser.execute((targetSelector) => document.querySelector(targetSelector)?.textContent ?? "", selector);
 }
 
 async function clickModTab(name) {
   const tabSelector = '[role="tablist"][aria-label="開いているmod"] [role="tab"]';
   let matchingTab = false;
   for (const tab of await $$(tabSelector)) {
-    if ((await tab.getText()).includes(name)) matchingTab = true;
+    if (await browser.execute((element, expected) => element.textContent.includes(expected), tab, name)) matchingTab = true;
   }
   let selector = tabSelector;
   if (!matchingTab) {
@@ -172,7 +180,7 @@ async function clickModTab(name) {
   }, selector, name);
   await browser.waitUntil(async () => {
     const activeTab = await $(tabSelector + '[aria-selected="true"]');
-    return (await activeTab.getText()).includes(name);
+    return browser.execute((element, expected) => element.textContent.includes(expected), activeTab, name);
   }, { timeout: 10_000, interval: 100 });
 }
 
@@ -187,7 +195,7 @@ async function editTranslation(key, value) {
   await browser.keys(["Control", "A"]);
   await browser.keys(value);
   await browser.keys("Enter");
-  await browser.waitUntil(async () => (await target.getText()) === value, {
+  await browser.waitUntil(async () => (await translationTargetText(key)) === value, {
     timeout: 10_000,
     interval: 100,
     timeoutMsg: key + " の編集内容が表に反映されませんでした。",
@@ -272,7 +280,7 @@ describe("インスタンスフォルダからリソースパックを書き出�
 
       const createProject = await $(".scan-screen__actions button");
       await createProject.waitForClickable({ timeout: 10_000 });
-      assert.equal((await createProject.getText()).trim(), "2 個のModでプロジェクトを作成");
+      assert.equal((await createProject.getText()).trim(), "2 件でプロジェクトを作成");
       await createProject.click();
       await $(".review-screen h1").waitForDisplayed({ timeout: 60_000 });
       await advanceReviewToEditor();
@@ -285,7 +293,7 @@ describe("インスタンスフォルダからリソースパックを書き出�
       await clickModTab("Partial Mod");
       await browser.waitUntil(async () => {
         const activeTab = await $('[role="tablist"][aria-label="開いているmod"] [role="tab"][aria-selected="true"]');
-        return (await activeTab.getText()).includes("Partial Mod");
+        return browser.execute((element) => element.textContent.includes("Partial Mod"), activeTab);
       }, { timeout: 10_000, interval: 100 });
       assert.equal((await tabList.$$('[role="tab"]')).length, 2, "切り替え後に2つのmodタブが表示されるはずです。");
       await $('[data-testid="translation-target-block.shared.beta"]').waitForDisplayed({ timeout: 30_000 });
@@ -329,7 +337,8 @@ describe("インスタンスフォルダからリソースパックを書き出�
       await $('[for="export-option-modifiedJar"]').click();
       for (const label of await $$(".export-unit-selector label")) {
         const checkbox = await label.$('input[type="checkbox"]');
-        const shouldSelect = (await label.getText()).includes("Untranslated Mod");
+        const labelText = await browser.execute((element) => element.textContent, label);
+        const shouldSelect = labelText.includes("Untranslated Mod");
         if ((await checkbox.isSelected()) !== shouldSelect) await checkbox.click();
       }
       const inPlaceCheckbox = await $('.export-screen__advanced-check input[type="checkbox"]');
@@ -351,7 +360,7 @@ describe("インスタンスフォルダからリソースパックを書き出�
       await $(".export-replacements li").waitForDisplayed({ timeout: 30_000 });
       let restoreButton;
       for (const item of await $$(".export-replacements li")) {
-        if ((await item.getText()).includes("Untranslated Mod")) {
+        if ((await browser.execute((element) => element.textContent, item)).includes("Untranslated Mod")) {
           restoreButton = await item.$("button");
           break;
         }

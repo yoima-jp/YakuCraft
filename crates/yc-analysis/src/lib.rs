@@ -24,8 +24,9 @@ use yc_archive::{
 };
 use yc_language::{
     DiscoveredLanguageFile, LanguageArchivePath, LanguageFileFormat, LanguageParseWarning,
-    ParsedLanguageFile, ReviewSettings, TranslationEntry, TranslationOrigin,
-    discover_language_files, merge_languages, normalize_locale,
+    ParsedLanguageFile, PatchouliArchiveFile, ReviewSettings, TranslationEntry, TranslationOrigin,
+    discover_books, discover_language_files, extract_entries, extract_i18n_keys, merge_languages,
+    normalize_locale,
 };
 use yc_metadata::{ArchiveLookup, MetadataAnalysis, ModInfo, analyze_metadata};
 
@@ -103,6 +104,27 @@ pub struct LanguageFileInfo {
     pub archive_path: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchouliBookInfo {
+    pub namespace: String,
+    pub book_id: String,
+    pub container_path: String,
+    pub i18n: bool,
+    pub source_document_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PatchouliEntryData {
+    pub namespace: String,
+    pub container_path: String,
+    pub document_path: String,
+    pub pointer: String,
+    pub key: String,
+    pub source_text: String,
+    pub target_text: Option<String>,
+}
+
 /// Nested JARの解析結果。個別の失敗は`skipped_reason`とwarningに残す。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +155,7 @@ pub struct AnalysisResult {
     pub namespaces: Vec<NamespaceInfo>,
     pub nested_archives: Vec<NestedArchiveInfo>,
     pub language_files: Vec<LanguageFileInfo>,
+    pub patchouli_books: Vec<PatchouliBookInfo>,
     pub recommended_source_locale: Option<String>,
     pub existing_japanese_translation_count: usize,
     pub missing_source_keys_count: usize,
@@ -147,6 +170,8 @@ pub struct AnalysisResult {
 pub struct AnalysisData {
     pub result: AnalysisResult,
     parsed_languages: Vec<ParsedLanguageFile>,
+    pub patchouli_entries: Vec<PatchouliEntryData>,
+    patchouli_i18n_keys: Vec<(String, String)>,
     default_settings: ReviewSettings,
 }
 
@@ -166,13 +191,35 @@ impl AnalysisData {
     /// Entry数に比例するblocking処理なので、UI層から使う場合もworkerへ委譲する。
     pub fn merge_review(&self, settings: &ReviewSettings) -> ReviewMergeResult {
         let settings = self.resolve_settings(settings);
-        let entries = merge_languages(&self.parsed_languages, &settings);
-        let existing_japanese_translation_count = entries
+        let mut entries = merge_languages(&self.parsed_languages, &settings);
+        for entry in &mut entries {
+            if self
+                .patchouli_i18n_keys
+                .iter()
+                .any(|(namespace, key)| namespace == &entry.namespace && key == &entry.key)
+                && !entry.flags.contains(&yc_language::EntryFlag::PatchouliText)
+            {
+                entry.flags.push(yc_language::EntryFlag::PatchouliText);
+            }
+        }
+        let language_existing_count = entries
             .iter()
             .filter(|entry| {
                 entry.origin == TranslationOrigin::Existing && !entry.target_text.trim().is_empty()
             })
             .count();
+        let existing_japanese_translation_count = language_existing_count
+            + self
+                .patchouli_entries
+                .iter()
+                .filter(|entry| {
+                    settings.included_namespaces.contains(&entry.namespace)
+                        && entry
+                            .target_text
+                            .as_deref()
+                            .is_some_and(|text| !text.trim().is_empty())
+                })
+                .count();
         let missing_source_keys_count = count_missing_source_keys(
             &self.parsed_languages,
             &settings.included_namespaces,
@@ -348,7 +395,7 @@ fn analyze_jar_with_limits(
         "namespaceを調べています",
     );
     ensure_not_cancelled(cancellation)?;
-    let namespaces =
+    let mut namespaces =
         discover_namespaces(&root_metadata, &opened_nested, cancellation, &mut progress)?;
     progress.finish(
         AnalysisStage::DiscoverNamespaces,
@@ -372,7 +419,6 @@ fn analyze_jar_with_limits(
             Some(0),
             "言語ファイルがありません",
         );
-        return Err(AnalysisError::NoLanguageFiles);
     }
     for info in &mut nested_info {
         info.has_languages = language_paths
@@ -446,6 +492,40 @@ fn analyze_jar_with_limits(
         "言語ファイルを解析しました",
     );
 
+    let (patchouli_books, patchouli_entries, patchouli_i18n_keys) = collect_patchouli_data(
+        &root_paths,
+        &mut root,
+        &mut opened_nested,
+        &nested_indices,
+        cancellation,
+        &mut warnings,
+    )?;
+    for info in &mut nested_info {
+        info.has_languages |= patchouli_books
+            .iter()
+            .any(|book| book.container_path == info.archive_path);
+    }
+    for book in &patchouli_books {
+        if !namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == book.namespace)
+        {
+            namespaces.push(NamespaceInfo {
+                namespace: book.namespace.clone(),
+                container_path: book.container_path.clone(),
+                included: book.container_path.is_empty(),
+            });
+        }
+    }
+
+    if language_summaries
+        .iter()
+        .all(|language| language.entry_count == 0)
+        && patchouli_entries.is_empty()
+    {
+        return Err(AnalysisError::NoLanguageFiles);
+    }
+
     // metadataから見つかるnamespaceにはiconやmodelだけのものも含まれるため、
     // 翻訳Entryを持つnamespaceだけをReviewとExportの対象として残す。
     let namespaces: Vec<_> = namespaces
@@ -453,7 +533,9 @@ fn analyze_jar_with_limits(
         .filter(|namespace| {
             language_summaries.iter().any(|language| {
                 language.namespace == namespace.namespace && language.entry_count > 0
-            })
+            }) || patchouli_books
+                .iter()
+                .any(|book| book.namespace == namespace.namespace)
         })
         .collect();
 
@@ -502,7 +584,18 @@ fn analyze_jar_with_limits(
         &parsed_languages,
         &default_settings.included_namespaces,
         cancellation,
-    )?;
+    )? + patchouli_entries
+        .iter()
+        .filter(|entry| {
+            default_settings
+                .included_namespaces
+                .contains(&entry.namespace)
+                && entry
+                    .target_text
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
+        .count();
     progress.advance(
         AnalysisStage::DetectTargetTranslation,
         2,
@@ -536,6 +629,7 @@ fn analyze_jar_with_limits(
             namespaces,
             nested_archives: nested_info,
             language_files: language_summaries,
+            patchouli_books,
             recommended_source_locale: recommendation,
             existing_japanese_translation_count,
             missing_source_keys_count,
@@ -543,6 +637,8 @@ fn analyze_jar_with_limits(
             is_signed,
         },
         parsed_languages,
+        patchouli_entries,
+        patchouli_i18n_keys,
         default_settings,
     })
 }
@@ -744,6 +840,159 @@ fn inspect_nested_archive(
         archive,
         metadata,
     })))
+}
+
+type CollectedPatchouliData = (
+    Vec<PatchouliBookInfo>,
+    Vec<PatchouliEntryData>,
+    Vec<(String, String)>,
+);
+
+fn collect_patchouli_data(
+    root_paths: &[String],
+    root: &mut Archive<File>,
+    nested: &mut [OpenNestedArchive],
+    nested_indices: &HashMap<String, usize>,
+    cancellation: &CancellationToken,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Result<CollectedPatchouliData, AnalysisError> {
+    let mut candidates = BTreeMap::<String, Vec<(String, Vec<u8>)>>::new();
+    let mut paths_by_container = vec![(String::new(), root_paths.to_vec())];
+    paths_by_container.extend(
+        nested
+            .iter()
+            .map(|archive| (archive.info.archive_path.clone(), archive.paths.clone())),
+    );
+    for (container_path, paths) in paths_by_container {
+        for (index, path) in paths.iter().enumerate() {
+            if index % PROGRESS_ENTRY_INTERVAL as usize == 0 {
+                ensure_not_cancelled(cancellation)?;
+            }
+            if !is_patchouli_json_candidate(path) {
+                continue;
+            }
+            let result = if container_path.is_empty() {
+                root.read_entry(path, EntryKind::Text)
+            } else {
+                let Some(index) = nested_indices.get(&container_path).copied() else {
+                    continue;
+                };
+                nested[index].archive.read_entry(path, EntryKind::Text)
+            };
+            match result {
+                Ok(bytes) => candidates
+                    .entry(container_path.clone())
+                    .or_default()
+                    .push((path.clone(), bytes)),
+                Err(error) => warnings.push(AnalysisWarning {
+                    container_path: container_path.clone(),
+                    path: path.clone(),
+                    message: format!("Patchouli文書を読み取れませんでした: {error}"),
+                }),
+            }
+        }
+    }
+
+    let mut books = Vec::new();
+    let mut entries = Vec::new();
+    let mut i18n_keys = BTreeSet::new();
+    for (container_path, mut owned_files) in candidates {
+        owned_files.sort_by(|left, right| left.0.cmp(&right.0));
+        let files: Vec<_> = owned_files
+            .iter()
+            .map(|(path, bytes)| PatchouliArchiveFile {
+                path,
+                bytes: bytes.as_slice(),
+            })
+            .collect();
+        let discovery = discover_books(&files);
+        for warning in discovery.warnings {
+            warnings.push(AnalysisWarning {
+                container_path: container_path.clone(),
+                path: warning.path,
+                message: format!("Patchouliの解析を続けられませんでした: {}", warning.reason),
+            });
+        }
+        for book in discovery.books {
+            let book_info = PatchouliBookInfo {
+                namespace: book.namespace.clone(),
+                book_id: book.book_id.clone(),
+                container_path: container_path.clone(),
+                i18n: book.i18n,
+                source_document_paths: book.source_document_paths.clone(),
+            };
+            if book.i18n {
+                let (keys, book_warnings) = extract_i18n_keys(&book);
+                i18n_keys.extend(keys.into_iter().map(|key| (book.namespace.clone(), key)));
+                for warning in book_warnings {
+                    warnings.push(AnalysisWarning {
+                        container_path: container_path.clone(),
+                        path: warning.path,
+                        message: format!(
+                            "Patchouliの解析を続けられませんでした: {}",
+                            warning.reason
+                        ),
+                    });
+                }
+            } else {
+                let extraction = extract_entries(&book, "en_us", "ja_jp");
+                for warning in extraction.warnings {
+                    warnings.push(AnalysisWarning {
+                        container_path: container_path.clone(),
+                        path: warning.path,
+                        message: format!(
+                            "Patchouliの解析を続けられませんでした: {}",
+                            warning.reason
+                        ),
+                    });
+                }
+                entries.extend(extraction.entries.into_iter().map(|entry| {
+                    let document_path = if container_path.is_empty() {
+                        entry.document_path.clone()
+                    } else {
+                        format!("{container_path}!/{}", entry.document_path)
+                    };
+                    // DBの一意キーはtranslation_keyで判定するため、同じbookを持つroot/nested JARを区別する。
+                    let key = if container_path.is_empty() {
+                        entry.key
+                    } else {
+                        format!("{container_path}::{}", entry.key)
+                    };
+                    PatchouliEntryData {
+                        namespace: book.namespace.clone(),
+                        container_path: container_path.clone(),
+                        document_path,
+                        pointer: entry.pointer,
+                        key,
+                        source_text: entry.source_text,
+                        target_text: entry.target_text,
+                    }
+                }));
+            }
+            books.push(book_info);
+        }
+    }
+    books.sort_by(|left, right| {
+        (&left.namespace, &left.book_id, &left.container_path).cmp(&(
+            &right.namespace,
+            &right.book_id,
+            &right.container_path,
+        ))
+    });
+    entries.sort_by(|left, right| {
+        (&left.namespace, &left.key, &left.document_path).cmp(&(
+            &right.namespace,
+            &right.key,
+            &right.document_path,
+        ))
+    });
+    Ok((books, entries, i18n_keys.into_iter().collect()))
+}
+
+fn is_patchouli_json_candidate(path: &str) -> bool {
+    path.ends_with(".json")
+        && (path.starts_with("assets/") || path.starts_with("data/"))
+        && path.contains("/patchouli_books/")
 }
 
 fn scan_paths<R: Read + std::io::Seek>(

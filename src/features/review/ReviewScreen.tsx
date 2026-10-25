@@ -29,6 +29,8 @@ const EMPTY_ASSET_SUMMARY: ProjectAssetSummaryDto = {
   unresolvedEntries: 0,
 };
 
+const MODPACK_UNIT_NAME = "Modpack 固有（クエスト・KubeJS）";
+
 function selectionKey(sourceLocale: string, namespaces: IncludedNamespaceDto[]) {
   const selections = namespaces
     .map(({ modUnitId, namespace }) => [modUnitId, namespace] as const)
@@ -86,9 +88,9 @@ export function ReviewScreen() {
   const setOperationTitle = useProjectStore((state) => state.setOperationTitle);
   const goTo = useAppStore((state) => state.goTo);
 
+  // entryCountにはPatchouli文書Entryも含まれ、LanguageSummaryのない名前空間がある。
   const nestedNamespaces = useMemo(() => details?.namespaces.filter((namespace) =>
-    namespace.containerPath && details.languages.some((language) =>
-      language.modUnitId === namespace.modUnitId && language.namespace === namespace.namespace),
+    namespace.containerPath && namespace.entryCount > 0,
   ) ?? [], [details]);
   const nestedNamespaceGroups = useMemo(() => {
     const archives = new Map((details?.nestedArchives ?? []).map((archive) => [
@@ -140,7 +142,7 @@ export function ReviewScreen() {
     getItemKey: (index) => modUnits[index]?.id ?? index,
     overscan: 6,
   });
-  const nestedModCount = details?.nestedArchives.filter((archive) => archive.hasLanguages).length ?? 0;
+  const nestedModCount = nestedNamespaceGroups.length;
   const sourceLocales = useMemo(() => {
     if (!details) return [];
     const counts = new Map<string, number>();
@@ -343,8 +345,10 @@ export function ReviewScreen() {
                           data-index={virtualRow.index}
                           style={{ transform: `translateY(${virtualRow.start}px)` }}
                         >
-                          <strong>{unit.name ?? unit.modId ?? "不明"}</strong>
-                          <span className="review-mod-list__version">{unit.version ?? "バージョン不明"} · {unit.sourceFilename}</span>
+                          <strong>{unit.sourceKind === "modpack" ? MODPACK_UNIT_NAME : unit.name ?? unit.modId ?? "不明"}</strong>
+                          {unit.sourceKind !== "modpack" && (
+                            <span className="review-mod-list__version">{unit.version ?? "バージョン不明"} · {unit.sourceFilename}</span>
+                          )}
                           <div className="review-mod-list__namespaces">
                             {(namespacesByModUnit.get(unit.id) ?? []).map((namespace) => (
                               <span className="review-mod-list__namespace" key={namespace}>{namespace}</span>
@@ -358,7 +362,12 @@ export function ReviewScreen() {
               </div>
             ) : (
               <>
-                <div><dt>ファイル</dt><dd>{modUnits[0]?.sourceFilename ?? details.project.displayName}</dd></div>
+                <div>
+                  <dt>ファイル</dt>
+                  <dd>{modUnits[0]?.sourceKind === "modpack"
+                    ? MODPACK_UNIT_NAME
+                    : modUnits[0]?.sourceFilename ?? details.project.displayName}</dd>
+                </div>
                 <div><dt>Mod名</dt><dd>{details.mods[0]?.name ?? "不明"}</dd></div>
                 <div><dt>バージョン</dt><dd>{details.mods[0]?.version ?? "不明"}</dd></div>
                 <div>
@@ -392,7 +401,7 @@ export function ReviewScreen() {
           )}
           {nestedModCount > 0 && nestedNamespaces.length > 0 && (
             <>
-              <p className="review-note">同梱Mod {nestedModCount}件（言語ファイルあり）</p>
+              <p className="review-note">同梱Mod {nestedModCount}件</p>
               <Disclosure className="review-nested" title="翻訳対象に含める">
                 {modUnits.length > 1 ? (
                   <>

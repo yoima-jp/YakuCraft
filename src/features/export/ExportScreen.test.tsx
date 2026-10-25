@@ -206,10 +206,10 @@ describe("Export format and validation", () => {
     });
 
     render(<ExportScreen />);
-    const summary = await screen.findByText("Placeholder エラー 1 件・注意 1 件");
+    const summary = await screen.findByText("書式エラー 1 件・注意 1 件");
     fireEvent.click(summary);
 
-    expect(await screen.findByRole("list", { name: "Placeholder の確認事項" })).toBeTruthy();
+    expect(await screen.findByRole("list", { name: "書式の確認事項" })).toBeTruthy();
   });
 
   it("判定したMinecraftバージョンをSelectの初期値にする", async () => {

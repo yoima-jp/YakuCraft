@@ -16,6 +16,10 @@ async function waitForText(selector, expectedText, timeout = 30_000) {
   return element;
 }
 
+async function readCellText(selector) {
+  return browser.execute((targetSelector) => document.querySelector(targetSelector)?.textContent ?? "", selector);
+}
+
 describe("最初の翻訳マイルストーン", () => {
   it("fixtureを解析・編集・書き出し、再起動後にRecentから再開できる", async () => {
     const fixturePath = process.env.YAKUCRAFT_E2E_FIXTURE;
@@ -53,7 +57,7 @@ describe("最初の翻訳マイルストーン", () => {
     if (await analysisError.isExisting()) {
       assert.fail("JARの解析に失敗しました: " + await analysisError.getText());
     }
-    assert.equal(await reviewHeading.isDisplayed(), true, "Review画面が表示されませんでした。");
+    await $(".review-screen h1").waitForDisplayed({ timeout: 5_000 });
     for (const [index, heading] of reviewSteps.entries()) {
       await waitForText(".review-screen h1", heading, 60_000);
       await $('[data-testid="review-next"]').click();
@@ -72,6 +76,7 @@ describe("最初の翻訳マイルストーン", () => {
     await browser.waitUntil(() => editor.isFocused(), { timeout: 5_000, interval: 50 });
     await browser.keys(["Control", "A"]);
     await browser.keys(draftTranslation);
+    assert.equal(await editor.getValue(), draftTranslation, "編集中の日本語訳が入力欄に反映されていません。");
 
     // Ctrl+OでHomeへ移動した直後に選択をキャンセルし、Recentから同じProjectを読み直す。
     await browser.execute(() => { window.__YAKUCRAFT_E2E__.jarPath = null; });
@@ -81,9 +86,14 @@ describe("最初の翻訳マイルストーン", () => {
     await draftResumeProject.waitForClickable({ timeout: 30_000 });
     await draftResumeProject.click();
     await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 30_000 });
+    await $(targetCellSelector).waitForDisplayed({ timeout: 30_000 });
+    await browser.waitUntil(async () => (await readCellText(targetCellSelector)) === draftTranslation, {
+      timeout: 10_000,
+      interval: 100,
+      timeoutMsg: "Ctrl+OでHomeへ移動しても、未確定の日本語訳が保存されませんでした。",
+    });
     const resumedCell = await $(targetCellSelector);
-    await resumedCell.waitForDisplayed({ timeout: 30_000 });
-    assert.equal(await resumedCell.getText(), draftTranslation);
+    assert.equal(await readCellText(targetCellSelector), draftTranslation);
 
     await resumedCell.click();
     await browser.keys("Enter");
@@ -165,6 +175,10 @@ describe("最初の翻訳マイルストーン", () => {
     await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 30_000 });
     const reopenedCell = await $(targetCellSelector);
     await reopenedCell.waitForDisplayed({ timeout: 30_000 });
-    assert.equal(await reopenedCell.getText(), editedTranslation);
+    await browser.waitUntil(async () => (await readCellText(targetCellSelector)) === editedTranslation, {
+      timeout: 10_000,
+      interval: 100,
+    });
+    assert.equal(await readCellText(targetCellSelector), editedTranslation);
   });
 });

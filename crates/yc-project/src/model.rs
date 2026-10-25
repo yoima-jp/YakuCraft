@@ -6,6 +6,63 @@ use yc_language::{EntryFlag, LanguageFileFormat, TranslationOrigin};
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub const CURRENT_RECENT_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModUnitSourceKind {
+    #[default]
+    Jar,
+    Modpack,
+}
+
+impl ModUnitSourceKind {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Jar => "jar",
+            Self::Modpack => "modpack",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> crate::Result<Self> {
+        match value {
+            "jar" => Ok(Self::Jar),
+            "modpack" => Ok(Self::Modpack),
+            _ => Err(crate::ProjectError::InvalidDatabaseValue(format!(
+                "mod_units.source_kind={value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationEntryKind {
+    #[default]
+    Lang,
+    Patchouli,
+    Ftbquests,
+}
+
+impl TranslationEntryKind {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Lang => "lang",
+            Self::Patchouli => "patchouli",
+            Self::Ftbquests => "ftbquests",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> crate::Result<Self> {
+        match value {
+            "lang" => Ok(Self::Lang),
+            "patchouli" => Ok(Self::Patchouli),
+            "ftbquests" => Ok(Self::Ftbquests),
+            _ => Err(crate::ProjectError::InvalidDatabaseValue(format!(
+                "translation_entries.entry_kind={value}"
+            ))),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -52,6 +109,8 @@ pub struct ModRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ModUnitRecord {
     pub id: i64,
+    #[serde(default)]
+    pub source_kind: ModUnitSourceKind,
     pub sort_index: usize,
     pub source_filename: String,
     pub source_sha256: String,
@@ -74,6 +133,25 @@ pub struct JarReplacementRecord {
     pub previous_sha256: String,
     pub written_sha256: String,
     pub created_at: String,
+    pub restored_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDeploymentRecord {
+    pub id: i64,
+    pub mod_unit_id: i64,
+    /// インスタンス内の配置先パス。
+    pub target_path: String,
+    /// false の場合、復元時は配置後ファイルを削除する。
+    pub existed_before: bool,
+    /// 既存ファイルがあった場合の配置前 SHA-256。
+    pub previous_sha256: Option<String>,
+    /// 既存ファイルがあった場合のバックアップ保存先。
+    pub backup_path: Option<String>,
+    /// 復元時に配置後ファイルが変更されていないか照合する SHA-256。
+    pub deployed_sha256: String,
+    pub deployed_at: String,
     pub restored_at: Option<String>,
 }
 
@@ -247,6 +325,57 @@ pub struct ProjectEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentProjectEntry {
+    pub id: i64,
+    pub mod_unit_id: i64,
+    pub namespace: String,
+    pub key: String,
+    pub entry_kind: TranslationEntryKind,
+    /// 元文書のコンテナ内相対パス。
+    pub document_path: String,
+    /// Patchouli は RFC 6901 JSON Pointer、FTB Quests は lang キーと配列 index の識別文字列。
+    pub document_pointer: String,
+    pub source_text: Option<String>,
+    pub source_locale: Option<String>,
+    pub target_text: Option<String>,
+    pub target_original_text: Option<String>,
+    pub translated_source_text: Option<String>,
+    pub origin: TranslationOrigin,
+    pub sort_index: usize,
+    pub flags: Vec<EntryFlag>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentEntryInput {
+    pub namespace: String,
+    pub key: String,
+    pub entry_kind: TranslationEntryKind,
+    /// 元文書のコンテナ内相対パス。
+    pub document_path: String,
+    /// Patchouli は RFC 6901 JSON Pointer、FTB Quests は lang キーと配列 index の識別文字列。
+    pub document_pointer: String,
+    pub source_text: Option<String>,
+    pub source_locale: Option<String>,
+    #[serde(default)]
+    pub target_text: Option<String>,
+    #[serde(default)]
+    pub target_original_text: Option<String>,
+    #[serde(default)]
+    pub translated_source_text: Option<String>,
+    #[serde(default = "default_missing_translation_origin")]
+    pub origin: TranslationOrigin,
+    pub sort_index: usize,
+    #[serde(default)]
+    pub flags: Vec<EntryFlag>,
+}
+
+fn default_missing_translation_origin() -> TranslationOrigin {
+    TranslationOrigin::Missing
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum UpdateOrigin {
     Ai,
@@ -367,6 +496,7 @@ pub(crate) fn flag_to_db(flag: &EntryFlag) -> &'static str {
         EntryFlag::MalformedSource => "malformed_source",
         EntryFlag::AssetAmbiguous => "asset_ambiguous",
         EntryFlag::AssetMissing => "asset_missing",
+        EntryFlag::PatchouliText => "patchouli_text",
     }
 }
 
@@ -378,6 +508,7 @@ pub(crate) fn flag_from_db(value: &str) -> crate::Result<EntryFlag> {
         "malformed_source" => Ok(EntryFlag::MalformedSource),
         "asset_ambiguous" => Ok(EntryFlag::AssetAmbiguous),
         "asset_missing" => Ok(EntryFlag::AssetMissing),
+        "patchouli_text" => Ok(EntryFlag::PatchouliText),
         _ => Err(crate::ProjectError::InvalidDatabaseValue(format!(
             "entry_flags.flag={value}"
         ))),

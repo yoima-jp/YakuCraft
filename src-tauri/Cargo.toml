@@ -35,11 +35,12 @@ yc-assets = { path = "../crates/yc-assets" }
 yc-export = { path = "../crates/yc-export" }
 yc-language = { path = "../crates/yc-language" }
 yc-metadata = { path = "../crates/yc-metadata" }
+yc-modpack = { path = "../crates/yc-modpack" }
 yc-project = { path = "../crates/yc-project" }
 yc-validation = { path = "../crates/yc-validation" }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

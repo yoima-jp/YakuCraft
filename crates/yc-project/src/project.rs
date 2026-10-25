@@ -1,13 +1,18 @@
 use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     thread,
     time::Duration,
 };
 
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
+use yc_archive::{Archive, EntryKind};
+use yc_language::{PatchouliArchiveFile, discover_books, extract_i18n_keys};
 
 use crate::{
     ProjectError, ProjectLock, ProjectSummary, Repository, Result,
@@ -33,6 +38,11 @@ pub struct OpenedProject {
     _lock: ProjectLock,
 }
 
+pub struct ModpackSource<'a> {
+    pub game_directory: &'a Path,
+    pub files: &'a BTreeMap<String, Vec<u8>>,
+}
+
 impl OpenedProject {
     pub fn directory(&self) -> &Path {
         &self.directory
@@ -40,6 +50,11 @@ impl OpenedProject {
 
     pub fn summary(&self) -> &ProjectSummary {
         &self.summary
+    }
+
+    pub fn refresh_summary(&mut self) -> Result<ProjectSummary> {
+        self.summary = read_project_summary(&self.directory.join(DATABASE_FILE_NAME))?;
+        Ok(self.summary.clone())
     }
 
     pub fn repository(&self) -> Repository {
@@ -97,11 +112,20 @@ pub fn create_project(
     sources: &[PathBuf],
     instance_path: Option<&Path>,
 ) -> Result<ProjectSummary> {
+    create_project_with_modpack(projects_root, sources, instance_path, None)
+}
+
+pub fn create_project_with_modpack(
+    projects_root: impl AsRef<Path>,
+    sources: &[PathBuf],
+    instance_path: Option<&Path>,
+    modpack: Option<ModpackSource<'_>>,
+) -> Result<ProjectSummary> {
     let projects_root = projects_root.as_ref();
-    if sources.is_empty() {
+    if sources.is_empty() && modpack.is_none() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "at least one source JAR is required",
+            "at least one source JAR or modpack is required",
         )
         .into());
     }
@@ -118,7 +142,7 @@ pub fn create_project(
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         let created_at = now_rfc3339()?;
         let transaction = connection.transaction()?;
-        let initial_display_name = if sources.len() == 1 {
+        let initial_display_name = if modpack.is_none() && sources.len() == 1 {
             source_filename(&sources[0])?
         } else {
             instance_path
@@ -168,6 +192,45 @@ pub fn create_project(
                 ],
             )?;
         }
+
+        if let Some(modpack) = modpack {
+            let unit_id = i64::try_from(sources.len() + 1)
+                .map_err(|_| ProjectError::InvalidDatabaseValue("too many mod units".to_owned()))?;
+            let sort_index = i64::try_from(sources.len())
+                .map_err(|_| ProjectError::InvalidDatabaseValue("too many mod units".to_owned()))?;
+            let stored_path = format!("sources/{unit_id}.zip");
+            let archive_path = project_directory.join(&stored_path);
+            let file = fs::File::create(&archive_path)?;
+            let mut archive = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (path, bytes) in modpack.files {
+                archive
+                    .start_file(path, options)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                archive.write_all(bytes)?;
+            }
+            archive
+                .finish()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let source_sha256 = digest_to_hex(yc_archive::sha256_file(&archive_path)?);
+            let original_path = fs::canonicalize(modpack.game_directory)?;
+            transaction.execute(
+                "INSERT INTO mod_units (
+                    id, source_kind, sort_index, source_filename, source_sha256, stored_path,
+                    original_path, created_at
+                 ) VALUES (?1, 'modpack', ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    unit_id,
+                    sort_index,
+                    "Modpack 固有（クエスト・KubeJS）.zip",
+                    source_sha256,
+                    stored_path,
+                    original_path.to_string_lossy(),
+                    created_at,
+                ],
+            )?;
+        }
         transaction.commit()?;
         read_project_summary(&database_path)
     })();
@@ -187,7 +250,8 @@ pub fn open_project(projects_root: impl AsRef<Path>, project_id: Uuid) -> Result
     }
     let lock = ProjectLock::acquire(&directory)?;
     let database_path = directory.join(DATABASE_FILE_NAME);
-    let connection = open_database(&database_path)?;
+    let mut connection = open_database(&database_path)?;
+    supplement_patchouli_text_flags(&mut connection, &directory)?;
     drop(connection);
     let summary = read_project_summary(&database_path)?;
     let writer = ProjectWriter::start(&database_path)?;
@@ -197,6 +261,126 @@ pub fn open_project(projects_root: impl AsRef<Path>, project_id: Uuid) -> Result
         writer,
         _lock: lock,
     })
+}
+
+fn supplement_patchouli_text_flags(connection: &mut Connection, directory: &Path) -> Result<()> {
+    let mod_units = {
+        let mut statement = connection.prepare(
+            "SELECT id, stored_path FROM mod_units WHERE source_kind = 'jar' ORDER BY sort_index, id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for (mod_unit_id, stored_path) in mod_units {
+        let source_path = directory.join(stored_path);
+        let mut archive = match Archive::open(&source_path) {
+            Ok(archive) => archive,
+            Err(error) => {
+                tracing::warn!(path = %source_path.display(), %error, "Patchouli entry flags could not be supplemented");
+                continue;
+            }
+        };
+        let nested_paths = patchouli_nested_archive_paths(&mut archive);
+        let mut keys = patchouli_i18n_keys(&mut archive);
+        let mut nested_archives = match archive.discover_nested(&nested_paths) {
+            Ok(nested_archives) => nested_archives,
+            Err(error) => {
+                tracing::warn!(path = %source_path.display(), %error, "nested Patchouli books could not be inspected");
+                Vec::new()
+            }
+        };
+        for nested in &mut nested_archives {
+            let Some(archive) = nested.archive.as_mut() else {
+                continue;
+            };
+            keys.extend(patchouli_i18n_keys(archive));
+        }
+        if !keys.is_empty() {
+            let keys: Vec<_> = keys.into_iter().collect();
+            crate::repository::add_patchouli_text_flags(connection, mod_unit_id, &keys)?;
+        }
+    }
+    Ok(())
+}
+
+struct PatchouliMetadataLookup<'a, R> {
+    archive: RefCell<&'a mut Archive<R>>,
+    paths: Vec<String>,
+}
+
+impl<R: Read + Seek> yc_metadata::ArchiveLookup for PatchouliMetadataLookup<'_, R> {
+    fn paths(&self) -> Vec<String> {
+        self.paths.clone()
+    }
+
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.archive
+            .borrow_mut()
+            .read_entry(path, EntryKind::Text)
+            .ok()
+    }
+}
+
+fn patchouli_nested_archive_paths<R: Read + Seek>(archive: &mut Archive<R>) -> Vec<String> {
+    let paths = archive
+        .list_entries()
+        .iter()
+        .filter_map(|entry| entry.normalized_path.as_deref().map(str::to_owned))
+        .collect();
+    yc_metadata::analyze_metadata(&PatchouliMetadataLookup {
+        archive: RefCell::new(archive),
+        paths,
+    })
+    .nested_jars
+}
+
+fn patchouli_i18n_keys<R: Read + Seek>(archive: &mut Archive<R>) -> BTreeSet<(String, String)> {
+    let paths: Vec<_> = archive
+        .list_entries()
+        .iter()
+        .filter_map(|entry| entry.normalized_path.as_deref())
+        .filter(|path| {
+            path.ends_with(".json")
+                && (path.starts_with("assets/") || path.starts_with("data/"))
+                && path.contains("/patchouli_books/")
+        })
+        .map(str::to_owned)
+        .collect();
+    let mut owned_files = Vec::with_capacity(paths.len());
+    for path in paths {
+        match archive.read_entry(&path, EntryKind::Text) {
+            Ok(bytes) => owned_files.push((path, bytes)),
+            Err(error) => {
+                tracing::warn!(%path, %error, "Patchouli file could not be read while supplementing entry flags");
+            }
+        }
+    }
+    let files: Vec<_> = owned_files
+        .iter()
+        .map(|(path, bytes)| PatchouliArchiveFile {
+            path,
+            bytes: bytes.as_slice(),
+        })
+        .collect();
+    let mut keys = BTreeSet::new();
+    for book in discover_books(&files).books {
+        if book.i18n {
+            let (book_keys, warnings) = extract_i18n_keys(&book);
+            for warning in warnings {
+                tracing::warn!(path = %warning.path, reason = %warning.reason, "Patchouli i18n key could not be extracted");
+            }
+            keys.extend(
+                book_keys
+                    .into_iter()
+                    .map(|key| (book.namespace.clone(), key)),
+            );
+        }
+    }
+    keys
 }
 
 pub fn delete_project(projects_root: impl AsRef<Path>, project_id: Uuid) -> Result<()> {

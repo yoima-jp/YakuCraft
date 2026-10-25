@@ -21,6 +21,7 @@ const FLAG_LABELS: Record<EntryFlag, string> = {
   malformed_source: "原文の形式エラー",
   asset_ambiguous: "関連するアセット候補が複数あります",
   asset_missing: "関連するアセットがありません",
+  patchouli_text: "Patchouli本文",
 };
 
 interface InspectorProps {
@@ -92,7 +93,7 @@ function InspectorContent({ entry, onTranslate, hidePreview }: {
     : aiWarning ? "再試行" : "この項目を翻訳";
   const warnings = [
     ...entry.flags
-      .filter((flag) => flag !== "asset_missing" && flag !== "asset_ambiguous")
+      .filter((flag) => flag !== "asset_missing" && flag !== "asset_ambiguous" && flag !== "patchouli_text")
       .map((flag) => FLAG_LABELS[flag]),
     ...(aiWarning ?? []),
     ...glossaryMismatches.map((term) => `用語: ${term.sourceTerm} → ${term.targetTerm}`),

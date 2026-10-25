@@ -4,11 +4,13 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
+import { automaticUpdatesSupported } from "../../lib/tauri";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 const LAST_STARTUP_CHECK_KEY = "yakucraft.updater.last-startup-check";
 
 interface UpdaterState {
+  updatesSupported: boolean | null;
   availableUpdate: Update | null;
   checking: boolean;
   installing: boolean;
@@ -17,6 +19,7 @@ interface UpdaterState {
 }
 
 export const useUpdaterStore = create<UpdaterState>()(() => ({
+  updatesSupported: null,
   availableUpdate: null,
   checking: false,
   installing: false,
@@ -25,10 +28,36 @@ export const useUpdaterStore = create<UpdaterState>()(() => ({
 }));
 
 let checkRequest: Promise<Update | null> | null = null;
+let supportRequest: Promise<boolean> | null = null;
 let startupCheckStarted = false;
 
-function canCheckForUpdates() {
-  return isTauri() && !import.meta.env.DEV;
+export function loadUpdateSupport() {
+  const cached = useUpdaterStore.getState().updatesSupported;
+  if (cached !== null) return Promise.resolve(cached);
+  if (supportRequest) return supportRequest;
+
+  supportRequest = (import.meta.env.DEV
+    ? Promise.resolve(true)
+    : isTauri()
+      ? automaticUpdatesSupported()
+      : Promise.resolve(false))
+    .then((supported) => {
+      useUpdaterStore.setState({ updatesSupported: supported });
+      return supported;
+    })
+    .catch((cause: unknown) => {
+      console.warn("更新の対応状況を確認できませんでした。", cause);
+      useUpdaterStore.setState({ updatesSupported: false });
+      return false;
+    })
+    .finally(() => {
+      supportRequest = null;
+    });
+  return supportRequest;
+}
+
+async function canCheckForUpdates() {
+  return isTauri() && !import.meta.env.DEV && await loadUpdateSupport();
 }
 
 function localDay() {
@@ -38,10 +67,10 @@ function localDay() {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-export function checkForUpdate() {
-  if (!canCheckForUpdates()) return Promise.resolve(null);
+export async function checkForUpdate() {
+  if (!(await canCheckForUpdates())) return null;
   const state = useUpdaterStore.getState();
-  if (state.installing) return Promise.resolve(state.availableUpdate);
+  if (state.installing) return state.availableUpdate;
   if (checkRequest) return checkRequest;
 
   useUpdaterStore.setState({ checking: true });
@@ -80,26 +109,28 @@ export function checkForUpdate() {
 export function checkForUpdateOnStartup() {
   if (startupCheckStarted) return;
   startupCheckStarted = true;
-  if (
-    !canCheckForUpdates()
-    || !useSettingsStore.getState().value<boolean>("updates.checkOnStartup")
-  ) return;
+  void (async () => {
+    if (
+      !(await canCheckForUpdates())
+      || !useSettingsStore.getState().value<boolean>("updates.checkOnStartup")
+    ) return;
 
-  const today = localDay();
-  try {
-    if (window.localStorage.getItem(LAST_STARTUP_CHECK_KEY) === today) return;
-    window.localStorage.setItem(LAST_STARTUP_CHECK_KEY, today);
-  } catch (cause: unknown) {
-    console.warn("更新確認日の保存に失敗しました。", cause);
-  }
+    const today = localDay();
+    try {
+      if (window.localStorage.getItem(LAST_STARTUP_CHECK_KEY) === today) return;
+      window.localStorage.setItem(LAST_STARTUP_CHECK_KEY, today);
+    } catch (cause: unknown) {
+      console.warn("更新確認日の保存に失敗しました。", cause);
+    }
 
-  void checkForUpdate().catch((cause: unknown) => {
+    await checkForUpdate();
+  })().catch((cause: unknown) => {
     console.warn("起動時の更新確認に失敗しました。", cause);
   });
 }
 
 export async function installAvailableUpdate() {
-  if (!canCheckForUpdates()) return;
+  if (!(await canCheckForUpdates())) return;
   if (checkRequest) {
     try {
       await checkRequest;

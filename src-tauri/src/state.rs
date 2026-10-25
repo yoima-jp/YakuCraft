@@ -7,7 +7,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken as AiCancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
-use yc_ai::{CredentialManager, JobManager};
+use yc_ai::{CredentialBackend, CredentialManager, CredentialStoreError, JobManager, ProviderId};
 use yc_analysis::{AnalysisData, CancellationToken};
 use yc_project::{OpenedProject, ProjectAssetIndex};
 
@@ -73,15 +73,41 @@ impl Drop for ProjectDeletionGuard {
 
 impl AppState {
     pub fn new(paths: AppPaths, log_guard: WorkerGuard) -> Self {
-        #[cfg(windows)]
-        let credentials = CredentialManager::windows()
-            .map_err(|error| {
-                tracing::error!(%error, "AI credential store could not be initialized");
-            })
-            .ok()
-            .map(Arc::new);
-        #[cfg(not(windows))]
-        let credentials = None;
+        let use_e2e_credential_store = cfg!(debug_assertions)
+            && std::env::var_os("YAKUCRAFT_E2E").is_some()
+            && std::env::var_os("YAKUCRAFT_E2E_USE_SYSTEM_CREDENTIAL_STORE").is_none();
+        let credentials = if use_e2e_credential_store {
+            // E2Eは既定でOS資格情報を避け、専用確認時だけシステムストアを使う。
+            CredentialManager::new(E2eCredentialBackend::default())
+                .map(Arc::new)
+                .map_err(|error| {
+                    tracing::error!(%error, "E2E AI credential store could not be initialized");
+                })
+                .ok()
+        } else {
+            #[cfg(windows)]
+            {
+                CredentialManager::windows()
+                    .map_err(|error| {
+                        tracing::error!(%error, "AI credential store could not be initialized");
+                    })
+                    .ok()
+                    .map(Arc::new)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                CredentialManager::linux()
+                    .map_err(|error| {
+                        tracing::error!(%error, "AI credential store could not be initialized");
+                    })
+                    .ok()
+                    .map(Arc::new)
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
+            {
+                None
+            }
+        };
 
         Self {
             paths,
@@ -201,6 +227,32 @@ impl AppState {
                 tracing::error!(%error, "Preview cache could not be cleared during shutdown")
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct E2eCredentialBackend(HashMap<ProviderId, String>);
+
+impl CredentialBackend for E2eCredentialBackend {
+    fn get(
+        &mut self,
+        provider: ProviderId,
+    ) -> std::result::Result<Option<String>, CredentialStoreError> {
+        Ok(self.0.get(&provider).cloned())
+    }
+
+    fn set(
+        &mut self,
+        provider: ProviderId,
+        secret: &str,
+    ) -> std::result::Result<(), CredentialStoreError> {
+        self.0.insert(provider, secret.to_owned());
+        Ok(())
+    }
+
+    fn delete(&mut self, provider: ProviderId) -> std::result::Result<(), CredentialStoreError> {
+        self.0.remove(&provider);
+        Ok(())
     }
 }
 

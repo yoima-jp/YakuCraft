@@ -8,13 +8,18 @@ use crate::{
     DiscoveredLanguageFile, LanguageError, LanguageFileFormat, TranslationEntry, WriterOptions,
 };
 
+/// 空欄の訳はMinecraftで何も表示されないため、未翻訳として扱う。
+pub fn is_empty_translation(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 /// 1つのnamespaceを2スペース字下げの決定的なUTF-8 JSONとして書き出す。
 pub fn write_json_language(
     namespace: &str,
     entries: &[TranslationEntry],
-    options: WriterOptions,
+    _options: WriterOptions,
 ) -> Result<Vec<u8>, LanguageError> {
-    let entries = export_entries(namespace, entries, options);
+    let entries = export_entries(namespace, entries);
     let mut output = Vec::new();
     {
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"  ");
@@ -35,7 +40,7 @@ pub fn write_legacy_language(
     entries: &[TranslationEntry],
     options: WriterOptions,
 ) -> Vec<u8> {
-    let entries = export_entries(namespace, entries, options);
+    let entries = export_entries(namespace, entries);
     let mut output = String::new();
     let parse_escapes = options.legacy_parse_escapes
         || entries.iter().any(|entry| {
@@ -185,16 +190,11 @@ pub fn resource_pack_language_filename(version: Option<&str>) -> Option<String> 
 fn export_entries<'a>(
     namespace: &str,
     entries: &'a [TranslationEntry],
-    options: WriterOptions,
 ) -> Vec<&'a TranslationEntry> {
     let mut selected: Vec<_> = entries
         .iter()
-        .filter(|entry| {
-            entry.namespace == namespace
-                && (options.include_empty_translations || !entry.target_text.trim().is_empty())
-        })
+        .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
         .collect();
-    // 集計と同じく空白だけの訳文も未翻訳として省き、Minecraftの英語fallbackを保つ。
     // 判定だけtrimし、翻訳済みテキストの意図した前後の空白は保持する。
     selected.sort_by(|left, right| {
         left.sort_index

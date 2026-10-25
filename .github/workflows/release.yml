@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,3 +43,91 @@ jobs:
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
           # コード署名を導入するときは、証明書 secret と Tauri の署名設定をこの job に追加する。
+
+  release-linux:
+    needs: release-windows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+      - name: Build Linux installers and updater artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: YakuCraft ${{ github.ref_name }}
+          releaseDraft: true
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+
+  release-windows-arm64:
+    # latest.json を逐次更新し、既存の x64 / Linux エントリを保持する。
+    needs: release-linux
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Add Visual Studio clang to PATH
+        shell: pwsh
+        run: |
+          $InputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
+          if (-not $vsPath) { throw 'Visual Studio with the clang component was not found.' }
+          $clangPath = Join-Path $vsPath 'VC\Tools\Llvm\ARM64\bin'
+          if (-not (Test-Path (Join-Path $clangPath 'clang.exe'))) { throw "clang.exe was not found in $clangPath" }
+          Add-Content -Encoding utf8 -Path $env:GITHUB_PATH -Value $clangPath
+      - name: Add Rust ARM64 target
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - run: npm ci
+      - name: Build Windows ARM64 installers and updater artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: YakuCraft ${{ github.ref_name }}
+          releaseDraft: true
+          generateReleaseNotes: true
+          args: --target aarch64-pc-windows-msvc
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true

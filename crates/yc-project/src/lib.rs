@@ -15,15 +15,17 @@ pub use files::{load_recent_projects, load_settings, save_recent_projects, save_
 pub use glossary::{GlossaryMatcher, format_glossary_export, parse_glossary_import};
 pub use lock::{LockRecord, ProjectLock};
 pub use model::{
-    AnalysisData, AppSettings, AssetRecord, EntryUpdate, GlossaryTerm, GlossaryTermInput,
-    IncludedNamespace, JarReplacementRecord, LanguageRecord, ModRecord, ModUnitRecord,
-    NamespaceRecord, NestedArchiveRecord, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
-    ProjectMetadata, ProjectReviewSettings, ProjectSummary, RecentProject, RecentProjects,
-    TranslationAssetMatch, TranslationProgress, UpdateOrigin,
+    AnalysisData, AppSettings, AssetRecord, DocumentEntryInput, DocumentProjectEntry, EntryUpdate,
+    FileDeploymentRecord, GlossaryTerm, GlossaryTermInput, IncludedNamespace, JarReplacementRecord,
+    LanguageRecord, ModRecord, ModUnitRecord, ModUnitSourceKind, NamespaceRecord,
+    NestedArchiveRecord, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary, ProjectMetadata,
+    ProjectReviewSettings, ProjectSummary, RecentProject, RecentProjects, TranslationAssetMatch,
+    TranslationEntryKind, TranslationProgress, UpdateOrigin,
 };
 pub use project::{
-    OpenedProject, cleanup_trash_directories, create_project, delete_project, list_projects,
-    normalize_project_name, open_project, rename_project,
+    ModpackSource, OpenedProject, cleanup_trash_directories, create_project,
+    create_project_with_modpack, delete_project, list_projects, normalize_project_name,
+    open_project, rename_project,
 };
 pub use repository::Repository;
 pub use writer::ProjectWriter;

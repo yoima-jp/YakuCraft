@@ -8,7 +8,22 @@ const projectRoot = path.resolve(e2eDirectory, "..");
 const driverPidFile = process.env.YAKUCRAFT_E2E_DRIVER_PID_FILE;
 const webDriverPort = Number(process.env.YAKUCRAFT_E2E_WEBDRIVER_PORT ?? 4444);
 const nativeDriverPort = Number(process.env.YAKUCRAFT_E2E_NATIVE_PORT ?? webDriverPort + 1);
+const defaultApplication = process.platform === "win32" ? "yakucraft.exe" : "yakucraft";
 let tauriDriver;
+
+// tauri-driver は --native-driver を PATH 検索しないため、実行ファイルを絶対パスに解決する。
+function resolveLinuxNativeDriver() {
+  const configured = process.env.YAKUCRAFT_WEBKITWEBDRIVER ?? "WebKitWebDriver";
+  if (path.isAbsolute(configured)) return configured;
+  if (configured.includes(path.sep)) return path.resolve(configured);
+
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.resolve(directory, configured);
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(`${configured} が PATH に見つかりません。`);
+}
 
 async function waitForDriver() {
   const timeoutAt = Date.now() + 15_000;
@@ -56,21 +71,26 @@ export const config = {
     : process.env.YAKUCRAFT_E2E_SCREENSHOTS === "1"
     ? [path.join(e2eDirectory, "specs", "screenshots.spec.mjs")]
     : [
+      ...(process.platform === "linux"
+        ? [path.join(e2eDirectory, "specs", "linux-runtime.spec.mjs")]
+        : []),
       path.join(e2eDirectory, "specs", "first-milestone.spec.mjs"),
       path.join(e2eDirectory, "specs", "mod-tab-reorder.spec.mjs"),
       path.join(e2eDirectory, "specs", "translation-scroll.spec.mjs"),
       path.join(e2eDirectory, "specs", "recent-project-loading.spec.mjs"),
       path.join(e2eDirectory, "specs", "project-delete.spec.mjs"),
       path.join(e2eDirectory, "specs", "modpack-flow.spec.mjs"),
+      path.join(e2eDirectory, "specs", "full-feature-verification.spec.mjs"),
     ],
   maxInstances: 1,
   hostname: "127.0.0.1",
   port: webDriverPort,
   capabilities: [
     {
+      ...(process.platform === "linux" ? { "wdio:enforceWebDriverClassic": true } : {}),
       "tauri:options": {
         application: process.env.YAKUCRAFT_E2E_APPLICATION
-          ?? path.join(projectRoot, "target", "debug", "yakucraft.exe"),
+          ?? path.join(projectRoot, "target", "debug", defaultApplication),
       },
     },
   ],
@@ -83,14 +103,18 @@ export const config = {
   connectionRetryCount: 1,
   async beforeSession() {
     const tauriDriverPath = process.env.YAKUCRAFT_TAURI_DRIVER;
-    const edgeDriverPath = process.env.YAKUCRAFT_MSEDGEDRIVER;
-    if (!tauriDriverPath || !edgeDriverPath) {
+    const nativeDriverPath = process.platform === "win32"
+      ? process.env.YAKUCRAFT_MSEDGEDRIVER
+      : process.platform === "linux"
+      ? resolveLinuxNativeDriver()
+      : undefined;
+    if (!tauriDriverPath || !nativeDriverPath) {
       throw new Error("E2E driver の実行パスが設定されていません。");
     }
     tauriDriver = spawn(tauriDriverPath, [
       "--port", String(webDriverPort),
       "--native-port", String(nativeDriverPort),
-      "--native-driver", edgeDriverPath,
+      "--native-driver", nativeDriverPath,
     ], { stdio: "inherit" });
     if (driverPidFile) writeFileSync(driverPidFile, String(tauriDriver.pid), "utf8");
     tauriDriver.once("error", (error) => console.error("tauri-driver error:", error));
@@ -104,5 +128,11 @@ export const config = {
 process.once("exit", () => {
   if (tauriDriver?.pid && tauriDriver.exitCode === null && process.platform === "win32") {
     spawnSync("taskkill.exe", ["/PID", String(tauriDriver.pid), "/T", "/F"], { stdio: "ignore" });
+  } else if (tauriDriver?.pid && tauriDriver.exitCode === null && process.platform !== "win32") {
+    try {
+      process.kill(tauriDriver.pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
   }
 });

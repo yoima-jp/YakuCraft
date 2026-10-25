@@ -8,11 +8,13 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use yc_language::{EntryFlag, LanguageFileFormat, ReviewSettings};
+use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
 use crate::{
-    AnalysisData, EntryUpdate, GlossaryTerm, GlossaryTermInput, IncludedNamespace,
-    JarReplacementRecord, ModUnitRecord, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
-    ProjectError, ProjectMetadata, ProjectReviewSettings, Result,
+    AnalysisData, DocumentEntryInput, DocumentProjectEntry, EntryUpdate, FileDeploymentRecord,
+    GlossaryTerm, GlossaryTermInput, IncludedNamespace, JarReplacementRecord, ModUnitRecord,
+    ModUnitSourceKind, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary, ProjectError,
+    ProjectMetadata, ProjectReviewSettings, Result, TranslationEntryKind,
     database::{open_database, open_read_connection},
     model::{flag_from_db, flag_to_db, origin_from_db, origin_to_db},
 };
@@ -36,6 +38,14 @@ impl Repository {
     pub fn list_entries(&self, mod_unit_id: Option<i64>) -> Result<Vec<ProjectEntry>> {
         let connection = open_read_connection(&self.database_path)?;
         list_entries(&connection, mod_unit_id)
+    }
+
+    pub fn list_document_entries(
+        &self,
+        mod_unit_id: Option<i64>,
+    ) -> Result<Vec<DocumentProjectEntry>> {
+        let connection = open_read_connection(&self.database_path)?;
+        list_document_entries(&connection, mod_unit_id)
     }
 
     pub fn list_glossary_terms(&self) -> Result<Vec<GlossaryTerm>> {
@@ -96,29 +106,79 @@ impl Repository {
     pub fn list_mod_units(&self) -> Result<Vec<ModUnitRecord>> {
         let connection = open_read_connection(&self.database_path)?;
         let mut statement = connection.prepare(
-            "SELECT id, sort_index, source_filename, source_sha256, stored_path,
+            "SELECT id, source_kind, sort_index, source_filename, source_sha256, stored_path,
                     original_path, mod_id, name, version, loader, minecraft_version
              FROM mod_units ORDER BY sort_index, id",
         )?;
         statement
             .query_map([], |row| {
-                let sort_index: i64 = row.get(1)?;
+                let sort_index: i64 = row.get(2)?;
                 Ok(ModUnitRecord {
                     id: row.get(0)?,
+                    source_kind: ModUnitSourceKind::from_db(&row.get::<_, String>(1)?).map_err(
+                        |error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        },
+                    )?,
                     sort_index: usize::try_from(sort_index)
-                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, sort_index))?,
-                    source_filename: row.get(2)?,
-                    source_sha256: row.get(3)?,
-                    stored_path: row.get(4)?,
-                    original_path: row.get(5)?,
-                    mod_id: row.get(6)?,
-                    name: row.get(7)?,
-                    version: row.get(8)?,
-                    loader: row.get(9)?,
-                    minecraft_version: row.get(10)?,
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, sort_index))?,
+                    source_filename: row.get(3)?,
+                    source_sha256: row.get(4)?,
+                    stored_path: row.get(5)?,
+                    original_path: row.get(6)?,
+                    mod_id: row.get(7)?,
+                    name: row.get(8)?,
+                    version: row.get(9)?,
+                    loader: row.get(10)?,
+                    minecraft_version: row.get(11)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_file_deployments(
+        &self,
+        include_restored: bool,
+    ) -> Result<Vec<FileDeploymentRecord>> {
+        let connection = open_read_connection(&self.database_path)?;
+        let sql = if include_restored {
+            "SELECT id, mod_unit_id, target_path, existed_before, previous_sha256,
+                    backup_path, deployed_sha256, deployed_at, restored_at
+             FROM file_deployments ORDER BY deployed_at DESC, id DESC"
+        } else {
+            "SELECT id, mod_unit_id, target_path, existed_before, previous_sha256,
+                    backup_path, deployed_sha256, deployed_at, restored_at
+             FROM file_deployments WHERE restored_at IS NULL
+             ORDER BY deployed_at DESC, id DESC"
+        };
+        let mut statement = connection.prepare(sql)?;
+        statement
+            .query_map([], file_deployment_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn active_file_deployment(
+        &self,
+        mod_unit_id: i64,
+        target_path: &str,
+    ) -> Result<Option<FileDeploymentRecord>> {
+        let connection = open_read_connection(&self.database_path)?;
+        connection
+            .query_row(
+                "SELECT id, mod_unit_id, target_path, existed_before, previous_sha256,
+                        backup_path, deployed_sha256, deployed_at, restored_at
+                 FROM file_deployments
+                 WHERE mod_unit_id = ?1 AND target_path = ?2 AND restored_at IS NULL",
+                params![mod_unit_id, target_path],
+                file_deployment_from_row,
+            )
+            .optional()
             .map_err(Into::into)
     }
 
@@ -139,6 +199,16 @@ impl Repository {
         let connection = open_read_connection(&self.database_path)?;
         let count: i64 = connection.query_row(
             "SELECT COUNT(*) FROM jar_replacements WHERE mod_unit_id = ?1 AND restored_at IS NULL",
+            [mod_unit_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn has_unrestored_file_deployments(&self, mod_unit_id: i64) -> Result<bool> {
+        let connection = open_read_connection(&self.database_path)?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM file_deployments WHERE mod_unit_id = ?1 AND restored_at IS NULL",
             [mod_unit_id],
             |row| row.get(0),
         )?;
@@ -623,6 +693,128 @@ fn jar_replacement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JarRepl
     })
 }
 
+fn file_deployment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileDeploymentRecord> {
+    Ok(FileDeploymentRecord {
+        id: row.get(0)?,
+        mod_unit_id: row.get(1)?,
+        target_path: row.get(2)?,
+        existed_before: row.get(3)?,
+        previous_sha256: row.get(4)?,
+        backup_path: row.get(5)?,
+        deployed_sha256: row.get(6)?,
+        deployed_at: row.get(7)?,
+        restored_at: row.get(8)?,
+    })
+}
+
+pub(crate) fn set_mod_unit_source_kind(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    source_kind: ModUnitSourceKind,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let changed = transaction.execute(
+        "UPDATE mod_units SET source_kind = ?1 WHERE id = ?2",
+        params![source_kind.as_db(), mod_unit_id],
+    )?;
+    if changed == 0 {
+        return Err(ProjectError::InvalidDatabaseValue(format!(
+            "mod_units.id={mod_unit_id} was not found"
+        )));
+    }
+    update_project_timestamp(&transaction, &now_rfc3339()?)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn update_modpack_source(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    source_sha256: &str,
+    original_path: &str,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let changed = transaction.execute(
+        "UPDATE mod_units SET source_sha256 = ?1, original_path = ?2
+         WHERE id = ?3 AND source_kind = 'modpack'",
+        params![source_sha256, original_path, mod_unit_id],
+    )?;
+    if changed == 0 {
+        return Err(ProjectError::InvalidDatabaseValue(format!(
+            "mod_units.id={mod_unit_id} is not a modpack"
+        )));
+    }
+    update_project_timestamp(&transaction, &now_rfc3339()?)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn save_file_deployment(
+    connection: &mut Connection,
+    deployment: FileDeploymentRecord,
+) -> Result<()> {
+    let has_previous_hash = deployment.previous_sha256.is_some();
+    let has_backup = deployment.backup_path.is_some();
+    if has_previous_hash != has_backup || deployment.existed_before != has_previous_hash {
+        return Err(ProjectError::InvalidDatabaseValue(
+            "file deployment backup fields do not match existed_before".to_owned(),
+        ));
+    }
+
+    let transaction = connection.transaction()?;
+    let active_id = transaction
+        .query_row(
+            "SELECT id FROM file_deployments
+             WHERE mod_unit_id = ?1 AND target_path = ?2 AND restored_at IS NULL",
+            params![deployment.mod_unit_id, deployment.target_path],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(id) = active_id {
+        transaction.execute(
+            "UPDATE file_deployments SET deployed_sha256 = ?1
+             WHERE id = ?2 AND restored_at IS NULL",
+            params![deployment.deployed_sha256, id],
+        )?;
+    } else {
+        transaction.execute(
+            "INSERT INTO file_deployments (
+                mod_unit_id, target_path, existed_before, previous_sha256, backup_path,
+                deployed_sha256, deployed_at, restored_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            params![
+                deployment.mod_unit_id,
+                deployment.target_path,
+                deployment.existed_before,
+                deployment.previous_sha256,
+                deployment.backup_path,
+                deployment.deployed_sha256,
+                deployment.deployed_at,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn mark_file_deployment_restored(
+    connection: &mut Connection,
+    id: i64,
+    restored_at: &str,
+) -> Result<()> {
+    let changed = connection.execute(
+        "UPDATE file_deployments SET restored_at = ?1
+         WHERE id = ?2 AND restored_at IS NULL",
+        params![restored_at, id],
+    )?;
+    if changed == 0 {
+        return Err(ProjectError::InvalidDatabaseValue(format!(
+            "active file_deployments.id={id} was not found"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn save_jar_replacement(
     connection: &mut Connection,
     replacement: JarReplacementRecord,
@@ -681,6 +873,153 @@ pub(crate) fn mark_jar_replacement_restored(
     Ok(())
 }
 
+pub(crate) fn save_document_entries(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    entries: Vec<DocumentEntryInput>,
+) -> Result<()> {
+    if entries
+        .iter()
+        .any(|entry| entry.entry_kind == TranslationEntryKind::Lang)
+    {
+        return Err(ProjectError::InvalidDatabaseValue(
+            "document entries must use patchouli or ftbquests entry_kind".to_owned(),
+        ));
+    }
+
+    let transaction = connection.transaction()?;
+    let now = now_rfc3339()?;
+    let mut upsert_entry = transaction.prepare_cached(
+        "INSERT INTO translation_entries (
+            mod_unit_id, namespace, entry_kind, document_path, document_pointer,
+            translation_key, source_text, source_locale, target_text, target_original_text,
+            translated_source_text, target_origin, sort_index, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(mod_unit_id, namespace, entry_kind, translation_key) DO UPDATE SET
+            document_path = excluded.document_path,
+            document_pointer = excluded.document_pointer,
+            source_text = excluded.source_text,
+            source_locale = excluded.source_locale,
+            target_text = CASE WHEN translation_entries.target_origin IN ('existing', 'missing')
+                THEN excluded.target_text ELSE translation_entries.target_text END,
+            target_original_text = CASE WHEN translation_entries.target_origin IN ('existing', 'missing')
+                THEN excluded.target_original_text ELSE translation_entries.target_original_text END,
+            translated_source_text = CASE WHEN translation_entries.target_origin IN ('existing', 'missing')
+                THEN excluded.translated_source_text ELSE translation_entries.translated_source_text END,
+            target_origin = CASE WHEN translation_entries.target_origin IN ('existing', 'missing')
+                THEN excluded.target_origin ELSE translation_entries.target_origin END,
+            sort_index = excluded.sort_index,
+            updated_at = excluded.updated_at",
+    )?;
+    let mut select_final_entry = transaction.prepare_cached(
+        "SELECT id, source_text, target_text FROM translation_entries
+         WHERE mod_unit_id = ?1 AND namespace = ?2 AND entry_kind = ?3 AND translation_key = ?4",
+    )?;
+    let mut clear_flags =
+        transaction.prepare_cached("DELETE FROM entry_flags WHERE entry_id = ?1")?;
+    let mut insert_flag = transaction
+        .prepare_cached("INSERT OR IGNORE INTO entry_flags (entry_id, flag) VALUES (?1, ?2)")?;
+
+    let existing_keys = {
+        let mut statement = transaction.prepare_cached(
+            "SELECT entry_kind, translation_key FROM translation_entries
+             WHERE mod_unit_id = ?1 AND entry_kind IN ('patchouli', 'ftbquests')",
+        )?;
+        statement
+            .query_map([mod_unit_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let incoming_keys: std::collections::HashSet<_> = entries
+        .iter()
+        .map(|entry| (entry.entry_kind.as_db(), entry.key.as_str()))
+        .collect();
+    for (entry_kind, stale_key) in existing_keys
+        .iter()
+        .filter(|(kind, key)| !incoming_keys.contains(&(kind.as_str(), key.as_str())))
+    {
+        transaction.execute(
+            "DELETE FROM translation_entries
+             WHERE mod_unit_id = ?1 AND entry_kind = ?2 AND translation_key = ?3",
+            params![mod_unit_id, entry_kind, stale_key],
+        )?;
+    }
+
+    for entry in entries {
+        let target_text = entry.target_text.as_deref();
+        let target_origin = if target_text.is_some() {
+            origin_to_db(&entry.origin)
+        } else {
+            "missing"
+        };
+        upsert_entry.execute(params![
+            mod_unit_id,
+            entry.namespace,
+            entry.entry_kind.as_db(),
+            entry.document_path,
+            entry.document_pointer,
+            entry.key,
+            entry.source_text,
+            entry.source_locale,
+            target_text,
+            entry.target_original_text,
+            entry.translated_source_text,
+            target_origin,
+            usize_to_i64(entry.sort_index, "translation_entry.sort_index")?,
+            now,
+        ])?;
+        let (entry_id, source_text, final_target_text) = select_final_entry.query_row(
+            params![
+                mod_unit_id,
+                entry.namespace,
+                entry.entry_kind.as_db(),
+                entry.key
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?;
+        let profile = match entry.entry_kind {
+            TranslationEntryKind::Patchouli => PlaceholderProfile::Patchouli,
+            TranslationEntryKind::Ftbquests => PlaceholderProfile::FtbQuests,
+            TranslationEntryKind::Lang if entry.flags.contains(&EntryFlag::PatchouliText) => {
+                PlaceholderProfile::Patchouli
+            }
+            TranslationEntryKind::Lang => PlaceholderProfile::Lang,
+        };
+        let has_placeholder_error = final_target_text.as_deref().is_some_and(|target_text| {
+            !compare_placeholders_for_profile(
+                source_text.as_deref().unwrap_or_default(),
+                target_text,
+                profile,
+            )
+            .is_valid
+        });
+        let mut flags = entry.flags;
+        flags.retain(|flag| *flag != EntryFlag::PlaceholderError);
+        if has_placeholder_error {
+            flags.push(EntryFlag::PlaceholderError);
+        }
+        clear_flags.execute([entry_id])?;
+        for flag in flags {
+            insert_flag.execute(params![entry_id, flag_to_db(&flag)])?;
+        }
+    }
+
+    drop(insert_flag);
+    drop(clear_flags);
+    drop(select_final_entry);
+    drop(upsert_entry);
+    update_project_timestamp(&transaction, &now)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn save_analysis(
     connection: &mut Connection,
     mod_unit_id: i64,
@@ -688,7 +1027,7 @@ pub(crate) fn save_analysis(
 ) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute(
-        "DELETE FROM translation_entries WHERE mod_unit_id = ?1",
+        "DELETE FROM translation_entries WHERE mod_unit_id = ?1 AND entry_kind = 'lang'",
         [mod_unit_id],
     )?;
     transaction.execute("DELETE FROM assets WHERE mod_unit_id = ?1", [mod_unit_id])?;
@@ -918,12 +1257,15 @@ pub(crate) fn save_asset_index(
     transaction.execute(
         "UPDATE translation_entries
          SET asset_kind = NULL, asset_id = NULL, asset_confidence = NULL
-         WHERE mod_unit_id = ?1",
+         WHERE mod_unit_id = ?1 AND entry_kind = 'lang'",
         [mod_unit_id],
     )?;
     transaction.execute(
         "DELETE FROM entry_flags WHERE flag IN ('asset_missing', 'asset_ambiguous')
-         AND entry_id IN (SELECT id FROM translation_entries WHERE mod_unit_id = ?1)",
+         AND entry_id IN (
+             SELECT id FROM translation_entries
+             WHERE mod_unit_id = ?1 AND entry_kind = 'lang'
+         )",
         [mod_unit_id],
     )?;
     tracing::info!(
@@ -966,7 +1308,8 @@ pub(crate) fn save_asset_index(
     let entry_ids_started = Instant::now();
     let entry_ids = {
         let mut statement = transaction.prepare(
-            "SELECT id, namespace, translation_key FROM translation_entries WHERE mod_unit_id = ?1",
+            "SELECT id, namespace, translation_key FROM translation_entries
+             WHERE mod_unit_id = ?1 AND entry_kind = 'lang'",
         )?;
         statement
             .query_map([mod_unit_id], |row| {
@@ -1155,6 +1498,35 @@ pub(crate) fn add_flag(connection: &mut Connection, entry_id: i64, flag: EntryFl
     Ok(())
 }
 
+pub(crate) fn add_patchouli_text_flags(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    keys: &[(String, String)],
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let mut insert_flag = transaction.prepare_cached(
+        "INSERT OR IGNORE INTO entry_flags (entry_id, flag)
+         SELECT id, ?1 FROM translation_entries
+         WHERE mod_unit_id = ?2 AND namespace = ?3 AND translation_key = ?4
+           AND entry_kind = 'lang'",
+    )?;
+    let mut changed = false;
+    for (namespace, key) in keys {
+        changed |= insert_flag.execute(params![
+            flag_to_db(&EntryFlag::PatchouliText),
+            mod_unit_id,
+            namespace,
+            key
+        ])? > 0;
+    }
+    drop(insert_flag);
+    if changed {
+        update_project_timestamp(&transaction, &now_rfc3339()?)?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn remove_flag(
     connection: &mut Connection,
     entry_id: i64,
@@ -1179,7 +1551,7 @@ fn list_entries(connection: &Connection, mod_unit_id: Option<i64>) -> Result<Vec
                     target_text, target_original_text, translated_source_text, target_origin,
                     sort_index
              FROM translation_entries
-             WHERE (?1 IS NULL OR mod_unit_id = ?1)
+             WHERE (?1 IS NULL OR mod_unit_id = ?1) AND entry_kind = 'lang'
              ORDER BY mod_unit_id, sort_index, id",
         )?;
         statement
@@ -1236,9 +1608,119 @@ fn list_entries(connection: &Connection, mod_unit_id: Option<i64>) -> Result<Vec
 
     let mut statement = connection.prepare(
         "SELECT entry_id, flag FROM entry_flags
-         WHERE (?1 IS NULL OR entry_id IN (
-             SELECT id FROM translation_entries WHERE mod_unit_id = ?1
-         )) ORDER BY entry_id, flag",
+         WHERE entry_id IN (
+             SELECT id FROM translation_entries
+             WHERE (?1 IS NULL OR mod_unit_id = ?1) AND entry_kind = 'lang'
+         ) ORDER BY entry_id, flag",
+    )?;
+    let flags = statement
+        .query_map([mod_unit_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (entry_id, flag) in flags {
+        let index = indexes_by_id.get(&entry_id).copied().ok_or_else(|| {
+            ProjectError::InvalidDatabaseValue(format!("orphan entry flag for id {entry_id}"))
+        })?;
+        entries[index].flags.push(flag_from_db(&flag)?);
+    }
+    Ok(entries)
+}
+
+fn list_document_entries(
+    connection: &Connection,
+    mod_unit_id: Option<i64>,
+) -> Result<Vec<DocumentProjectEntry>> {
+    let raw_entries = {
+        let mut statement = connection.prepare(
+            "SELECT id, mod_unit_id, namespace, translation_key, entry_kind, document_path,
+                    document_pointer, source_text, source_locale, target_text,
+                    target_original_text, translated_source_text, target_origin, sort_index
+             FROM translation_entries
+             WHERE (?1 IS NULL OR mod_unit_id = ?1) AND entry_kind <> 'lang'
+             ORDER BY mod_unit_id, sort_index, id",
+        )?;
+        statement
+            .query_map([mod_unit_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, i64>(13)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let mut indexes_by_id = HashMap::with_capacity(raw_entries.len());
+    let mut entries = Vec::with_capacity(raw_entries.len());
+    for (index, raw) in raw_entries.into_iter().enumerate() {
+        let (
+            id,
+            mod_unit_id,
+            namespace,
+            key,
+            entry_kind,
+            document_path,
+            document_pointer,
+            source_text,
+            source_locale,
+            target_text,
+            target_original_text,
+            translated_source_text,
+            origin,
+            sort_index,
+        ) = raw;
+        let entry_kind = TranslationEntryKind::from_db(&entry_kind)?;
+        if entry_kind == TranslationEntryKind::Lang {
+            return Err(ProjectError::InvalidDatabaseValue(
+                "lang entry in document entry query".to_owned(),
+            ));
+        }
+        entries.push(DocumentProjectEntry {
+            id,
+            mod_unit_id,
+            namespace,
+            key,
+            entry_kind,
+            document_path: document_path.ok_or_else(|| {
+                ProjectError::InvalidDatabaseValue(format!(
+                    "document_path is missing for translation entry id={id}"
+                ))
+            })?,
+            document_pointer: document_pointer.ok_or_else(|| {
+                ProjectError::InvalidDatabaseValue(format!(
+                    "document_pointer is missing for translation entry id={id}"
+                ))
+            })?,
+            source_text,
+            source_locale,
+            target_text,
+            target_original_text,
+            translated_source_text,
+            origin: origin_from_db(&origin)?,
+            sort_index: i64_to_usize(sort_index, "translation_entry.sort_index")?,
+            flags: Vec::new(),
+        });
+        indexes_by_id.insert(id, index);
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT entry_id, flag FROM entry_flags
+         WHERE entry_id IN (
+             SELECT id FROM translation_entries
+             WHERE (?1 IS NULL OR mod_unit_id = ?1) AND entry_kind <> 'lang'
+         ) ORDER BY entry_id, flag",
     )?;
     let flags = statement
         .query_map([mod_unit_id], |row| {

@@ -38,6 +38,19 @@ static MINECRAFT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Minecraft formatting regex is a compile-time constant")
 });
 
+static PATCHOULI_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\([^)\r\n]*\)").expect("Patchouli formatting regex is a compile-time constant")
+});
+
+static PATCHOULI_TEMPLATE_VARIABLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"#[^#\s]+#").expect("Patchouli template variable regex is a compile-time constant")
+});
+
+static FTBQUESTS_FORMATTING_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i:&[0-9a-fk-or])")
+        .expect("FTB Quests formatting regex is a compile-time constant")
+});
+
 /// 検出したトークンの分類。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +61,21 @@ pub enum PlaceholderKind {
     Named,
     Escape,
     MinecraftFormatting,
+    PatchouliFormatting,
+    PatchouliTemplateVariable,
+    FtbQuestsFormatting,
+    FtbQuestsTag,
+    FtbQuestsJson,
+}
+
+/// Placeholder の書式プロファイル。`lang` は既存の比較動作を維持する。
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaceholderProfile {
+    #[default]
+    Lang,
+    Patchouli,
+    FtbQuests,
 }
 
 /// 原文または訳文に含まれる Placeholder。
@@ -85,7 +113,16 @@ pub enum PlaceholderSeverity {
 
 /// Placeholder トークンを出現順に抽出する。
 pub fn extract_placeholders(text: &str) -> Vec<PlaceholderToken> {
+    extract_placeholders_for_profile(text, PlaceholderProfile::Lang)
+}
+
+/// 指定した書式プロファイルに応じた Placeholder を出現順に抽出する。
+pub fn extract_placeholders_for_profile(
+    text: &str,
+    profile: PlaceholderProfile,
+) -> Vec<PlaceholderToken> {
     let mut found = Vec::new();
+    let mut opaque_ranges = Vec::new();
 
     for captures in PRINTF_PATTERN.captures_iter(text) {
         let matched = captures
@@ -157,8 +194,195 @@ pub fn extract_placeholders(text: &str) -> Vec<PlaceholderToken> {
         ));
     }
 
+    // Patchouli の lang 値にも書式が現れるが、通常の lang の既存判定を変えないため、
+    // Patchouli formatting tokens and template variables are recognized only for this profile.
+    // Patchouli 値では閉じた構文を保護し、書式そのものを説明する文の誤検出より改変防止を優先する。
+    if profile == PlaceholderProfile::Patchouli {
+        // マクロは本ごとに追加・再定義できるため、既知の名前で絞らず閉じ括弧までを保護する。
+        for matched in PATCHOULI_PATTERN.find_iter(text) {
+            opaque_ranges.push((matched.start(), matched.end()));
+            found.push((
+                matched.start(),
+                PlaceholderToken {
+                    kind: PlaceholderKind::PatchouliFormatting,
+                    value: matched.as_str().to_owned(),
+                },
+            ));
+        }
+        for matched in PATCHOULI_TEMPLATE_VARIABLE_PATTERN.find_iter(text) {
+            opaque_ranges.push((matched.start(), matched.end()));
+            found.push((
+                matched.start(),
+                PlaceholderToken {
+                    kind: PlaceholderKind::PatchouliTemplateVariable,
+                    value: matched.as_str().to_owned(),
+                },
+            ));
+        }
+    }
+
+    if profile == PlaceholderProfile::FtbQuests {
+        for matched in FTBQUESTS_FORMATTING_PATTERN.find_iter(text) {
+            found.push((
+                matched.start(),
+                PlaceholderToken {
+                    kind: PlaceholderKind::FtbQuestsFormatting,
+                    value: matched.as_str().to_owned(),
+                },
+            ));
+        }
+
+        let json_ranges = ftbquests_json_component_ranges(text);
+        for (start, end) in &json_ranges {
+            opaque_ranges.push((*start, *end));
+            found.push((
+                *start,
+                PlaceholderToken {
+                    kind: PlaceholderKind::FtbQuestsJson,
+                    value: text[*start..*end].to_owned(),
+                },
+            ));
+        }
+
+        for (start, end) in balanced_brace_ranges(text) {
+            if json_ranges
+                .iter()
+                .any(|(json_start, json_end)| *json_start <= start && end <= *json_end)
+            {
+                continue;
+            }
+            if text[..start].ends_with('$') {
+                continue;
+            }
+            let value = &text[start..end];
+            let contents = &value[1..value.len() - 1];
+            if !contents.is_empty() && contents.chars().all(|character| character.is_ascii_digit())
+            {
+                continue;
+            }
+            found.push((
+                start,
+                PlaceholderToken {
+                    kind: PlaceholderKind::FtbQuestsTag,
+                    value: value.to_owned(),
+                },
+            ));
+            opaque_ranges.push((start, end));
+        }
+    }
+
+    found.retain(|(position, token)| {
+        !opaque_ranges.iter().any(|(start, end)| {
+            *start <= *position
+                && *position + token.value.len() <= *end
+                && (*start != *position || *end != *position + token.value.len())
+        })
+    });
+
     found.sort_by_key(|(position, _)| *position);
     found.into_iter().map(|(_, token)| token).collect()
+}
+
+fn ftbquests_json_component_ranges(text: &str) -> Vec<(usize, usize)> {
+    // JSON コンポーネントは子オブジェクトを含むため、内側の波括弧ではなく全体を一つにする。
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !matches!(bytes[index], b'{' | b'[') {
+            index += 1;
+            continue;
+        }
+        let Some(end) = balanced_json_end(bytes, index) else {
+            index += 1;
+            continue;
+        };
+        let candidate = &text[index..end];
+        if looks_like_json_text_component(candidate) {
+            ranges.push((index, end));
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    ranges
+}
+
+fn balanced_brace_ranges(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'{' {
+            index += 1;
+            continue;
+        }
+        if let Some(end) = balanced_json_end(bytes, index) {
+            ranges.push((index, end));
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    ranges
+}
+
+fn balanced_json_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let opening = *bytes.get(start)?;
+    let mut closers = Vec::new();
+    closers.push(match opening {
+        b'{' => b'}',
+        b'[' => b']',
+        _ => return None,
+    });
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().copied().enumerate().skip(start + 1) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => closers.push(b'}'),
+            b'[' => closers.push(b']'),
+            b'}' | b']' => {
+                if closers.pop() != Some(byte) {
+                    return None;
+                }
+                if closers.is_empty() {
+                    return Some(offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn looks_like_json_text_component(candidate: &str) -> bool {
+    let has_component_field = [
+        "\"text\"",
+        "\"translate\"",
+        "\"selector\"",
+        "\"score\"",
+        "\"keybind\"",
+        "\"nbt\"",
+    ]
+    .iter()
+    .any(|field| candidate.contains(field));
+    let is_json_array = candidate.starts_with("[")
+        && candidate
+            .find('{')
+            .is_some_and(|index| candidate[index + 1..].trim_start().starts_with('"'));
+
+    (candidate.starts_with('{') && has_component_field) || is_json_array
 }
 
 fn is_ambiguous_uppercase_word_start(text: &str, captures: &regex::Captures<'_>) -> bool {
@@ -181,9 +405,49 @@ fn is_ambiguous_uppercase_word_start(text: &str, captures: &regex::Captures<'_>)
 
 /// printf引数の参照先と書式を比較する。順序変更は参照先が同じ場合に限って許可する。
 pub fn compare_placeholders(source: &str, translation: &str) -> PlaceholderComparison {
-    let source_tokens = extract_placeholders(source);
-    let target_tokens = extract_placeholders(translation);
+    compare_placeholders_for_profile(source, translation, PlaceholderProfile::Lang)
+}
+
+/// 指定した書式プロファイルで Placeholder を比較する。
+pub fn compare_placeholders_for_profile(
+    source: &str,
+    translation: &str,
+    profile: PlaceholderProfile,
+) -> PlaceholderComparison {
+    let source_tokens = extract_placeholders_for_profile(source, profile);
+    let target_tokens = extract_placeholders_for_profile(translation, profile);
     let (mut difference, mut has_error) = compare_printf_arguments(&source_tokens, &target_tokens);
+
+    let profiled_kinds: &[PlaceholderKind] = match profile {
+        PlaceholderProfile::Lang => &[],
+        PlaceholderProfile::Patchouli => &[
+            PlaceholderKind::PatchouliFormatting,
+            PlaceholderKind::PatchouliTemplateVariable,
+        ],
+        PlaceholderProfile::FtbQuests => &[
+            PlaceholderKind::FtbQuestsFormatting,
+            PlaceholderKind::FtbQuestsTag,
+            PlaceholderKind::FtbQuestsJson,
+            PlaceholderKind::Escape,
+        ],
+    };
+    let profiled_difference = multiset_difference(
+        &source_tokens
+            .iter()
+            .filter(|token| profiled_kinds.contains(&token.kind))
+            .cloned()
+            .collect::<Vec<_>>(),
+        &target_tokens
+            .iter()
+            .filter(|token| profiled_kinds.contains(&token.kind))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    if !profiled_difference.extra.is_empty() {
+        has_error = true;
+    }
+    difference.missing.extend(profiled_difference.missing);
+    difference.extra.extend(profiled_difference.extra);
 
     // § の装飾、改行、brace / named token は通常の翻訳文字列ではただの文字列。
     // Minecraftや各modの別パーサーだけが解釈する記法を共通チェックで比較しない。
@@ -826,5 +1090,101 @@ mod tests {
     #[test]
     fn compares_minecraft_formatting_case_insensitively() {
         assert!(compare_placeholders("§aGreen §R", "§AGreen §r").is_valid);
+    }
+
+    #[test]
+    fn patchouli_formatting_tokens_are_extracted_and_compared_as_a_multiset() {
+        let source = "$(l) $(br) $(#ff0000) $(custom_macro:value)";
+        let tokens = extract_placeholders_for_profile(source, PlaceholderProfile::Patchouli);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == PlaceholderKind::PatchouliFormatting)
+                .map(|token| token.value.as_str())
+                .collect::<Vec<_>>(),
+            ["$(l)", "$(br)", "$(#ff0000)", "$(custom_macro:value)"]
+        );
+        let nested_printf =
+            extract_placeholders_for_profile("$(t:%s)", PlaceholderProfile::Patchouli);
+        assert_eq!(nested_printf.len(), 1);
+        assert_eq!(nested_printf[0].kind, PlaceholderKind::PatchouliFormatting);
+        assert!(
+            compare_placeholders_for_profile(
+                "$(l) Stone $(br)",
+                "$(br) 石 $(l)",
+                PlaceholderProfile::Patchouli,
+            )
+            .is_valid
+        );
+
+        let missing =
+            compare_placeholders_for_profile("$(item) Stone", "石", PlaceholderProfile::Patchouli);
+        assert_eq!(missing.difference.missing[0].value, "$(item)");
+
+        let modified = compare_placeholders_for_profile(
+            "$(item) Stone",
+            "$(thing) 石",
+            PlaceholderProfile::Patchouli,
+        );
+        assert_eq!(modified.difference.missing[0].value, "$(item)");
+        assert_eq!(modified.difference.extra[0].value, "$(thing)");
+
+        // lang の既定判定を保ち、書式プロファイルが明示されたときだけ Patchouli を検証する。
+        assert!(compare_placeholders("$(item) Stone", "$(thing) 石").is_valid);
+    }
+
+    #[test]
+    fn ftbquests_formatting_tags_json_escapes_and_printf_are_protected() {
+        let source = r#"&aTitle {@pagebreak} {image:mod:path width:200} {"text":"Link %s","clickEvent":{"action":"run_command","value":"/go"}}\n %s"#;
+        let tokens = extract_placeholders_for_profile(source, PlaceholderProfile::FtbQuests);
+        assert!(tokens.iter().any(|token| {
+            token.kind == PlaceholderKind::FtbQuestsFormatting && token.value == "&a"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == PlaceholderKind::FtbQuestsTag && token.value == "{@pagebreak}"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == PlaceholderKind::FtbQuestsTag
+                && token.value == "{image:mod:path width:200}"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == PlaceholderKind::FtbQuestsJson
+                && token.value
+                    == r#"{"text":"Link %s","clickEvent":{"action":"run_command","value":"/go"}}"#
+        }));
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == PlaceholderKind::Escape)
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == PlaceholderKind::Printf && token.value == "%s")
+                .count(),
+            1
+        );
+
+        assert!(compare_placeholders_for_profile(
+            source,
+            r#"&aTitle %1$s {"text":"Link %s","clickEvent":{"action":"run_command","value":"/go"}}{image:mod:path width:200}{@pagebreak}\n"#,
+            PlaceholderProfile::FtbQuests,
+        )
+        .is_valid);
+
+        let changed_code = compare_placeholders_for_profile(
+            "&aTitle {@pagebreak} %s",
+            "&cTitle {@pagebreak} %s",
+            PlaceholderProfile::FtbQuests,
+        );
+        assert_eq!(changed_code.difference.missing[0].value, "&a");
+        assert_eq!(changed_code.difference.extra[0].value, "&c");
+
+        let changed_json = compare_placeholders_for_profile(
+            r#"{"text":"Link"}"#,
+            r#"{"text":"リンク"}"#,
+            PlaceholderProfile::FtbQuests,
+        );
+        assert!(!changed_json.is_valid);
     }
 }

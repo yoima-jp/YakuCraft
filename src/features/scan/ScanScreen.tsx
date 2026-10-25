@@ -18,7 +18,7 @@ import { isAnalysisEventForJob } from "./analysisEvents";
 import { defaultSelectedPaths } from "./defaultSelection";
 import { useScanStore } from "./scanStore";
 import { scanModsFolder } from "./tauri";
-import type { ModLanguageStatusDto, ModScanResultDto, ScanModsFolderEventDto } from "./types";
+import type { ModLanguageStatusDto, ModScanResultDto, ModpackScanDto, ScanModsFolderEventDto } from "./types";
 import "./ScanScreen.css";
 
 const STATUS_LABELS: Record<ModLanguageStatusDto["kind"], string> = {
@@ -66,12 +66,17 @@ function isSelectable(result: ModScanResultDto): boolean {
   return result.status.kind !== "no_language_files" && result.status.kind !== "failed";
 }
 
+function modpackHasImportableFiles(scan: ModpackScanDto): boolean {
+  return scan.files.some((file) => file.locale.toLocaleLowerCase() === "en_us");
+}
+
 export function ScanScreen() {
   const folderPath = useScanStore((state) => state.folderPath);
   const scanRevision = useScanStore((state) => state.scanRevision);
   const scanJobId = useScanStore((state) => state.scanJobId);
   const scanProgress = useScanStore((state) => state.scanProgress);
   const results = useScanStore((state) => state.results);
+  const modpackScan = useScanStore((state) => state.modpackScan);
   const scannedFolder = useScanStore((state) => state.scannedFolder);
   const instanceDir = useScanStore((state) => state.instanceDir);
   const looksLikeInstanceDir = useScanStore((state) => state.looksLikeInstanceDir);
@@ -92,6 +97,7 @@ export function ScanScreen() {
 
   const [thresholdInput, setThresholdInput] = useState("100");
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
+  const [selectedModpack, setSelectedModpack] = useState(false);
   const [statusFilters, setStatusFilters] = useState<StatusFilters>(DEFAULT_STATUS_FILTERS);
   const [search, setSearch] = useState("");
   const [scanCancelRequested, setScanCancelRequested] = useState(false);
@@ -126,7 +132,7 @@ export function ScanScreen() {
       scanJobRef.current = null;
       setScanJobId(null);
       if (event.kind === "completed") {
-        setScanResults(event.results, event.scannedFolder, event.instanceDir, event.looksLikeInstanceDir);
+        setScanResults(event.results, event.scannedFolder, event.instanceDir, event.looksLikeInstanceDir, event.modpackScan);
       } else {
         setScanError(event.error);
       }
@@ -159,6 +165,10 @@ export function ScanScreen() {
     if (results) setSelectedPaths(defaultSelectedPaths(results, thresholdPercent));
   }, [results, thresholdPercent]);
 
+  useEffect(() => {
+    setSelectedModpack(Boolean(modpackScan && modpackHasImportableFiles(modpackScan)));
+  }, [results, modpackScan]);
+
   const visibleResults = useMemo(() => {
     if (!results) return [];
     const query = search.trim().toLocaleLowerCase();
@@ -170,19 +180,23 @@ export function ScanScreen() {
     });
   }, [results, search, statusFilters]);
 
+  const showModpack = Boolean(modpackScan);
+  const modpackSelectable = Boolean(modpackScan && modpackHasImportableFiles(modpackScan));
+
   // TanStack Virtual はスクロール位置に合わせて可視行を差し替えるため、戻り値をReact Compilerでmemo化しない。
   // oxlint-disable-next-line react/incompatible-library
   const virtualizer = useVirtualizer({
-    count: visibleResults.length,
+    count: visibleResults.length + Number(showModpack),
     getScrollElement: () => listRef.current,
-    estimateSize: () => 88,
-    getItemKey: (index) => visibleResults[index]?.path ?? index,
+    estimateSize: (index) => (showModpack && index === 0 ? 104 : 88),
+    getItemKey: (index) => showModpack && index === 0 ? "modpack" : visibleResults[index - Number(showModpack)]?.path ?? index,
     overscan: 8,
   });
 
   const visibleSelectable = visibleResults.filter(isSelectable);
-  const allVisibleSelected = visibleSelectable.length > 0
-    && visibleSelectable.every((result) => selectedPaths.has(result.path));
+  const allVisibleSelected = (visibleSelectable.length > 0 || (showModpack && modpackSelectable))
+    && visibleSelectable.every((result) => selectedPaths.has(result.path))
+    && (!showModpack || !modpackSelectable || selectedModpack);
 
   const updateVisibleSelection = useCallback((selected: boolean) => {
     setSelectedPaths((current) => {
@@ -193,7 +207,8 @@ export function ScanScreen() {
       }
       return next;
     });
-  }, [visibleSelectable]);
+    if (showModpack && modpackSelectable) setSelectedModpack(selected);
+  }, [modpackSelectable, showModpack, visibleSelectable]);
 
   const handleAnalysisEvent = useCallback((
     event: AnalysisChannelEvent,
@@ -258,9 +273,9 @@ export function ScanScreen() {
   }, [goTo, setAnalysisError, setAnalysisJobId, setAnalysisProgress, setCreationComplete, setModImportFailures, setModUnits, setProjectDetails]);
 
   const createSelectedProject = async () => {
-    if (!results || selectedPaths.size === 0 || creating) return;
+    if (!results || (selectedPaths.size === 0 && !selectedModpack) || creating) return;
     const paths = results.filter((result) => selectedPaths.has(result.path)).map((result) => result.path);
-    if (paths.length === 0) return;
+    if (paths.length === 0 && !selectedModpack) return;
 
     const generation = ++createGenerationRef.current;
     setCreating(true);
@@ -269,8 +284,12 @@ export function ScanScreen() {
     setAnalysisProgress(null);
     setAnalysisJobId(null);
     setModImportFailures([]);
-    const sourceLabel = `${paths.length.toLocaleString("ja-JP")} 個のMod`;
-    setSourceJar(paths[0], sourceLabel);
+    const selectedCount = paths.length + Number(selectedModpack);
+    const sourceLabel = selectedModpack
+      ? `${selectedCount.toLocaleString("ja-JP")} 件（Modpack 固有を含む）`
+      : `${paths.length.toLocaleString("ja-JP")} 個のMod`;
+    const sourcePath = paths[0] ?? instanceDir ?? scannedFolder ?? folderPath ?? "";
+    setSourceJar(sourcePath, sourceLabel);
     await goTo("analyze");
     try {
       let jobId: string | null = null;
@@ -278,17 +297,18 @@ export function ScanScreen() {
       // Channel通知がinvokeの返すjobIdより先に届いても、ID確定後に照合してから反映する。
       const returnedJobId = await createProjectFromJars(
         paths,
-        (scannedFolder !== folderPath || looksLikeInstanceDir) ? instanceDir : null,
+        selectedModpack || scannedFolder !== folderPath || looksLikeInstanceDir ? instanceDir : null,
         (event) => {
           if (jobId === null) earlyEvents.push(event);
-          else handleAnalysisEvent(event, generation, jobId, paths[0], sourceLabel);
+          else handleAnalysisEvent(event, generation, jobId, sourcePath, sourceLabel);
         },
+        selectedModpack,
       );
       jobId = returnedJobId;
       const currentState = useProjectStore.getState();
       if (
         generation !== createGenerationRef.current
-        || currentState.sourcePath !== paths[0]
+        || currentState.sourcePath !== sourcePath
         || currentState.sourceFileName !== sourceLabel
         || (currentState.analysisJobId !== null && currentState.analysisJobId !== returnedJobId)
       ) {
@@ -297,12 +317,12 @@ export function ScanScreen() {
       }
       if (!terminalCreateJobsRef.current.has(returnedJobId)) setAnalysisJobId(returnedJobId);
       for (const event of earlyEvents) {
-        handleAnalysisEvent(event, generation, returnedJobId, paths[0], sourceLabel);
+        handleAnalysisEvent(event, generation, returnedJobId, sourcePath, sourceLabel);
       }
     } catch (error: unknown) {
       if (
         generation !== createGenerationRef.current
-        || useProjectStore.getState().sourcePath !== paths[0]
+        || useProjectStore.getState().sourcePath !== sourcePath
         || useProjectStore.getState().sourceFileName !== sourceLabel
       ) return;
       setAnalysisError(appError(error));
@@ -412,26 +432,64 @@ export function ScanScreen() {
       </fieldset>
 
       <div className="scan-screen__selection-bar">
-        <output aria-live="polite">{selectedPaths.size.toLocaleString("ja-JP")} 件選択中</output>
+        <output aria-live="polite">{(selectedPaths.size + Number(selectedModpack)).toLocaleString("ja-JP")} 件選択中</output>
         <div>
-          <TertiaryButton disabled={visibleSelectable.length === 0 || allVisibleSelected} onClick={() => updateVisibleSelection(true)}>
+          <TertiaryButton disabled={(visibleSelectable.length === 0 && !(showModpack && modpackSelectable)) || allVisibleSelected} onClick={() => updateVisibleSelection(true)}>
             表示中を全選択
           </TertiaryButton>
-          <TertiaryButton disabled={visibleSelectable.length === 0 || selectedPaths.size === 0} onClick={() => updateVisibleSelection(false)}>
+          <TertiaryButton disabled={(visibleSelectable.length === 0 && !(showModpack && modpackSelectable)) || (selectedPaths.size === 0 && !selectedModpack)} onClick={() => updateVisibleSelection(false)}>
             表示中を全解除
           </TertiaryButton>
         </div>
       </div>
 
-      {visibleResults.length > 0 ? (
+      {visibleResults.length > 0 || showModpack ? (
         <ul
           className="scan-screen__list"
           ref={listRef}
-          aria-label="スキャンしたMod"
+          aria-label="スキャンしたModとModpackファイル"
         >
           <li className="scan-screen__list-space" aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
           {virtualizer.getVirtualItems().map((virtualRow) => {
-            const result = visibleResults[virtualRow.index];
+            const isModpackRow = showModpack && virtualRow.index === 0;
+            if (isModpackRow && modpackScan) {
+              const oldFtb = modpackScan.ftbQuests === "legacy_inline";
+              return (
+                <li
+                  className="scan-screen__row"
+                  key="modpack"
+                  data-selected={selectedModpack || undefined}
+                  style={{ transform: `translateY(${virtualRow.start}px)`, height: virtualRow.size }}
+                >
+                  <Checkbox
+                    className="scan-screen__row-checkbox"
+                    checked={selectedModpack}
+                    disabled={!modpackSelectable}
+                    onChange={setSelectedModpack}
+                  >
+                    <span className="scan-screen__row-content">
+                      <span className="scan-screen__row-heading">
+                        <strong>Modpack 固有（クエスト・KubeJS）</strong>
+                        <span>{modpackScan.totalEntries.toLocaleString("ja-JP")} 件</span>
+                        <span className="scan-screen__status" data-status={oldFtb ? "partial" : "untranslated"}>
+                          {oldFtb ? "クエスト旧形式" : "翻訳対象"}
+                        </span>
+                      </span>
+                      <span className="scan-screen__filename">
+                        クエスト {modpackScan.ftbQuestEntries.toLocaleString("ja-JP")} 件 · KubeJS {modpackScan.kubejsEntries.toLocaleString("ja-JP")} 件
+                      </span>
+                      {oldFtb && (
+                        <span className="scan-screen__reason">
+                          この形式のクエストは翻訳できません{modpackScan.kubejsNamespaces.length > 0 ? "。KubeJS は取り込めます" : ""}
+                        </span>
+                      )}
+                    </span>
+                  </Checkbox>
+                </li>
+              );
+            }
+            const resultIndex = virtualRow.index - Number(showModpack);
+            const result = visibleResults[resultIndex];
             if (!result) return null;
             const selectable = isSelectable(result);
             const label = modName(result);
@@ -476,8 +534,8 @@ export function ScanScreen() {
       )}
 
       <footer className="scan-screen__actions">
-        <PrimaryButton disabled={selectedPaths.size === 0 || creating} onClick={() => void createSelectedProject()}>
-          {selectedPaths.size.toLocaleString("ja-JP")} 個のModでプロジェクトを作成
+        <PrimaryButton disabled={(selectedPaths.size === 0 && !selectedModpack) || creating} onClick={() => void createSelectedProject()}>
+          {(selectedPaths.size + Number(selectedModpack)).toLocaleString("ja-JP")} 件でプロジェクトを作成
         </PrimaryButton>
       </footer>
       {scanError && <p className="status-message" role="alert">{scanError.userMessage}</p>}

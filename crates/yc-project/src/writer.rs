@@ -7,13 +7,17 @@ use std::{
 use yc_language::{EntryFlag, ReviewSettings};
 
 use crate::{
-    AnalysisData, EntryUpdate, GlossaryTermInput, JarReplacementRecord, ProjectAssetIndex,
-    ProjectError, Result, database::open_database, repository,
+    AnalysisData, DocumentEntryInput, EntryUpdate, FileDeploymentRecord, GlossaryTermInput,
+    JarReplacementRecord, ModUnitSourceKind, ProjectAssetIndex, ProjectError, Result,
+    database::open_database, repository,
 };
 
 enum WriterCommand {
     SaveAnalysis(i64, AnalysisData, SyncSender<Result<()>>),
+    SaveDocumentEntries(i64, Vec<DocumentEntryInput>, SyncSender<Result<()>>),
     SaveAssetIndex(i64, ProjectAssetIndex, SyncSender<Result<()>>),
+    SetModUnitSourceKind(i64, ModUnitSourceKind, SyncSender<Result<()>>),
+    UpdateModpackSource(i64, String, String, SyncSender<Result<()>>),
     SaveReviewSettings(i64, ReviewSettings, bool, SyncSender<Result<()>>),
     RemoveModUnit(i64, SyncSender<Result<()>>),
     UpdateEntries(Vec<EntryUpdate>, SyncSender<Result<()>>),
@@ -21,6 +25,8 @@ enum WriterCommand {
     RemoveFlag(i64, EntryFlag, SyncSender<Result<()>>),
     SaveJarReplacement(JarReplacementRecord, SyncSender<Result<()>>),
     MarkJarReplacementRestored(i64, String, SyncSender<Result<()>>),
+    SaveFileDeployment(FileDeploymentRecord, SyncSender<Result<()>>),
+    MarkFileDeploymentRestored(i64, String, SyncSender<Result<()>>),
     UpsertGlossaryTerms(Vec<GlossaryTermInput>, SyncSender<Result<()>>),
     UpdateGlossaryTerm(i64, GlossaryTermInput, SyncSender<Result<()>>),
     DeleteGlossaryTerm(i64, SyncSender<Result<()>>),
@@ -61,8 +67,39 @@ impl ProjectWriter {
         self.send_and_wait(|response| WriterCommand::SaveAnalysis(mod_unit_id, analysis, response))
     }
 
+    pub fn save_document_entries(
+        &self,
+        mod_unit_id: i64,
+        entries: Vec<DocumentEntryInput>,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::SaveDocumentEntries(mod_unit_id, entries, response)
+        })
+    }
+
     pub fn save_asset_index(&self, mod_unit_id: i64, index: ProjectAssetIndex) -> Result<()> {
         self.send_and_wait(|response| WriterCommand::SaveAssetIndex(mod_unit_id, index, response))
+    }
+
+    pub fn set_mod_unit_source_kind(
+        &self,
+        mod_unit_id: i64,
+        source_kind: ModUnitSourceKind,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::SetModUnitSourceKind(mod_unit_id, source_kind, response)
+        })
+    }
+
+    pub fn update_modpack_source(
+        &self,
+        mod_unit_id: i64,
+        source_sha256: String,
+        original_path: String,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::UpdateModpackSource(mod_unit_id, source_sha256, original_path, response)
+        })
     }
 
     pub fn save_review_settings(
@@ -103,6 +140,16 @@ impl ProjectWriter {
     pub fn mark_jar_replacement_restored(&self, id: i64, restored_at: String) -> Result<()> {
         self.send_and_wait(|response| {
             WriterCommand::MarkJarReplacementRestored(id, restored_at, response)
+        })
+    }
+
+    pub fn save_file_deployment(&self, deployment: FileDeploymentRecord) -> Result<()> {
+        self.send_and_wait(|response| WriterCommand::SaveFileDeployment(deployment, response))
+    }
+
+    pub fn mark_file_deployment_restored(&self, id: i64, restored_at: String) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::MarkFileDeploymentRestored(id, restored_at, response)
         })
     }
 
@@ -172,11 +219,38 @@ fn writer_loop(
                     analysis,
                 ));
             }
+            WriterCommand::SaveDocumentEntries(mod_unit_id, entries, response) => {
+                let _ = response.send(repository::save_document_entries(
+                    &mut connection,
+                    mod_unit_id,
+                    entries,
+                ));
+            }
             WriterCommand::SaveAssetIndex(mod_unit_id, index, response) => {
                 let _ = response.send(repository::save_asset_index(
                     &mut connection,
                     mod_unit_id,
                     index,
+                ));
+            }
+            WriterCommand::SetModUnitSourceKind(mod_unit_id, source_kind, response) => {
+                let _ = response.send(repository::set_mod_unit_source_kind(
+                    &mut connection,
+                    mod_unit_id,
+                    source_kind,
+                ));
+            }
+            WriterCommand::UpdateModpackSource(
+                mod_unit_id,
+                source_sha256,
+                original_path,
+                response,
+            ) => {
+                let _ = response.send(repository::update_modpack_source(
+                    &mut connection,
+                    mod_unit_id,
+                    &source_sha256,
+                    &original_path,
                 ));
             }
             WriterCommand::SaveReviewSettings(mod_unit_id, settings, setup_completed, response) => {
@@ -211,6 +285,19 @@ fn writer_loop(
             }
             WriterCommand::MarkJarReplacementRestored(id, restored_at, response) => {
                 let _ = response.send(repository::mark_jar_replacement_restored(
+                    &mut connection,
+                    id,
+                    &restored_at,
+                ));
+            }
+            WriterCommand::SaveFileDeployment(deployment, response) => {
+                let _ = response.send(repository::save_file_deployment(
+                    &mut connection,
+                    deployment,
+                ));
+            }
+            WriterCommand::MarkFileDeploymentRestored(id, restored_at, response) => {
+                let _ = response.send(repository::mark_file_deployment_restored(
                     &mut connection,
                     id,
                     &restored_at,

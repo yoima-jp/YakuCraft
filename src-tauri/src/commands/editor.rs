@@ -3,15 +3,18 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 use yc_language::{EntryFlag, TranslationOrigin};
-use yc_project::{EntryUpdate, OpenedProject, ProjectEntry};
+use yc_project::{
+    DocumentProjectEntry, EntryUpdate, OpenedProject, ProjectEntry, TranslationEntryKind,
+};
 
 use crate::{commands::project::refresh_recent_project_progress, error::AppError, state::AppState};
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorEntry {
     id: i64,
     mod_unit_id: i64,
+    entry_kind: TranslationEntryKind,
     namespace: String,
     key: String,
     source_text: Option<String>,
@@ -26,6 +29,7 @@ impl From<ProjectEntry> for EditorEntry {
         Self {
             id: entry.id,
             mod_unit_id: entry.mod_unit_id,
+            entry_kind: TranslationEntryKind::Lang,
             namespace: entry.namespace,
             key: entry.key,
             source_text: entry.source_text,
@@ -35,6 +39,75 @@ impl From<ProjectEntry> for EditorEntry {
             flags: entry.flags,
         }
     }
+}
+
+impl From<DocumentProjectEntry> for EditorEntry {
+    fn from(entry: DocumentProjectEntry) -> Self {
+        let key = match entry.entry_kind {
+            TranslationEntryKind::Ftbquests => ftbquests_display_key(&entry.document_pointer),
+            _ => document_display_key(&entry.document_path, &entry.document_pointer),
+        };
+        Self {
+            id: entry.id,
+            mod_unit_id: entry.mod_unit_id,
+            entry_kind: entry.entry_kind,
+            namespace: entry.namespace,
+            key,
+            source_text: entry.source_text,
+            source_locale: entry.source_locale,
+            target_text: entry.target_text,
+            origin: entry.origin,
+            flags: entry.flags,
+        }
+    }
+}
+
+fn ftbquests_display_key(pointer: &str) -> String {
+    let field_pointer = pointer.split('[').next().unwrap_or(pointer);
+    let parts: Vec<_> = field_pointer.split('.').collect();
+    if parts.len() < 3 || parts[0] != "quest" {
+        return pointer.to_owned();
+    }
+    let field = match parts[2] {
+        "title" => "タイトル".to_owned(),
+        "quest_desc" => pointer
+            .rsplit_once('[')
+            .and_then(|(_, index)| index.strip_suffix(']'))
+            .and_then(|index| index.parse::<usize>().ok())
+            .map(|index| format!("説明 {}行目", index + 1))
+            .unwrap_or_else(|| "説明".to_owned()),
+        _ => parts[2..].join("."),
+    };
+    format!("quest.{} › {field}", parts[1])
+}
+
+fn document_display_key(document_path: &str, pointer: &str) -> String {
+    let document_path = document_path
+        .split_once("!/")
+        .map_or(document_path, |(_, inner)| inner);
+    let parts: Vec<_> = document_path.split('/').collect();
+    let (book, relative_path) = parts
+        .iter()
+        .position(|part| *part == "patchouli_books")
+        .filter(|index| parts.len() > index + 3)
+        .map(|index| (parts[index + 1], parts[index + 3..].join("/")))
+        .unwrap_or(("Patchouli", document_path.to_owned()));
+    let field = pointer
+        .split('/')
+        .skip(1)
+        .map(|part| part.replace("~1", "/").replace("~0", "~"))
+        .fold(String::new(), |mut output, part| {
+            if part.parse::<usize>().is_ok() {
+                output.push_str(&format!("[{part}]"));
+            } else {
+                if !output.is_empty() {
+                    output.push('.');
+                }
+                output.push_str(&part);
+            }
+            output
+        });
+    format!("{book} › {relative_path} › {field}")
 }
 
 #[tauri::command]
@@ -50,11 +123,28 @@ pub async fn list_entries(
         let opened = active
             .as_ref()
             .ok_or_else(|| database_error("開いているプロジェクトがありません"))?;
-        opened
-            .repository()
+        let repository = opened.repository();
+        let mut entries: Vec<_> = repository
             .list_entries(mod_unit_id)
-            .map(|entries| entries.into_iter().map(EditorEntry::from).collect())
-            .map_err(|error| database_error(error.to_string()))
+            .map_err(|error| database_error(error.to_string()))?
+            .into_iter()
+            .map(EditorEntry::from)
+            .collect();
+        entries.extend(
+            repository
+                .list_document_entries(mod_unit_id)
+                .map_err(|error| database_error(error.to_string()))?
+                .into_iter()
+                .map(EditorEntry::from),
+        );
+        entries.sort_by(|left, right| {
+            (left.mod_unit_id, &left.namespace, left.id).cmp(&(
+                right.mod_unit_id,
+                &right.namespace,
+                right.id,
+            ))
+        });
+        Ok(entries)
     })
     .await
     .map_err(|error| task_error(error.to_string()))?
@@ -75,10 +165,25 @@ pub async fn update_entries_batch(
         let opened = active
             .as_ref()
             .ok_or_else(|| database_error("開いているプロジェクトがありません"))?;
-        let result = update_entries_batch_core(opened, updates)?
+        let updated_ids: std::collections::HashSet<_> =
+            updates.iter().map(|update| update.id).collect();
+        update_entries_batch_core(opened, updates)?;
+        let repository = opened.repository();
+        let mut result: Vec<_> = repository
+            .list_entries(None)
+            .map_err(|error| database_error(error.to_string()))?
             .into_iter()
+            .filter(|entry| updated_ids.contains(&entry.id))
             .map(EditorEntry::from)
             .collect();
+        result.extend(
+            repository
+                .list_document_entries(None)
+                .map_err(|error| database_error(error.to_string()))?
+                .into_iter()
+                .filter(|entry| updated_ids.contains(&entry.id))
+                .map(EditorEntry::from),
+        );
         match recent_lock.lock() {
             Ok(_guard) => {
                 if let Err(error) = refresh_recent_project_progress(&paths, opened.summary()) {
@@ -104,8 +209,45 @@ pub(crate) fn update_entries_batch_core(
         .repository()
         .list_entries(None)
         .map_err(|error| database_error(error.to_string()))?;
-    let entries_by_id: std::collections::HashMap<_, _> =
-        before.iter().map(|entry| (entry.id, entry)).collect();
+    let before_documents = opened
+        .repository()
+        .list_document_entries(None)
+        .map_err(|error| database_error(error.to_string()))?;
+    let entries_by_id: std::collections::HashMap<_, _> = before
+        .iter()
+        .map(|entry| {
+            (
+                entry.id,
+                (
+                    entry.source_text.as_deref().unwrap_or_default(),
+                    &entry.flags,
+                    if entry.flags.contains(&EntryFlag::PatchouliText) {
+                        yc_validation::PlaceholderProfile::Patchouli
+                    } else {
+                        yc_validation::PlaceholderProfile::Lang
+                    },
+                ),
+            )
+        })
+        .chain(before_documents.iter().map(|entry| {
+            (
+                entry.id,
+                (
+                    entry.source_text.as_deref().unwrap_or_default(),
+                    &entry.flags,
+                    match entry.entry_kind {
+                        TranslationEntryKind::Patchouli => {
+                            yc_validation::PlaceholderProfile::Patchouli
+                        }
+                        TranslationEntryKind::Ftbquests => {
+                            yc_validation::PlaceholderProfile::FtbQuests
+                        }
+                        TranslationEntryKind::Lang => yc_validation::PlaceholderProfile::Lang,
+                    },
+                ),
+            )
+        }))
+        .collect();
     let mut seen_ids = std::collections::HashSet::with_capacity(updates.len());
     for update in &updates {
         if !seen_ids.insert(update.id) {
@@ -125,15 +267,16 @@ pub(crate) fn update_entries_batch_core(
     let validations: Vec<_> = updates
         .iter()
         .map(|update| {
-            let entry = entries_by_id[&update.id];
+            let (source_text, flags, profile) = entries_by_id[&update.id];
             (
                 update.id,
-                yc_validation::validate_manual_edit(
-                    entry.source_text.as_deref().unwrap_or_default(),
+                yc_validation::validate_manual_edit_with_profile(
+                    source_text,
                     &update.target_text,
+                    profile,
                 )
                 .placeholder_error,
-                entry.flags.contains(&EntryFlag::PlaceholderError),
+                flags.contains(&EntryFlag::PlaceholderError),
             )
         })
         .collect();

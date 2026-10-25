@@ -7,11 +7,13 @@ mod prompt;
 mod provider;
 mod url_policy;
 
+pub mod anthropic;
 pub mod chatgpt;
 pub mod deepl;
 pub mod openai;
 pub mod openai_compatible;
 
+pub use anthropic::AnthropicProvider;
 pub use chatgpt::{CHATGPT_MODELS, ChatGptLogin, ChatGptModel, ChatGptProvider};
 pub use deepl::DeepLProvider;
 pub use openai::OpenAiProvider;

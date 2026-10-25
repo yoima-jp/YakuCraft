@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import type { AppError } from "../../types/commands";
-import type { ModScanResultDto, ScanProgressDto } from "./types";
+import type { ModScanResultDto, ModpackScanDto, ScanProgressDto } from "./types";
 
 interface ScanStore {
   folderPath: string | null;
@@ -12,13 +12,14 @@ interface ScanStore {
   scannedFolder: string | null;
   instanceDir: string | null;
   looksLikeInstanceDir: boolean;
+  modpackScan: ModpackScanDto | null;
   scanError: AppError | null;
   creationComplete: boolean;
   setFolderPath: (path: string) => void;
   retryScan: () => void;
   setScanJobId: (jobId: string | null) => void;
   setScanProgress: (progress: ScanProgressDto | null) => void;
-  setScanResults: (results: ModScanResultDto[], scannedFolder: string, instanceDir: string | null, looksLikeInstanceDir: boolean) => void;
+  setScanResults: (results: ModScanResultDto[], scannedFolder: string, instanceDir: string | null, looksLikeInstanceDir: boolean, modpackScan: ModpackScanDto | null) => void;
   setScanError: (error: AppError | null) => void;
   setCreationComplete: (complete: boolean) => void;
 }
@@ -32,6 +33,7 @@ export const useScanStore = create<ScanStore>()((set) => ({
   scannedFolder: null,
   instanceDir: null,
   looksLikeInstanceDir: false,
+  modpackScan: null,
   scanError: null,
   creationComplete: false,
   setFolderPath: (folderPath) => set((state) => ({
@@ -43,6 +45,7 @@ export const useScanStore = create<ScanStore>()((set) => ({
     scannedFolder: null,
     instanceDir: null,
     looksLikeInstanceDir: false,
+    modpackScan: null,
     scanError: null,
     creationComplete: false,
   })),
@@ -54,15 +57,17 @@ export const useScanStore = create<ScanStore>()((set) => ({
     scannedFolder: null,
     instanceDir: null,
     looksLikeInstanceDir: false,
+    modpackScan: null,
     scanError: null,
   })),
   setScanJobId: (scanJobId) => set({ scanJobId }),
   setScanProgress: (scanProgress) => set({ scanProgress }),
-  setScanResults: (results, scannedFolder, instanceDir, looksLikeInstanceDir) => set({
+  setScanResults: (results, scannedFolder, instanceDir, looksLikeInstanceDir, modpackScan) => set({
     results,
     scannedFolder,
     instanceDir,
     looksLikeInstanceDir,
+    modpackScan,
     scanProgress: null,
     scanJobId: null,
     scanError: null,

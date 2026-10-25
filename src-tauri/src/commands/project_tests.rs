@@ -1,16 +1,17 @@
 use std::{
     fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use super::{
-    ReviewSettingsInput, create_project_core, project_delete_error, project_details_core,
+    ReviewSettingsInput, create_project_core, merge_for_review, modpack_document_entries,
+    preserve_saved_translations, project_analysis_data, project_delete_error, project_details_core,
     project_details_core_with_analysis, project_details_from_stored_data,
-    review_asset_summary_core, review_asset_summary_core_with_index_and_progress,
-    save_review_settings_core, save_review_settings_core_with_cached_asset_index,
-    truncate_recent_projects,
+    refresh_modpack_unit_core, review_asset_summary_core,
+    review_asset_summary_core_with_index_and_progress, save_review_settings_core,
+    save_review_settings_core_with_cached_asset_index, truncate_recent_projects,
 };
 use crate::{
     commands::{
@@ -316,6 +317,7 @@ fn benchmark_large_modpack_flow() {
         &paths,
         &source_paths,
         Some(&instance_copy),
+        false,
         &CancellationToken::default(),
         |_, mod_index, _, mod_filename| {
             if unit_started
@@ -660,6 +662,868 @@ fn benchmark_large_modpack_flow() {
 
     // Keep the full project analysis alive through export just as the app's project cache does.
     let _analysis_cache_size = created.analyses.len();
+}
+
+fn write_instance_file(instance: &Path, relative_path: &str, contents: &str) {
+    let path = instance.join(relative_path);
+    fs::create_dir_all(path.parent().expect("fixture file should have a parent"))
+        .expect("fixture directories should be created");
+    fs::write(path, contents).expect("fixture file should be written");
+}
+
+fn create_modpack_fixture(
+    temporary: &TemporaryDirectory,
+    files: &[(&str, &str)],
+) -> (crate::commands::project::CreatedProject, PathBuf) {
+    use crate::commands::project::create_project_from_sources_core;
+
+    let instance = temporary.0.join("instance");
+    for (path, contents) in files {
+        write_instance_file(&instance, path, contents);
+    }
+    let paths = AppPaths::create(temporary.0.join("app-data"))
+        .expect("application data directories should be created");
+    let created = create_project_from_sources_core(
+        &paths,
+        &[],
+        Some(&instance),
+        true,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("Modpack fixture should create a project");
+    (created, instance)
+}
+
+fn translate_modpack_entries(opened: &OpenedProject) {
+    let mut updates: Vec<_> = opened
+        .repository()
+        .list_entries(None)
+        .expect("KubeJS entries should be listed")
+        .into_iter()
+        .map(|entry| EntryUpdate {
+            id: entry.id,
+            target_text: format!("日本語:{}", entry.source_text.unwrap_or_default()),
+            origin: UpdateOrigin::Manual,
+        })
+        .collect();
+    updates.extend(
+        opened
+            .repository()
+            .list_document_entries(None)
+            .expect("FTB Quests entries should be listed")
+            .into_iter()
+            .map(|entry| EntryUpdate {
+                id: entry.id,
+                target_text: format!("日本語:{}", entry.source_text.unwrap_or_default()),
+                origin: UpdateOrigin::Manual,
+            }),
+    );
+    opened
+        .writer()
+        .update_entries(updates)
+        .expect("Modpack translations should be saved");
+}
+
+#[test]
+fn imports_single_ftb_and_kubejs_and_exports_translations_from_saved_archive() {
+    use crate::commands::export::{ModpackFilesExportOutcome, export_modpack_files_core};
+    use crate::commands::project::create_project_from_sources_core;
+    use std::sync::{Arc, Mutex};
+    use yc_modpack::FtbQuestsStatus;
+    use zip::ZipArchive;
+
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us.snbt",
+            "{ quest.q.title: \"&aEnglish Quest\" }",
+        ),
+        (
+            "minecraft/config/ftbquests/quests/lang/ja_jp.snbt",
+            "{ quest.q.title: \"&c既存クエスト\" }",
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/en_us.json",
+            r#"{"example.key":"English KubeJS"}"#,
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/ja_jp.json",
+            r#"{"example.key":"既存KubeJS"}"#,
+        ),
+    ];
+    let instance = temporary.0.join("instance");
+    for (path, contents) in &files {
+        write_instance_file(&instance, path, contents);
+    }
+    let scan = yc_modpack::scan_instance(&instance);
+    assert_eq!(scan.ftb_quests, FtbQuestsStatus::Single);
+    assert_eq!(scan.ftb_quest_entries, 1);
+    assert_eq!(scan.kubejs_entries, 1);
+
+    let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let created = create_project_from_sources_core(
+        &paths,
+        &[],
+        Some(&instance),
+        true,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("single-file FTB and KubeJS should be imported together");
+    let mut opened = created.opened;
+    let unit = opened
+        .repository()
+        .list_mod_units()
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("Modpack unit should be saved");
+    assert_eq!(unit.source_kind, yc_project::ModUnitSourceKind::Modpack);
+    assert_eq!(
+        unit.original_path,
+        fs::canonicalize(instance.join("minecraft"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    );
+    let document = opened
+        .repository()
+        .list_document_entries(Some(unit.id))
+        .unwrap();
+    assert_eq!(document.len(), 1);
+    assert_eq!(document[0].target_text.as_deref(), Some("&c既存クエスト"));
+    let validation = validate_project_core(
+        &opened,
+        ExportKindInput::ResourcePack,
+        Some("1.21.1"),
+        None,
+        None,
+    )
+    .expect("FTB document placeholders should be validated");
+    assert!(validation.issues.iter().any(|issue| {
+        issue.code == "placeholderError"
+            && issue.severity == "error"
+            && issue.namespace.as_deref() == Some("ftbquests")
+    }));
+    opened
+        .writer()
+        .save_document_entries(
+            unit.id,
+            vec![yc_project::DocumentEntryInput {
+                namespace: document[0].namespace.clone(),
+                key: document[0].key.clone(),
+                entry_kind: document[0].entry_kind,
+                document_path: document[0].document_path.clone(),
+                document_pointer: document[0].document_pointer.clone(),
+                source_text: document[0].source_text.clone(),
+                source_locale: document[0].source_locale.clone(),
+                target_text: None,
+                target_original_text: None,
+                translated_source_text: None,
+                origin: yc_language::TranslationOrigin::Missing,
+                sort_index: document[0].sort_index,
+                flags: Vec::new(),
+            }],
+        )
+        .expect("disabling existing Japanese import should update the document entry");
+    assert!(
+        opened
+            .repository()
+            .list_document_entries(Some(unit.id))
+            .unwrap()[0]
+            .target_text
+            .is_none()
+    );
+    let kubejs = opened.repository().list_entries(Some(unit.id)).unwrap();
+    assert_eq!(kubejs.len(), 1);
+    assert_eq!(
+        kubejs[0].target_original_text.as_deref(),
+        Some("既存KubeJS")
+    );
+
+    translate_modpack_entries(&opened);
+    let source = opened.repository().mod_unit_source_path(unit.id).unwrap();
+    let (analysis, data) = super::super::modpack::analyze_modpack_archive(&source).unwrap();
+    let settings = opened
+        .repository()
+        .review_settings_for_unit(unit.id)
+        .unwrap();
+    let mut merged = merge_for_review(&analysis, &settings);
+    preserve_saved_translations(
+        &mut merged.entries,
+        opened.repository().list_entries(Some(unit.id)).unwrap(),
+    );
+    let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+    opened
+        .writer()
+        .save_analysis(unit.id, project_analysis)
+        .unwrap();
+    opened
+        .writer()
+        .save_document_entries(unit.id, modpack_document_entries(&data, &settings))
+        .unwrap();
+    assert_eq!(
+        opened.repository().list_entries(Some(unit.id)).unwrap()[0]
+            .target_text
+            .as_deref(),
+        Some("日本語:English KubeJS")
+    );
+    assert_eq!(
+        opened
+            .repository()
+            .list_document_entries(Some(unit.id))
+            .unwrap()[0]
+            .target_text
+            .as_deref(),
+        Some("日本語:&aEnglish Quest")
+    );
+    let resource_pack = temporary.0.join("kubejs-resource-pack.zip");
+    export_resource_pack_core(&opened, &resource_pack, "1.21.1", None)
+        .expect("KubeJS translations should be included in Resource Packs");
+    let kubejs_resource: serde_json::Value = serde_json::from_slice(
+        &read_zip_entry(&resource_pack, "assets/example/lang/ja_jp.json")
+            .expect("KubeJS locale should be exported to its namespace path"),
+    )
+    .unwrap();
+    assert_eq!(kubejs_resource["example.key"], "日本語:English KubeJS");
+    assert!(
+        read_zip_entry(
+            &resource_pack,
+            "minecraft/config/ftbquests/quests/lang/ja_jp.snbt"
+        )
+        .is_none()
+    );
+    write_instance_file(
+        &instance,
+        "minecraft/config/ftbquests/quests/lang/en_us.snbt",
+        "{ quest.q.title: \"&aUpdated English Quest\" }",
+    );
+    write_instance_file(
+        &instance,
+        "minecraft/kubejs/assets/example/lang/en_us.json",
+        r#"{"example.key":"Updated KubeJS source"}"#,
+    );
+    refresh_modpack_unit_core(&mut opened, unit.id)
+        .expect("updated instance files should replace the saved Modpack snapshot");
+    let refreshed_source = super::super::modpack::read_modpack_archive(
+        &opened.repository().mod_unit_source_path(unit.id).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&refreshed_source["minecraft/config/ftbquests/quests/lang/en_us.snbt"])
+            .unwrap(),
+        "{ quest.q.title: \"&aUpdated English Quest\" }"
+    );
+    assert_eq!(
+        opened.repository().list_entries(Some(unit.id)).unwrap()[0]
+            .target_text
+            .as_deref(),
+        Some("日本語:English KubeJS")
+    );
+    assert_eq!(
+        opened
+            .repository()
+            .list_document_entries(Some(unit.id))
+            .unwrap()[0]
+            .target_text
+            .as_deref(),
+        Some("日本語:&aEnglish Quest")
+    );
+    fs::remove_dir_all(&instance).expect("original instance can be removed after import");
+    let output = temporary.0.join("translated-modpack.zip");
+    let result = export_modpack_files_core(
+        &opened,
+        &[unit.id],
+        Some(&output),
+        false,
+        false,
+        &Arc::new(Mutex::new(std::collections::HashSet::new())),
+    )
+    .expect("saved Modpack archive should be sufficient for export");
+    assert!(matches!(
+        result,
+        ModpackFilesExportOutcome::Completed { file_count: 2, .. }
+    ));
+
+    let mut archive = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    let mut snbt = String::new();
+    archive
+        .by_name("minecraft/config/ftbquests/quests/lang/ja_jp.snbt")
+        .unwrap()
+        .read_to_string(&mut snbt)
+        .unwrap();
+    assert!(snbt.contains("日本語:&aEnglish Quest"));
+    let kubejs: serde_json::Value = serde_json::from_reader(
+        archive
+            .by_name("minecraft/kubejs/assets/example/lang/ja_jp.json")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kubejs["example.key"], "日本語:English KubeJS");
+}
+
+#[test]
+fn modpack_refresh_preserves_manually_cleared_kubejs_translation_and_omits_it_on_export() {
+    use crate::commands::export::{ModpackFilesExportOutcome, export_modpack_files_core};
+    use crate::commands::project::{create_project_from_sources_core, refresh_modpack_unit_core};
+    use std::sync::{Arc, Mutex};
+    use zip::ZipArchive;
+
+    let temporary = TemporaryDirectory::create();
+    let instance = temporary.0.join("instance");
+    write_instance_file(
+        &instance,
+        "minecraft/kubejs/assets/example/lang/en_us.json",
+        r#"{"example.key":"English KubeJS","example.untranslated":"Untranslated"}"#,
+    );
+    write_instance_file(
+        &instance,
+        "minecraft/kubejs/assets/example/lang/ja_jp.json",
+        r#"{"example.key":"既存KubeJS"}"#,
+    );
+
+    let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let created = create_project_from_sources_core(
+        &paths,
+        &[],
+        Some(&instance),
+        true,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("KubeJS Modpack should be imported");
+    let mut opened = created.opened;
+    let unit = opened.repository().list_mod_units().unwrap().remove(0);
+    let entries = opened.repository().list_entries(Some(unit.id)).unwrap();
+    let existing = entries
+        .iter()
+        .find(|entry| entry.key == "example.key")
+        .expect("existing Japanese KubeJS entry should be imported");
+    assert_eq!(existing.target_text.as_deref(), Some("既存KubeJS"));
+
+    opened
+        .writer()
+        .update_entry(yc_project::EntryUpdate {
+            id: existing.id,
+            target_text: String::new(),
+            origin: yc_project::UpdateOrigin::Manual,
+        })
+        .expect("clearing the translation should be saved as a manual edit");
+    write_instance_file(
+        &instance,
+        "minecraft/kubejs/assets/example/lang/en_us.json",
+        r#"{"example.key":"Updated English KubeJS","example.untranslated":"Untranslated"}"#,
+    );
+    refresh_modpack_unit_core(&mut opened, unit.id)
+        .expect("updated KubeJS source should be reimported");
+
+    let refreshed = opened.repository().list_entries(Some(unit.id)).unwrap();
+    let cleared = refreshed
+        .iter()
+        .find(|entry| entry.key == "example.key")
+        .expect("cleared KubeJS entry should remain");
+    assert_eq!(
+        cleared.source_text.as_deref(),
+        Some("Updated English KubeJS")
+    );
+    assert_eq!(cleared.target_text.as_deref(), Some(""));
+    assert_eq!(cleared.origin, yc_language::TranslationOrigin::Edited);
+    let untranslated = refreshed
+        .iter()
+        .find(|entry| entry.key == "example.untranslated")
+        .expect("untranslated KubeJS entry should remain");
+    assert_eq!(untranslated.target_text, None);
+    assert_eq!(untranslated.origin, yc_language::TranslationOrigin::Missing);
+
+    let output = temporary.0.join("cleared-modpack.zip");
+    let result = export_modpack_files_core(
+        &opened,
+        &[unit.id],
+        Some(&output),
+        false,
+        false,
+        &Arc::new(Mutex::new(std::collections::HashSet::new())),
+    )
+    .expect("KubeJS with cleared translations should export");
+    assert!(matches!(
+        result,
+        ModpackFilesExportOutcome::Completed { .. }
+    ));
+    let mut archive = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    let kubejs: serde_json::Value = serde_json::from_reader(
+        archive
+            .by_name("minecraft/kubejs/assets/example/lang/ja_jp.json")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(kubejs.get("example.key").is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn modpack_refresh_keeps_saved_archive_and_entries_when_a_split_file_cannot_be_read() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us/chapters/first.snbt",
+            "{ quest.first.title: \"First Quest\" }",
+        ),
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us/chapters/second.snbt",
+            "{ quest.second.title: \"Second Quest\" }",
+        ),
+    ];
+    let (created, instance) = create_modpack_fixture(&temporary, &files);
+    let mut opened = created.opened;
+    let unit_id = first_mod_unit_id(&opened);
+    translate_modpack_entries(&opened);
+
+    let source_path = opened.repository().mod_unit_source_path(unit_id).unwrap();
+    let source_before = fs::read(&source_path).unwrap();
+    let entries_before: Vec<_> = opened
+        .repository()
+        .list_document_entries(Some(unit_id))
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.id, entry.target_text))
+        .collect();
+    let unreadable_relative = "minecraft/config/ftbquests/quests/lang/en_us/chapters/first.snbt";
+    let unreadable_path = instance.join(unreadable_relative);
+    write_instance_file(
+        &instance,
+        "minecraft/config/ftbquests/quests/lang/en_us/chapters/second.snbt",
+        "{ quest.second.title: \"Updated Second Quest\" }",
+    );
+    let _deny_reads = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(0)
+        .open(&unreadable_path)
+        .expect("fixture SNBT file should be locked against reads");
+
+    let error = refresh_modpack_unit_core(&mut opened, unit_id)
+        .expect_err("a partial scan must not replace the saved Modpack");
+    assert_eq!(error.code, "modpack_scan_incomplete");
+    assert!(error.recoverable);
+    assert!(
+        error.user_message.contains(
+            unreadable_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        ),
+        "error should identify the unreadable path: {}",
+        error.user_message
+    );
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    let entries_after: Vec<_> = opened
+        .repository()
+        .list_document_entries(Some(unit_id))
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.id, entry.target_text))
+        .collect();
+    assert_eq!(entries_after, entries_before);
+}
+
+#[test]
+fn modpack_refresh_preserves_excluded_kubejs_namespaces_and_selects_new_ones() {
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/kubejs/assets/excluded/lang/en_us.json",
+            r#"{"excluded.key":"Excluded text"}"#,
+        ),
+        (
+            "minecraft/kubejs/assets/included/lang/en_us.json",
+            r#"{"included.key":"Included text"}"#,
+        ),
+    ];
+    let (created, instance) = create_modpack_fixture(&temporary, &files);
+    let mut opened = created.opened;
+    let unit_id = first_mod_unit_id(&opened);
+    let source_path = opened.repository().mod_unit_source_path(unit_id).unwrap();
+    let (analysis, _) = super::super::modpack::analyze_modpack_archive(&source_path).unwrap();
+    let mut settings = analysis.default_review_settings();
+    settings
+        .included_namespaces
+        .retain(|namespace| namespace != "excluded");
+    let merged = merge_for_review(&analysis, &settings);
+    opened
+        .writer()
+        .save_analysis(
+            unit_id,
+            project_analysis_data(&analysis, merged.entries, &settings),
+        )
+        .unwrap();
+    opened
+        .writer()
+        .save_review_settings(unit_id, settings, true)
+        .unwrap();
+    assert!(
+        opened
+            .repository()
+            .list_entries(Some(unit_id))
+            .unwrap()
+            .iter()
+            .all(|entry| entry.namespace != "excluded")
+    );
+
+    write_instance_file(
+        &instance,
+        "minecraft/kubejs/assets/new_namespace/lang/en_us.json",
+        r#"{"new.key":"New namespace text"}"#,
+    );
+    refresh_modpack_unit_core(&mut opened, unit_id)
+        .expect("the complete Modpack scan should refresh successfully");
+
+    let settings = opened
+        .repository()
+        .review_settings_for_unit(unit_id)
+        .unwrap();
+    assert!(
+        !settings
+            .included_namespaces
+            .iter()
+            .any(|namespace| namespace == "excluded")
+    );
+    assert!(
+        settings
+            .included_namespaces
+            .iter()
+            .any(|namespace| namespace == "included")
+    );
+    assert!(
+        settings
+            .included_namespaces
+            .iter()
+            .any(|namespace| namespace == "new_namespace")
+    );
+
+    let namespaces = opened.repository().project_metadata().unwrap().namespaces;
+    assert!(
+        !namespaces
+            .iter()
+            .find(|namespace| namespace.mod_unit_id == unit_id && namespace.namespace == "excluded")
+            .unwrap()
+            .included
+    );
+    assert!(
+        namespaces
+            .iter()
+            .find(|namespace| {
+                namespace.mod_unit_id == unit_id && namespace.namespace == "new_namespace"
+            })
+            .unwrap()
+            .included
+    );
+    let entries = opened.repository().list_entries(Some(unit_id)).unwrap();
+    assert!(entries.iter().all(|entry| entry.namespace != "excluded"));
+    assert!(entries.iter().any(|entry| entry.namespace == "included"));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.namespace == "new_namespace")
+    );
+}
+
+#[test]
+fn imports_split_ftb_and_exports_the_matching_ja_jp_tree() {
+    use crate::commands::export::{ModpackFilesExportOutcome, export_modpack_files_core};
+    use std::sync::{Arc, Mutex};
+    use yc_modpack::FtbQuestsStatus;
+    use zip::ZipArchive;
+
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us/chapters/start.snbt",
+            "{ quest.q.title: \"Split Quest\" }",
+        ),
+        (
+            "minecraft/config/ftbquests/quests/lang/ja_jp/chapters/start.snbt",
+            "{ quest.q.title: \"既存の分割訳\" }",
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/en_us.json",
+            r#"{"example.key":"English KubeJS"}"#,
+        ),
+    ];
+    let (created, instance) = create_modpack_fixture(&temporary, &files);
+    assert_eq!(
+        yc_modpack::scan_instance(&instance).ftb_quests,
+        FtbQuestsStatus::Split
+    );
+    let opened = created.opened;
+    let unit_id = opened.repository().list_mod_units().unwrap()[0].id;
+    translate_modpack_entries(&opened);
+
+    let output = temporary.0.join("split-translated.zip");
+    let result = export_modpack_files_core(
+        &opened,
+        &[unit_id],
+        Some(&output),
+        false,
+        false,
+        &Arc::new(Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        ModpackFilesExportOutcome::Completed { .. }
+    ));
+    let mut archive = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    let output_path = "minecraft/config/ftbquests/quests/lang/ja_jp/chapters/start.snbt";
+    let mut snbt = String::new();
+    archive
+        .by_name(output_path)
+        .unwrap()
+        .read_to_string(&mut snbt)
+        .unwrap();
+    assert!(snbt.contains("日本語:Split Quest"));
+    assert!(
+        archive
+            .by_name("minecraft/config/ftbquests/quests/lang/ja_jp.snbt")
+            .is_err()
+    );
+}
+
+#[test]
+fn modpack_file_validation_checks_final_ftb_and_kubejs_translations() {
+    use crate::commands::export::{
+        ExportKindInput, ModpackFilesExportOutcome, export_modpack_files_core,
+        validate_project_core,
+    };
+    use std::sync::{Arc, Mutex};
+    use zip::ZipArchive;
+
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us.snbt",
+            "{ quest.q.title: \"&aQuest {image:example:icon} {@pagebreak}\" }",
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/en_us.json",
+            r#"{"example.key":"Found %s items"}"#,
+        ),
+    ];
+    let (created, _) = create_modpack_fixture(&temporary, &files);
+    let opened = created.opened;
+    let unit_id = first_mod_unit_id(&opened);
+    translate_modpack_entries(&opened);
+
+    let ftb_entry = opened
+        .repository()
+        .list_document_entries(Some(unit_id))
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let kubejs_entry = opened
+        .repository()
+        .list_entries(Some(unit_id))
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    opened
+        .writer()
+        .update_entries(vec![
+            EntryUpdate {
+                id: ftb_entry.id,
+                target_text: "&b翻訳 {image:other:icon} {@pagebreak-extra}".to_owned(),
+                origin: UpdateOrigin::Manual,
+            },
+            EntryUpdate {
+                id: kubejs_entry.id,
+                target_text: "アイテム".to_owned(),
+                origin: UpdateOrigin::Manual,
+            },
+        ])
+        .unwrap();
+
+    let validation =
+        validate_project_core(&opened, ExportKindInput::ModpackFiles, None, None, None).unwrap();
+    let ftb_issue = validation
+        .issues
+        .iter()
+        .find(|issue| issue.namespace.as_deref() == Some("ftbquests"))
+        .expect("the FTB formatting change should be reported");
+    assert_eq!(ftb_issue.code, "placeholderError");
+    assert_eq!(ftb_issue.severity, "error");
+    assert_eq!(
+        ftb_issue.target_text.as_deref(),
+        Some("&b翻訳 {image:other:icon} {@pagebreak-extra}")
+    );
+    let kubejs_issue = validation
+        .issues
+        .iter()
+        .find(|issue| issue.namespace.as_deref() == Some("example"))
+        .expect("the missing KubeJS argument should be reported");
+    assert_eq!(kubejs_issue.code, "placeholderWarning");
+    assert_eq!(kubejs_issue.severity, "warning");
+
+    let output = temporary.0.join("validated-modpack.zip");
+    let outcome = export_modpack_files_core(
+        &opened,
+        &[unit_id],
+        Some(&output),
+        false,
+        false,
+        &Arc::new(Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        ModpackFilesExportOutcome::Completed { .. }
+    ));
+    let mut archive = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    let mut ftb_output = String::new();
+    archive
+        .by_name("minecraft/config/ftbquests/quests/lang/ja_jp.snbt")
+        .unwrap()
+        .read_to_string(&mut ftb_output)
+        .unwrap();
+    assert!(ftb_output.contains("&b翻訳 {image:other:icon} {@pagebreak-extra}"));
+    let kubejs_output: serde_json::Value = serde_json::from_reader(
+        archive
+            .by_name("minecraft/kubejs/assets/example/lang/ja_jp.json")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kubejs_output["example.key"], "アイテム");
+}
+
+#[test]
+fn direct_modpack_deployment_restores_existing_and_created_files_safely() {
+    use crate::commands::export::{
+        ModpackFilesExportOutcome, export_modpack_files_core, restore_modpack_file_core,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let temporary = TemporaryDirectory::create();
+    let files = [
+        (
+            "minecraft/config/ftbquests/quests/lang/en_us.snbt",
+            "{ quest.q.title: \"Quest\" }",
+        ),
+        (
+            "minecraft/config/ftbquests/quests/lang/ja_jp.snbt",
+            "{ quest.q.title: \"元のクエスト訳\" }",
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/en_us.json",
+            r#"{"example.key":"English"}"#,
+        ),
+        (
+            "minecraft/kubejs/assets/example/lang/ja_jp.json",
+            r#"{"example.key":"元のKubeJS訳"}"#,
+        ),
+        (
+            "minecraft/kubejs/assets/created/lang/en_us.json",
+            r#"{"created.key":"New file"}"#,
+        ),
+    ];
+    let (created, instance) = create_modpack_fixture(&temporary, &files);
+    let opened = created.opened;
+    let unit_id = opened.repository().list_mod_units().unwrap()[0].id;
+    translate_modpack_entries(&opened);
+
+    let game = instance.join("minecraft");
+    let existing_ftb = game.join("config/ftbquests/quests/lang/ja_jp.snbt");
+    let original_ftb = fs::read(&existing_ftb).unwrap();
+    let existing_kubejs = game.join("kubejs/assets/example/lang/ja_jp.json");
+    let original_kubejs = fs::read(&existing_kubejs).unwrap();
+    let exported_paths = Arc::new(Mutex::new(std::collections::HashSet::new()));
+
+    let first =
+        export_modpack_files_core(&opened, &[unit_id], None, true, false, &exported_paths).unwrap();
+    assert!(matches!(
+        first,
+        ModpackFilesExportOutcome::OverwriteRequired { .. }
+    ));
+    let outcome =
+        export_modpack_files_core(&opened, &[unit_id], None, true, true, &exported_paths).unwrap();
+    assert!(matches!(
+        outcome,
+        ModpackFilesExportOutcome::Completed { file_count: 3, .. }
+    ));
+
+    fs::write(&existing_ftb, "user edit").unwrap();
+    let records = opened.repository().list_file_deployments(false).unwrap();
+    let existing_ftb_path = fs::canonicalize(&existing_ftb)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let changed_id = records
+        .iter()
+        .find(|record| record.target_path == existing_ftb_path)
+        .unwrap()
+        .id;
+    let changed_error =
+        export_modpack_files_core(&opened, &[unit_id], None, true, false, &exported_paths)
+            .unwrap_err();
+    assert_eq!(changed_error.code, "modpack_file_changed");
+    assert!(changed_error.user_message.contains("ja_jp.snbt"));
+    assert!(changed_error.user_message.contains("手動で解決"));
+    assert_eq!(fs::read(&existing_ftb).unwrap(), b"user edit");
+    let forced_error =
+        export_modpack_files_core(&opened, &[unit_id], None, true, true, &exported_paths)
+            .unwrap_err();
+    assert_eq!(forced_error.code, "modpack_file_changed");
+    assert_eq!(fs::read(&existing_ftb).unwrap(), b"user edit");
+    let restore_error =
+        restore_modpack_file_core(&opened, changed_id, &exported_paths).unwrap_err();
+    assert_eq!(restore_error.code, "modpack_file_changed");
+    assert!(restore_error.user_message.contains("ja_jp.snbt"));
+    assert!(restore_error.user_message.contains("手動で解決"));
+    assert_eq!(fs::read(&existing_ftb).unwrap(), b"user edit");
+    assert_eq!(
+        opened
+            .repository()
+            .list_file_deployments(false)
+            .unwrap()
+            .len(),
+        records.len()
+    );
+    let backup_path = records
+        .iter()
+        .find(|record| record.id == changed_id)
+        .unwrap()
+        .backup_path
+        .as_deref()
+        .unwrap();
+    assert_eq!(fs::read(backup_path).unwrap(), original_ftb);
+
+    let existing_kubejs_path = fs::canonicalize(&existing_kubejs)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let existing_id = records
+        .iter()
+        .find(|record| record.target_path == existing_kubejs_path)
+        .unwrap()
+        .id;
+    restore_modpack_file_core(&opened, existing_id, &exported_paths).unwrap();
+    assert_eq!(fs::read(&existing_kubejs).unwrap(), original_kubejs);
+
+    let created_file = game.join("kubejs/assets/created/lang/ja_jp.json");
+    assert!(created_file.is_file());
+    let created_file_path = fs::canonicalize(&created_file)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let created_id = records
+        .iter()
+        .find(|record| record.target_path == created_file_path)
+        .unwrap()
+        .id;
+    restore_modpack_file_core(&opened, created_id, &exported_paths).unwrap();
+    assert!(!created_file.exists());
 }
 
 #[cfg(windows)]
@@ -1271,6 +2135,122 @@ fn project_review_edit_and_language_export_use_the_sqlite_data() {
 }
 
 #[test]
+fn opening_legacy_project_restores_patchouli_validation_for_edit_and_export() {
+    let temporary = TemporaryDirectory::create();
+    let source_path = temporary.0.join("patchouli-i18n-fixture.jar");
+    let file = fs::File::create(&source_path).expect("fixture JAR should be created");
+    let mut jar = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (path, contents) in [
+        (
+            "fabric.mod.json",
+            r#"{"schemaVersion":1,"id":"fixture","name":"Fixture","version":"1.0.0"}"#,
+        ),
+        (
+            "data/fixture/patchouli_books/guide/book.json",
+            r#"{"i18n":true,"landing_text":"book.landing"}"#,
+        ),
+        (
+            "assets/fixture/lang/en_us.json",
+            r#"{"book.landing":"Welcome $(bold)world$(/bold)"}"#,
+        ),
+    ] {
+        jar.start_file(path, options)
+            .expect("fixture ZIP entry should start");
+        jar.write_all(contents.as_bytes())
+            .expect("fixture ZIP entry should be written");
+    }
+    jar.finish().expect("fixture JAR should be finalized");
+
+    let paths = AppPaths::create(temporary.0.join("app-data"))
+        .expect("application data directories should be created");
+    let created = create_project_core(&paths, &source_path, &CancellationToken::default(), |_| {})
+        .expect("Patchouli fixture should create a Project");
+    let opened = created.opened;
+    let mod_unit_id = first_mod_unit_id(&opened);
+    save_review_settings_core(
+        &opened,
+        &ReviewSettingsInput {
+            source_locale: "en_us".to_owned(),
+            fallback_priority: Vec::new(),
+            preserve_existing_japanese: true,
+            fill_missing_from_other_languages: true,
+            included_namespaces: vec![included_namespace(mod_unit_id, "fixture")],
+        },
+    )
+    .expect("completed Review settings should be saved");
+    let entry = opened
+        .repository()
+        .list_entries(Some(mod_unit_id))
+        .expect("fixture entry should be listed")
+        .into_iter()
+        .find(|entry| entry.key == "book.landing")
+        .expect("Patchouli i18n lang entry should exist");
+    assert!(entry.flags.contains(&yc_language::EntryFlag::PatchouliText));
+    opened
+        .writer()
+        .update_entry(EntryUpdate {
+            id: entry.id,
+            target_text: "ようこそ $(bold)世界$(/bold)".to_owned(),
+            origin: UpdateOrigin::Manual,
+        })
+        .expect("valid translation should be saved");
+    // v1.0.0 projects had no patchouli_text rows in entry_flags.
+    opened
+        .writer()
+        .remove_flag(entry.id, yc_language::EntryFlag::PatchouliText)
+        .expect("legacy flag should be removed from the fixture");
+    let entry_id = entry.id;
+    let project_id = uuid::Uuid::parse_str(&opened.summary().id).expect("Project UUID");
+    drop(opened);
+
+    let reopened =
+        open_project_file(&paths.projects_dir, project_id).expect("legacy project should open");
+    let restored = reopened
+        .repository()
+        .list_entries(Some(mod_unit_id))
+        .expect("reopened entries should be listed")
+        .into_iter()
+        .find(|entry| entry.id == entry_id)
+        .expect("saved entry should remain available");
+    assert!(
+        restored
+            .flags
+            .contains(&yc_language::EntryFlag::PatchouliText)
+    );
+
+    let edited = update_entries_batch_core(
+        &reopened,
+        vec![EntryUpdate {
+            id: restored.id,
+            target_text: "ようこそ 世界".to_owned(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("manual edit should be validated");
+    assert!(
+        edited[0]
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+
+    let validation = validate_project_core(
+        &reopened,
+        ExportKindInput::LanguageFile,
+        None,
+        Some("fixture"),
+        None,
+    )
+    .expect("export validation should complete");
+    assert!(
+        validation
+            .issues
+            .iter()
+            .any(|issue| { issue.code == "placeholderWarning" && issue.severity == "warning" })
+    );
+}
+
+#[test]
 fn review_settings_include_a_namespace_from_a_nested_jar() {
     let temporary = TemporaryDirectory::create();
     let source_path = temporary.0.join("nested-review-fixture.jar");
@@ -1337,6 +2317,350 @@ fn review_settings_include_a_namespace_from_a_nested_jar() {
             .expect("merged entries should be readable")
             .iter()
             .any(|entry| entry.namespace == "nested_fixture")
+    );
+}
+
+#[test]
+fn imports_edits_and_exports_patchouli_documents_without_changing_other_json() {
+    let temporary = TemporaryDirectory::create();
+    let source_path = temporary.0.join("patchouli-only.jar");
+    let file = fs::File::create(&source_path).expect("Patchouli fixture JAR should be created");
+    let mut jar = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (entry_path, contents) in [
+        (
+            "fabric.mod.json",
+            r#"{"schemaVersion":1,"id":"guidebook","name":"Guidebook","version":"1.0","depends":{"minecraft":">=1.20"}}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/book.json",
+            r#"{"name":"Guide","i18n":false}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/en_us/entries/basics/start.json",
+            r#"{"name":"Getting Started","pages":[{"type":"patchouli:text","text":"$(item) Read %s","title":"Welcome"}],"icon":"minecraft:book","unknown":{"kept":true}}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/ja_jp/entries/basics/start.json",
+            r#"{"name":"既存タイトル","pages":[{"type":"patchouli:text","text":"既存本文","title":"既存見出し"}],"icon":"minecraft:book"}"#,
+        ),
+    ] {
+        jar.start_file(entry_path, options)
+            .expect("Patchouli fixture entry should start");
+        jar.write_all(contents.as_bytes())
+            .expect("Patchouli fixture entry should be written");
+    }
+    jar.finish()
+        .expect("Patchouli fixture JAR should be finalized");
+
+    let paths = AppPaths::create(temporary.0.join("app-data"))
+        .expect("application data directories should be created");
+    let created = create_project_core(&paths, &source_path, &CancellationToken::default(), |_| {})
+        .expect("book-only JAR should create a project");
+    let opened = created.opened;
+    let mod_unit_id = first_mod_unit_id(&opened);
+    let analyzed_details =
+        project_details_core_with_analysis(&opened, mod_unit_id, &created.analysis)
+            .expect("Patchouli-only namespace should appear after analysis");
+    assert!(
+        analyzed_details
+            .namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == "guidebook")
+    );
+    assert!(
+        analyzed_details
+            .included_namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == "guidebook")
+    );
+    let stored_review = opened
+        .repository()
+        .review_settings()
+        .expect("stored Review settings should load");
+    let stored_details = project_details_from_stored_data(&opened, stored_review, None)
+        .expect("Patchouli-only namespace should appear in stored details");
+    assert!(
+        stored_details
+            .namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == "guidebook")
+    );
+    assert!(
+        stored_details
+            .included_namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == "guidebook")
+    );
+    save_review_settings_core(
+        &opened,
+        &ReviewSettingsInput {
+            source_locale: stored_details.source_locale.clone(),
+            fallback_priority: stored_details.fallback_priority.clone(),
+            preserve_existing_japanese: stored_details.preserve_existing_japanese,
+            fill_missing_from_other_languages: stored_details.fill_missing_from_other_languages,
+            included_namespaces: stored_details.included_namespaces.clone(),
+        },
+    )
+    .expect("saving the stored namespace selection should preserve Patchouli rows");
+    assert_eq!(
+        opened
+            .repository()
+            .list_document_entries(Some(mod_unit_id))
+            .expect("Patchouli rows should remain after saving selection")
+            .len(),
+        3
+    );
+    let mut entries = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .expect("Patchouli document entries should be stored");
+    assert_eq!(entries.len(), 3);
+    let existing_text = entries
+        .iter()
+        .find(|entry| entry.document_pointer == "/pages/0/text")
+        .expect("existing Japanese page should be imported");
+    assert_eq!(existing_text.target_text.as_deref(), Some("既存本文"));
+    assert_eq!(
+        existing_text.origin,
+        yc_language::TranslationOrigin::Existing
+    );
+    let settings = opened.repository().review_settings().unwrap();
+    save_review_settings_core(
+        &opened,
+        &ReviewSettingsInput {
+            source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
+            fallback_priority: settings.fallback_priority,
+            preserve_existing_japanese: false,
+            fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
+            included_namespaces: settings.included_namespaces,
+        },
+    )
+    .expect("disabling Japanese import should refresh Patchouli document entries");
+    entries = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .expect("updated Patchouli entries should be stored");
+    let text_entry_id = entries
+        .iter_mut()
+        .find(|entry| entry.document_pointer == "/pages/0/text")
+        .expect("page text should be extracted")
+        .id;
+    let text_entry = entries
+        .iter()
+        .find(|entry| entry.document_pointer == "/pages/0/text")
+        .unwrap();
+    assert_eq!(text_entry.target_text, None);
+    assert_eq!(text_entry.origin, yc_language::TranslationOrigin::Missing);
+    assert!(entries.iter().all(|entry| {
+        entry.entry_kind == yc_project::TranslationEntryKind::Patchouli
+            && entry.namespace == "guidebook"
+    }));
+    update_entries_batch_core(
+        &opened,
+        vec![EntryUpdate {
+            id: text_entry_id,
+            target_text: "読んでください $(item) %s".to_owned(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("Patchouli translation should be saved");
+    let valid_text = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.id == text_entry_id)
+        .unwrap();
+    assert!(
+        !valid_text
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+    let settings = opened.repository().review_settings().unwrap();
+    save_review_settings_core(
+        &opened,
+        &ReviewSettingsInput {
+            source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
+            fallback_priority: settings.fallback_priority,
+            preserve_existing_japanese: true,
+            fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
+            included_namespaces: settings.included_namespaces,
+        },
+    )
+    .expect("reanalysis should preserve a saved Patchouli translation");
+    let saved_text = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.document_pointer == "/pages/0/text")
+        .unwrap();
+    assert_eq!(
+        saved_text.target_text.as_deref(),
+        Some("読んでください $(item) %s")
+    );
+    assert!(
+        !saved_text
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+    update_entries_batch_core(
+        &opened,
+        vec![EntryUpdate {
+            id: text_entry_id,
+            target_text: "読んでください $(thing) %s".to_owned(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("invalid Patchouli placeholders should be flagged");
+    let settings = opened.repository().review_settings().unwrap();
+    save_review_settings_core(
+        &opened,
+        &ReviewSettingsInput {
+            source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
+            fallback_priority: settings.fallback_priority,
+            preserve_existing_japanese: true,
+            fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
+            included_namespaces: settings.included_namespaces,
+        },
+    )
+    .expect("reanalysis should revalidate the retained Patchouli translation");
+    let saved_text = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.document_pointer == "/pages/0/text")
+        .unwrap();
+    assert!(
+        saved_text
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+    let validation = validate_project_core(
+        &opened,
+        ExportKindInput::ResourcePack,
+        Some("1.21.1"),
+        None,
+        None,
+    )
+    .expect("Patchouli document placeholders should be validated");
+    assert!(validation.issues.iter().any(|issue| {
+        issue.code == "placeholderError"
+            && issue.severity == "error"
+            && issue.namespace.as_deref() == Some("guidebook")
+    }));
+
+    update_entries_batch_core(
+        &opened,
+        vec![EntryUpdate {
+            id: text_entry_id,
+            target_text: String::new(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("clearing Patchouli page text should be saved");
+
+    let pack_path = temporary.0.join("patchouli-only.zip");
+    export_resource_pack_core(&opened, &pack_path, "1.21.1", None)
+        .expect("Patchouli Resource Pack should export");
+    let target_path = "assets/guidebook/patchouli_books/guide/ja_jp/entries/basics/start.json";
+    let output: serde_json::Value = serde_json::from_slice(
+        &read_zip_entry(&pack_path, target_path).expect("translated Patchouli JSON should exist"),
+    )
+    .expect("translated Patchouli document should be valid JSON");
+    let expected: serde_json::Value = serde_json::from_str(
+        r#"{"name":"既存タイトル","pages":[{"type":"patchouli:text","text":"$(item) Read %s","title":"既存見出し"}],"icon":"minecraft:book","unknown":{"kept":true}}"#,
+    )
+    .expect("merged Patchouli JSON should be valid");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn manual_edits_use_patchouli_profile_for_i18n_language_entries() {
+    let temporary = TemporaryDirectory::create();
+    let source_path = temporary.0.join("patchouli-i18n-fixture.jar");
+    let file = fs::File::create(&source_path).expect("Patchouli i18n fixture should be created");
+    let mut jar = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (entry_path, contents) in [
+        (
+            "fabric.mod.json",
+            r#"{"schemaVersion":1,"id":"guidebook","name":"Guidebook","version":"1.0"}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/book.json",
+            r#"{"name":"patchouli.guidebook.name","i18n":true}"#,
+        ),
+        (
+            "assets/guidebook/patchouli_books/guide/en_us/entries/start.json",
+            r#"{"name":"patchouli.guidebook.start.name","pages":[{"type":"patchouli:text","text":"patchouli.guidebook.start.text"}]}"#,
+        ),
+        (
+            "assets/guidebook/lang/en_us.json",
+            r#"{"patchouli.guidebook.name":"Guide","patchouli.guidebook.start.name":"$(item) Start","patchouli.guidebook.start.text":"$(thing) Read %s"}"#,
+        ),
+        (
+            "assets/guidebook/lang/ja_jp.json",
+            r#"{"patchouli.guidebook.name":"ガイド","patchouli.guidebook.start.name":"開始","patchouli.guidebook.start.text":"読む %s"}"#,
+        ),
+    ] {
+        jar.start_file(entry_path, options)
+            .expect("Patchouli i18n fixture entry should start");
+        jar.write_all(contents.as_bytes())
+            .expect("Patchouli i18n fixture entry should be written");
+    }
+    jar.finish()
+        .expect("Patchouli i18n fixture should be finalized");
+
+    let paths = AppPaths::create(temporary.0.join("app-data"))
+        .expect("application data directories should be created");
+    let created = create_project_core(&paths, &source_path, &CancellationToken::default(), |_| {})
+        .expect("Patchouli i18n JAR should create a project");
+    let opened = created.opened;
+    let entry = opened
+        .repository()
+        .list_entries(None)
+        .expect("Patchouli i18n language entries should be listed")
+        .into_iter()
+        .find(|entry| entry.key == "patchouli.guidebook.start.name")
+        .expect("Patchouli i18n key should be imported");
+    assert!(entry.flags.contains(&yc_language::EntryFlag::PatchouliText));
+    assert!(
+        entry
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+
+    let invalid = update_entries_batch_core(
+        &opened,
+        vec![EntryUpdate {
+            id: entry.id,
+            target_text: "開始".to_owned(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("manual edit should validate Patchouli placeholders");
+    assert!(
+        invalid[0]
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
+    );
+
+    let valid = update_entries_batch_core(
+        &opened,
+        vec![EntryUpdate {
+            id: entry.id,
+            target_text: "$(item) 開始".to_owned(),
+            origin: UpdateOrigin::Manual,
+        }],
+    )
+    .expect("corrected Patchouli placeholder should clear its error");
+    assert!(
+        !valid[0]
+            .flags
+            .contains(&yc_language::EntryFlag::PlaceholderError)
     );
 }
 

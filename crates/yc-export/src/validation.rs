@@ -1,12 +1,15 @@
 use std::{collections::BTreeMap, path::Path};
 
 use yc_archive::Archive;
-use yc_language::{EntryFlag, language_export_filename, resource_pack_language_filename};
+use yc_language::{
+    EntryFlag, is_empty_translation, language_export_filename, resource_pack_language_filename,
+};
 
 use crate::{
     ExportInput, ManualPackFormat, language_filename_is_safe, language_format_for_filename,
-    namespace_has_exportable_entries, pack_format_for_version,
+    namespace_has_exportable_entries, namespace_has_language_entries, pack_format_for_version,
 };
+use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExportKind {
@@ -107,13 +110,65 @@ pub fn validate_export(request: &ExportValidationRequest<'_>) -> Vec<ValidationI
             ));
         }
     }
+    for document in request
+        .input
+        .patchouli_documents
+        .iter()
+        .filter(|document| included_names.contains(document.namespace.as_str()))
+    {
+        for translation in document
+            .translations
+            .iter()
+            .filter(|translation| !is_empty_translation(&translation.target_text))
+        {
+            if !compare_placeholders_for_profile(
+                &translation.source_text,
+                &translation.target_text,
+                PlaceholderProfile::Patchouli,
+            )
+            .is_valid
+                && placeholder_keys.insert((document.namespace.clone(), translation.key.clone()))
+            {
+                issues.push(issue(
+                    ValidationSeverity::Warning,
+                    ValidationIssueCode::PlaceholderWarning,
+                    format!(
+                        "placeholder mismatch: {}:{}",
+                        document.namespace, translation.key
+                    ),
+                ));
+            }
+        }
+    }
+
+    for document in request.input.patchouli_documents.iter().filter(|document| {
+        included_names.contains(document.namespace.as_str())
+            && document
+                .translations
+                .iter()
+                .any(|translation| !is_empty_translation(&translation.target_text))
+    }) {
+        let target =
+            yc_language::patchouli_target_document_path(&document.source_path, "en_us", "ja_jp");
+        if target.as_deref() != Some(document.target_path.as_str())
+            || yc_archive::normalize_archive_path(&document.target_path).as_deref()
+                != Ok(document.target_path.as_str())
+        {
+            issues.push(issue(
+                ValidationSeverity::Error,
+                ValidationIssueCode::UnsafeTargetPath,
+                format!("unsafe Patchouli target path: {}", document.target_path),
+            ));
+        }
+    }
 
     let untranslated_count = request
         .input
         .entries
         .iter()
         .filter(|entry| {
-            included_names.contains(entry.namespace.as_str()) && entry.target_text.is_empty()
+            included_names.contains(entry.namespace.as_str())
+                && is_empty_translation(&entry.target_text)
         })
         .count();
     if untranslated_count > 0 {
@@ -156,7 +211,7 @@ pub fn validate_export(request: &ExportValidationRequest<'_>) -> Vec<ValidationI
 
     if request.kind != ExportKind::ResourcePack {
         for namespace in &included {
-            if !namespace_has_exportable_entries(request.input, &namespace.namespace) {
+            if !namespace_has_language_entries(request.input, &namespace.namespace) {
                 continue;
             }
             let filename = language_export_filename(

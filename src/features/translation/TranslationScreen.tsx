@@ -4,7 +4,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
-import { AppCommandError, getModUnitRemovalInfo, getProjectSummary, listEntries, listGlossaryTerms, listModUnits, removeModUnit } from "../../lib/tauri";
+import { AppCommandError, getModUnitRemovalInfo, getProjectSummary, listEntries, listGlossaryTerms, listModUnits, refreshModpackUnit, removeModUnit } from "../../lib/tauri";
 import { useProjectStore } from "../../stores/projectStore";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -40,10 +40,25 @@ import "./TranslationScreen.css";
 
 const persistence = new TauriEditorPersistence();
 
+function discardModUnitSnapshot(modUnitId: number) {
+  const state = useEditorStore.getState();
+  if (!state.unitStates.has(modUnitId)) return;
+  const unitStates = new Map(state.unitStates);
+  unitStates.delete(modUnitId);
+  useEditorStore.setState({ unitStates });
+}
+
+function modUnitName(unit: { sourceKind?: "jar" | "modpack"; name: string | null; sourceFilename: string }) {
+  return unit.sourceKind === "modpack"
+    ? "Modpack 固有（クエスト・KubeJS）"
+    : unit.name?.trim() || unit.sourceFilename;
+}
+
 export function TranslationScreen() {
   const searchRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const tabSwitchRequestRef = useRef(0);
+  const refreshingModpackIdRef = useRef<number | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
@@ -54,6 +69,7 @@ export function TranslationScreen() {
   const [wideEditorLayout, setWideEditorLayout] = useState(() => isWideEditorLayout());
   const [loadError, setLoadError] = useState<{ projectId: string; message: string } | null>(null);
   const [modActionError, setModActionError] = useState<string | null>(null);
+  const [refreshingModpackId, setRefreshingModpackId] = useState<number | null>(null);
   const [tabOrderAnnouncement, setTabOrderAnnouncement] = useState("");
   const [tabPreferences, setTabPreferences] = useState<ModTabPreferences>({ openIds: [], pinnedIds: [], activeId: 0 });
   const [tabsInitializedProjectId, setTabsInitializedProjectId] = useState<string | null>(null);
@@ -230,7 +246,7 @@ export function TranslationScreen() {
       .findIndex((unit) => unit.id === modUnitId);
     const unit = modUnits.find((candidate) => candidate.id === modUnitId);
     if (movedIndex >= 0 && unit) {
-      const name = unit.name?.trim() || unit.sourceFilename;
+      const name = modUnitName(unit);
       const wasPinned = tabPreferences.pinnedIds.includes(modUnitId);
       const isPinned = next.pinnedIds.includes(modUnitId);
       const pinMessage = wasPinned === isPinned ? ""
@@ -241,24 +257,33 @@ export function TranslationScreen() {
   }, [commitTabPreferences, modUnits, tabPreferences]);
 
   const selectModUnit = useCallback(async (modUnitId: number) => {
-    if (isUnitScopedAiJobActive()) return;
+    if (isUnitScopedAiJobActive() || refreshingModpackIdRef.current !== null) return;
     if (!projectId || !modUnits.some((unit) => unit.id === modUnitId)) return;
     const requestId = ++tabSwitchRequestRef.current;
     const before = useEditorStore.getState();
     try {
       if (before.activeModUnitId !== modUnitId) {
-        if (!(await flushBeforeLeavingEditor()) || requestId !== tabSwitchRequestRef.current) return;
+        if (
+          !(await flushBeforeLeavingEditor()) ||
+          requestId !== tabSwitchRequestRef.current ||
+          refreshingModpackIdRef.current !== null
+        ) return;
         const current = useEditorStore.getState();
         if (current.loadedProjectId !== projectId || useProjectStore.getState().details?.project.id !== projectId) return;
         const cached = current.unitStates.get(modUnitId);
         const entries = cached?.projectId === projectId ? [] : await listEntries(modUnitId);
         if (
           requestId !== tabSwitchRequestRef.current ||
+          refreshingModpackIdRef.current !== null ||
           useProjectStore.getState().details?.project.id !== projectId ||
           useEditorStore.getState().loadedProjectId !== projectId
         ) return;
         // listEntriesは待機中に旧タブを編集できるため、snapshot化直前にもflushして変更を失わない。
-        if (!(await flushBeforeLeavingEditor()) || requestId !== tabSwitchRequestRef.current) return;
+        if (
+          !(await flushBeforeLeavingEditor()) ||
+          requestId !== tabSwitchRequestRef.current ||
+          refreshingModpackIdRef.current !== null
+        ) return;
         if (
           useProjectStore.getState().details?.project.id !== projectId ||
           useEditorStore.getState().loadedProjectId !== projectId
@@ -344,11 +369,14 @@ export function TranslationScreen() {
     if (!projectId || useAiJobStore.getState().activeJob) return;
     const unit = useProjectStore.getState().modUnits.find((candidate) => candidate.id === modUnitId);
     if (!unit) return;
-    const name = unit.name?.trim() || unit.sourceFilename;
+    const name = modUnitName(unit);
     setModActionError(null);
     try {
       const info = await getModUnitRemovalInfo(modUnitId);
-      const warning = info.hasUnrestoredReplacements ? "\n上書きしたjarを元に戻せなくなります。" : "";
+      const warning = [
+        info.hasUnrestoredReplacements ? "上書きしたjarを元に戻せなくなります。" : "",
+        info.hasUnrestoredFileDeployments ? "配置したファイルを復元できなくなります。" : "",
+      ].filter(Boolean).join("\n");
       const confirmed = await requestConfirmation({
         title: `${name} をプロジェクトから外しますか？`,
         message: `${name} をプロジェクトから外します。この mod の訳も削除されます。${warning}`,
@@ -363,11 +391,11 @@ export function TranslationScreen() {
           if (
             !confirmUnrestoredReplacements &&
             error instanceof AppCommandError &&
-            error.appError.code === "jar_replacements_pending"
+            error.appError.code === "unit_deployments_pending"
           ) {
             const accepted = await requestConfirmation({
               title: `${name} をプロジェクトから外しますか？`,
-              message: `${name} をプロジェクトから外します。この mod の訳も削除されます。\n上書きしたjarを元に戻せなくなります。`,
+              message: `${name} をプロジェクトから外します。この mod の訳も削除されます。\n配置したファイルのバックアップを復元できなくなります。`,
               confirmLabel: "プロジェクトから外す",
             });
             if (accepted) await remove(true);
@@ -406,6 +434,47 @@ export function TranslationScreen() {
     }
   }, [commitTabPreferences, projectId, requestConfirmation, selectModUnit, tabPreferences]);
 
+  const refreshModpackFromInstance = useCallback(async (modUnitId: number) => {
+    if (!projectId || useAiJobStore.getState().activeJob || refreshingModpackIdRef.current !== null) return;
+    const unit = useProjectStore.getState().modUnits.find((candidate) => candidate.id === modUnitId);
+    if (unit?.sourceKind !== "modpack" || useEditorStore.getState().activeModUnitId !== modUnitId) return;
+    refreshingModpackIdRef.current = modUnitId;
+    tabSwitchRequestRef.current += 1;
+    setRefreshingModpackId(modUnitId);
+    setModActionError(null);
+    try {
+      if (!(await flushBeforeLeavingEditor())) return;
+      await refreshModpackUnit(modUnitId);
+      if (useProjectStore.getState().details?.project.id !== projectId) return;
+      const [entries, units, details] = await Promise.all([
+        listEntries(modUnitId),
+        listModUnits(),
+        getProjectSummary(),
+      ]);
+      if (useProjectStore.getState().details?.project.id !== projectId) return;
+      useProjectStore.getState().setModUnits(units);
+      useProjectStore.getState().setProjectDetails(details);
+      const editorAfterReload = useEditorStore.getState();
+      if (
+        editorAfterReload.loadedProjectId === projectId &&
+        editorAfterReload.activeModUnitId === modUnitId
+      ) {
+        editorAfterReload.loadEntries(entries, projectId);
+        useEditorStore.getState().activateLoadedModUnit(modUnitId, projectId);
+      } else if (editorAfterReload.loadedProjectId === projectId) {
+        discardModUnitSnapshot(modUnitId);
+      }
+      clearModIconCacheInUi();
+    } catch (error: unknown) {
+      if (useProjectStore.getState().details?.project.id === projectId) {
+        setModActionError(error instanceof AppCommandError ? error.message : "Modpack を再取り込みできませんでした。");
+      }
+    } finally {
+      if (refreshingModpackIdRef.current === modUnitId) refreshingModpackIdRef.current = null;
+      setRefreshingModpackId(null);
+    }
+  }, [projectId]);
+
   const togglePinnedModUnit = useCallback((modUnitId: number) => {
     const wasPinned = tabPreferences.pinnedIds.includes(modUnitId);
     const next = {
@@ -437,7 +506,11 @@ export function TranslationScreen() {
 
   useEffect(() => {
     const handleTabReorderShortcut = (event: KeyboardEvent) => {
-      if (useAppStore.getState().route !== "editor" || isUnitScopedAiJobActive()) return;
+      if (
+        useAppStore.getState().route !== "editor" ||
+        isUnitScopedAiJobActive() ||
+        refreshingModpackIdRef.current !== null
+      ) return;
       if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
       if (event.key !== "PageUp" && event.key !== "PageDown") return;
       if (document.querySelector('[aria-modal="true"]')) return;
@@ -543,6 +616,7 @@ export function TranslationScreen() {
       if (useAppStore.getState().route !== "editor") return;
       // 確認Dialog中は背面の編集ショートカットを止め、確認対象の操作が入れ替わらないようにする。
       if (document.querySelector('[aria-modal="true"]')) return;
+      if (refreshingModpackIdRef.current !== null) return;
       if (
         event.key === "Escape" &&
         !(event.target instanceof HTMLElement && event.target.matches("input, textarea, select"))
@@ -590,8 +664,9 @@ export function TranslationScreen() {
     openIds: tabPreferences.openIds,
     pinnedIds: tabPreferences.pinnedIds,
     activeUnitId: activeModUnitId!,
-    selectionDisabled: Boolean(activeAiJob) && isUnitScopedAiJobActive(),
-    actionsDisabled: Boolean(activeAiJob),
+    selectionDisabled:
+      refreshingModpackId !== null || (Boolean(activeAiJob) && isUnitScopedAiJobActive()),
+    actionsDisabled: Boolean(activeAiJob) || refreshingModpackId !== null,
     progressById,
     onSelect: (modUnitId: number) => void selectModUnit(modUnitId),
     onClose: (modUnitId: number) => void closeModUnit(modUnitId),
@@ -600,6 +675,7 @@ export function TranslationScreen() {
     onTogglePin: togglePinnedModUnit,
     onReorder: reorderModUnit,
     onTranslateMissing: (modUnitId: number) => void translateWholeProjectWithAi(requestConfirmation, modUnitId),
+    onRefreshModpack: (modUnitId: number) => void refreshModpackFromInstance(modUnitId),
     onRemove: (modUnitId: number) => void removeModUnitFromProject(modUnitId),
   };
 
@@ -628,6 +704,7 @@ export function TranslationScreen() {
         inspectorOpen={inspectorOpen}
         onRetrySave={retry}
         saveStatus={saveStatus}
+        editingDisabled={refreshingModpackId !== null}
         requestConfirmation={requestConfirmation}
         onOpenGlossary={() => {
           setGlossaryDraft(null);
@@ -636,9 +713,13 @@ export function TranslationScreen() {
       />
       <span className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{tabOrderAnnouncement}</span>
       {modActionError && <p className="status-message" role="alert">{modActionError}</p>}
+      {refreshingModpackId !== null && (
+        <p className="status-message" role="status">Modpack を再取り込み中…</p>
+      )}
       <div
         ref={workspaceRef}
         className={`editor-workspace${inspectorOpen ? "" : " editor-workspace--inspector-closed"}`}
+        inert={refreshingModpackId !== null}
         style={{
           "--inspector-width": `${inspectorWidth}px`,
           "--minimum-table-width": `${minimumTableWidth}px`,

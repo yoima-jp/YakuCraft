@@ -60,6 +60,7 @@ const FLAG_LABELS: Record<EntryFlag, string> = {
   malformed_source: "原文形式エラー",
   asset_ambiguous: "関連するアセット候補が複数あります",
   asset_missing: "関連するアセットがありません",
+  patchouli_text: "Patchouli本文",
 };
 
 export const FILTER_OPTIONS: Array<[EditorFilter, string]> = [
@@ -793,7 +794,7 @@ const EditorRow = memo(function EditorRow({
   const stateClass = `editor-state editor-state--${entry.origin}`;
   // アセット未解決は翻訳を妨げないため、状態列のエラー表示には含めない。
   const warnings = entry.flags
-    .filter((flag) => flag !== "asset_missing" && flag !== "asset_ambiguous")
+    .filter((flag) => flag !== "asset_missing" && flag !== "asset_ambiguous" && flag !== "patchouli_text")
     .map((flag) => FLAG_LABELS[flag]);
 
   const prepareContextMenu = () => {

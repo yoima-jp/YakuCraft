@@ -18,6 +18,7 @@ export interface ProjectSummaryDto {
 
 export interface ModUnitRemovalInfoDto {
   hasUnrestoredReplacements: boolean;
+  hasUnrestoredFileDeployments: boolean;
 }
 
 export interface ModSummaryDto {
@@ -133,6 +134,7 @@ export interface IncludedNamespaceDto {
 
 export interface ModUnitSummaryDto {
   id: number;
+  sourceKind?: "jar" | "modpack";
   sourceFilename: string;
   modId: string | null;
   name: string | null;
@@ -142,6 +144,7 @@ export interface ModUnitSummaryDto {
   total: number;
   translated: number;
   needsReview: number;
+  ftbQuestEntries?: number;
 }
 
 export interface ProjectEntryDto {
@@ -162,11 +165,15 @@ export interface ProjectEntryDto {
 export interface EditorEntryDto {
   id: number;
   modUnitId: number;
+  entryKind?: import("./translation").EntryKind;
   namespace: string;
   key: string;
   sourceText: string | null;
   sourceLocale: string | null;
   targetText: string | null;
+  targetOriginalText?: string | null;
+  translatedSourceText?: string | null;
+  sortIndex?: number;
   origin: TranslationOrigin;
   flags: EntryFlag[];
 }

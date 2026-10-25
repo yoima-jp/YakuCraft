@@ -204,7 +204,6 @@ fn legacy_parse_escapes_mode_decodes_java_properties_and_round_trips_both_modes(
         .collect();
     let options = WriterOptions {
         legacy_parse_escapes: extended.legacy_parse_escapes,
-        ..WriterOptions::default()
     };
     let extended_written = write_legacy_language("mod", &extended_entries, options);
     assert!(String::from_utf8_lossy(&extended_written).starts_with("#PARSE_ESCAPES\n"));
@@ -472,20 +471,6 @@ fn writers_are_deterministic_and_match_expected_bytes() {
         "{\n  \"first\": \"一\",\n  \"second\": \"A\"\n}\n".as_bytes()
     );
 
-    let with_empty = write_json_language(
-        "mod",
-        &entries,
-        WriterOptions {
-            include_empty_translations: true,
-            ..WriterOptions::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        with_empty,
-        "{\n  \"first\": \"一\",\n  \"second\": \"A\",\n  \"empty\": \"\"\n}\n".as_bytes()
-    );
-
     let legacy_entries = [
         output_entry("slash", r"C:\mods", 1),
         output_entry("line", "上\n下", 0),
@@ -518,25 +503,22 @@ fn writers_omit_whitespace_only_translations_without_trimming_translated_values(
         "translated= 翻訳 \n".as_bytes()
     );
 
-    let options = WriterOptions {
-        include_empty_translations: true,
-        ..options
-    };
-    let json: serde_json::Value =
-        serde_json::from_slice(&write_json_language("mod", &entries, options).unwrap()).unwrap();
-    assert_eq!(json["ascii"], entries[0].target_text);
-    assert_eq!(json["unicode"], entries[1].target_text);
-    let legacy = String::from_utf8(write_legacy_language("mod", &entries, options)).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(
+        &write_json_language("mod", &entries, WriterOptions::default()).unwrap(),
+    )
+    .unwrap();
+    assert!(json.get("ascii").is_none());
+    assert!(json.get("unicode").is_none());
+    let legacy = String::from_utf8(write_legacy_language(
+        "mod",
+        &entries,
+        WriterOptions::default(),
+    ))
+    .unwrap();
     let parsed = parse_legacy_language(legacy.as_bytes());
-    assert_eq!(parsed.entries.len(), 3);
-    assert_eq!(
-        parsed.entries["ascii"].text.as_deref(),
-        Some(entries[0].target_text.as_str())
-    );
-    assert_eq!(
-        parsed.entries["unicode"].text.as_deref(),
-        Some(entries[1].target_text.as_str())
-    );
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(!parsed.entries.contains_key("ascii"));
+    assert!(!parsed.entries.contains_key("unicode"));
 }
 
 #[test]

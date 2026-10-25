@@ -11,6 +11,7 @@ CREATE TABLE project_meta (
 
 CREATE TABLE mod_units (
     id INTEGER PRIMARY KEY,
+    source_kind TEXT NOT NULL DEFAULT 'jar',
     sort_index INTEGER NOT NULL,
     source_filename TEXT NOT NULL,
     source_sha256 TEXT NOT NULL,
@@ -75,6 +76,9 @@ CREATE TABLE translation_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mod_unit_id INTEGER NOT NULL REFERENCES mod_units(id) ON DELETE CASCADE,
     namespace TEXT NOT NULL,
+    entry_kind TEXT NOT NULL DEFAULT 'lang',
+    document_path TEXT,
+    document_pointer TEXT,
     translation_key TEXT NOT NULL,
     source_text TEXT,
     source_locale TEXT,
@@ -87,7 +91,7 @@ CREATE TABLE translation_entries (
     asset_id TEXT,
     asset_confidence TEXT,
     updated_at TEXT NOT NULL,
-    UNIQUE(mod_unit_id, namespace, translation_key)
+    UNIQUE(mod_unit_id, namespace, entry_kind, translation_key)
 );
 
 CREATE TABLE entry_flags (
@@ -145,6 +149,18 @@ CREATE TABLE jar_replacements (
     restored_at TEXT
 );
 
+CREATE TABLE file_deployments (
+    id INTEGER PRIMARY KEY,
+    mod_unit_id INTEGER NOT NULL REFERENCES mod_units(id) ON DELETE CASCADE,
+    target_path TEXT NOT NULL,
+    existed_before INTEGER NOT NULL,
+    previous_sha256 TEXT,
+    backup_path TEXT,
+    deployed_sha256 TEXT NOT NULL,
+    deployed_at TEXT NOT NULL,
+    restored_at TEXT
+);
+
 CREATE TABLE glossary_terms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_term TEXT NOT NULL UNIQUE,
@@ -161,4 +177,8 @@ CREATE UNIQUE INDEX glossary_terms_source_insensitive
 
 CREATE UNIQUE INDEX jar_replacements_active_target
     ON jar_replacements(mod_unit_id, target_path)
+    WHERE restored_at IS NULL;
+
+CREATE UNIQUE INDEX file_deployments_active_target
+    ON file_deployments(mod_unit_id, target_path)
     WHERE restored_at IS NULL;

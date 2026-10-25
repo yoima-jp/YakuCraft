@@ -78,11 +78,16 @@ async function scanRowFor(name) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     for (const row of await $$(".scan-screen__row")) {
-      if ((await row.getText()).includes(name)) return row;
+      if (await browser.execute((element, expected) => element.textContent.includes(expected), row, name)) return row;
     }
     await browser.pause(100);
   }
-  assert.fail(`スキャン結果に ${name} がありません。`);
+  const rows = [];
+  for (const row of await $$(".scan-screen__row")) {
+    rows.push(await browser.execute((element) => element.outerHTML, row));
+  }
+  const screenText = await $(".scan-screen").getText().catch(() => "スキャン画面がありません。");
+  assert.fail(`スキャン結果に ${name} がありません。\n${rows.join("\n")}\n${screenText}`);
 }
 
 async function completeReview() {
@@ -191,7 +196,10 @@ describe("modタブの並べ替え", () => {
 
       await browser.keys(["Control", "o"]);
       await $(".home-screen").waitForDisplayed({ timeout: 10_000 });
-      const recentProject = await $("button.recent-projects__open");
+      const recentProject = await $(
+        '//button[contains(@class, "recent-projects__open")][.//span[contains(@class, "recent-projects__name") and normalize-space()="2 個の mod"]]',
+      );
+      await recentProject.waitForDisplayed({ timeout: 10_000 });
       await recentProject.waitForClickable({ timeout: 30_000 });
       await recentProject.click();
       await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 30_000 });

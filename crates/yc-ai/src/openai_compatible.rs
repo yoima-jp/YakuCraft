@@ -56,6 +56,50 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+pub async fn list_models(
+    base_url: &str,
+    api_key: Option<&str>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>> {
+    let base_url = Url::parse(base_url).map_err(|_| AiError::InvalidUrl)?;
+    crate::validate_provider_url(&base_url).map_err(|_| AiError::InvalidUrl)?;
+    let api_key = api_key.filter(|key| !key.trim().is_empty());
+    if let Some(api_key) = api_key {
+        validate_auth_header(&format!("Bearer {api_key}"))?;
+    }
+    let http = ProviderHttp::new("openai-compatible")?;
+    let endpoint = http.endpoint(&base_url, "models")?;
+    let response = http
+        .send_with_retry(
+            || {
+                let request = http.client().get(endpoint.clone());
+                match api_key {
+                    Some(api_key) => request.bearer_auth(api_key),
+                    None => request,
+                }
+            },
+            cancellation,
+        )
+        .await?;
+    ensure_success(response.status().as_u16())?;
+    if cancellation.is_cancelled() {
+        return Err(AiError::Cancelled);
+    }
+    let payload: Value = tokio::select! {
+        _ = cancellation.cancelled() => return Err(AiError::Cancelled),
+        payload = response.json() => payload.map_err(|_| AiError::InvalidProviderResponse)?,
+    };
+    let models = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(AiError::InvalidProviderResponse)?
+        .iter()
+        .filter_map(|model| model.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    Ok(models)
+}
+
 #[async_trait::async_trait]
 impl TranslationProvider for OpenAiCompatibleProvider {
     async fn test_connection(&self, cancellation: &CancellationToken) -> Result<()> {
@@ -89,7 +133,7 @@ impl TranslationProvider for OpenAiCompatibleProvider {
         let payload = prompt::user_payload(context, entries)?;
         let structured_body = chat_body(
             &self.model,
-            &prompt::system_instruction(context, false),
+            &prompt::system_instruction(context, entries, false),
             &payload,
             true,
         );
@@ -111,7 +155,7 @@ impl TranslationProvider for OpenAiCompatibleProvider {
             }
             let fallback_body = chat_body(
                 &self.model,
-                &prompt::system_instruction(context, true),
+                &prompt::system_instruction(context, entries, true),
                 &payload,
                 false,
             );

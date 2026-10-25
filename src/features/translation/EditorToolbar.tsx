@@ -22,6 +22,7 @@ interface EditorToolbarProps {
   saveStatus: SaveStatus;
   requestConfirmation: RequestConfirmation;
   onOpenGlossary: () => void;
+  editingDisabled?: boolean;
 }
 
 const NUMBER_FORMAT = new Intl.NumberFormat("ja-JP");
@@ -35,6 +36,7 @@ export function EditorToolbar({
   saveStatus,
   requestConfirmation,
   onOpenGlossary,
+  editingDisabled = false,
 }: EditorToolbarProps) {
   const initialQuery = useEditorStore((state) => state.searchQuery);
   const namespaces = useEditorStore((state) => state.namespaces);
@@ -126,14 +128,14 @@ export function EditorToolbar({
         <fieldset className="editor-toolbar__history">
           <legend className="visually-hidden">編集履歴</legend>
           <Tooltip content="元に戻す" shortcut="Ctrl+Z">
-            <IconButton onClick={undo} disabled={!canUndo || Boolean(activeAiJob)} aria-label="元に戻す" aria-keyshortcuts="Control+Z">
+            <IconButton onClick={undo} disabled={editingDisabled || !canUndo || Boolean(activeAiJob)} aria-label="元に戻す" aria-keyshortcuts="Control+Z">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M9 14 4 9l5-5M4 9h8a6 6 0 1 1 0 12" />
               </svg>
             </IconButton>
           </Tooltip>
           <Tooltip content="やり直す" shortcut="Ctrl+Y">
-            <IconButton onClick={redo} disabled={!canRedo || Boolean(activeAiJob)} aria-label="やり直す" aria-keyshortcuts="Control+Y">
+            <IconButton onClick={redo} disabled={editingDisabled || !canRedo || Boolean(activeAiJob)} aria-label="やり直す" aria-keyshortcuts="Control+Y">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="m15 14 5-5-5-5m5 5h-8a6 6 0 1 0 0 12" />
               </svg>
@@ -156,14 +158,14 @@ export function EditorToolbar({
         </div>
         <Menu className="editor-toolbar__ai-menu" panelAlignment="end" panelClassName="editor-toolbar__ai-menu-panel" aria-label="AI翻訳" trigger="AI翻訳" panelRole="menu">
           <MenuItem
-            disabled={Boolean(activeAiJob)}
+            disabled={editingDisabled || Boolean(activeAiJob)}
             onClick={() => void translateWithAi(orderedIds.filter((id) => !entries.get(id)?.targetText), requestConfirmation)}
           >
             未翻訳を翻訳
           </MenuItem>
           {modUnitCount > 1 && (
             <MenuItem
-              disabled={Boolean(activeAiJob)}
+              disabled={editingDisabled || Boolean(activeAiJob)}
               onClick={() => void translateWholeProjectWithAi(requestConfirmation)}
             >
               プロジェクト全体の未翻訳を翻訳

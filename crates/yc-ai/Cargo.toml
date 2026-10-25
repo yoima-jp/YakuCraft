@@ -26,5 +26,8 @@ yc-validation = { path = "../yc-validation" }
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
 [dev-dependencies]
 wiremock = "0.6"

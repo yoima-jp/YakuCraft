@@ -1,5 +1,5 @@
 use serde::Serialize;
-use yc_validation::PlaceholderToken;
+use yc_validation::{PlaceholderProfile, PlaceholderToken};
 
 /// 1件の翻訳入力。placeholder は原文から生成し、指示文にも明示する。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -10,6 +10,7 @@ pub struct TranslationEntry {
     pub source_locale: String,
     pub target_locale: String,
     pub placeholders: Vec<PlaceholderToken>,
+    pub format_profile: PlaceholderProfile,
 }
 
 impl TranslationEntry {
@@ -20,14 +21,33 @@ impl TranslationEntry {
         source_locale: impl Into<String>,
         target_locale: impl Into<String>,
     ) -> Self {
+        Self::new_with_profile(
+            id,
+            key,
+            source,
+            source_locale,
+            target_locale,
+            PlaceholderProfile::Lang,
+        )
+    }
+
+    pub fn new_with_profile(
+        id: i64,
+        key: impl Into<String>,
+        source: impl Into<String>,
+        source_locale: impl Into<String>,
+        target_locale: impl Into<String>,
+        format_profile: PlaceholderProfile,
+    ) -> Self {
         let source = source.into();
         Self {
             id,
             key: key.into(),
-            placeholders: yc_validation::extract_placeholders(&source),
+            placeholders: yc_validation::extract_placeholders_for_profile(&source, format_profile),
             source,
             source_locale: source_locale.into(),
             target_locale: target_locale.into(),
+            format_profile,
         }
     }
 }
@@ -67,6 +87,7 @@ pub(crate) struct PromptEntry<'a> {
     pub source: &'a str,
     pub source_locale: &'a str,
     pub target_locale: &'a str,
+    pub entry_kind: PlaceholderProfile,
     pub placeholders: Vec<String>,
 }
 

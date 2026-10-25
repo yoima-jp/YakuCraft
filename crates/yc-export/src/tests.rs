@@ -74,6 +74,7 @@ fn input<'a>(
         writer_options: WriterOptions::default(),
         malformed_translation_files: malformed,
         placeholder_warnings: placeholders,
+        patchouli_documents: &[],
     }
 }
 
@@ -180,7 +181,11 @@ fn language_file_json_and_legacy_output_are_deterministic() {
 #[test]
 fn resource_pack_language_paths_and_filename_follow_version_boundaries() {
     let directory = temporary_directory();
-    let entries = [translation("mod", "key", "訳", 0)];
+    let entries = [
+        translation("mod", "key", "訳", 0),
+        translation("mod", "empty", "", 1),
+        translation("mod", "whitespace", "　 \t", 2),
+    ];
     let namespaces = [NamespaceExport {
         namespace: "mod".to_owned(),
         included: true,
@@ -748,6 +753,7 @@ fn validation_reports_missing_version_duplicate_keys_and_placeholder_warnings() 
         translation("mod", "same", "one", 0),
         translation("mod", "same", "two", 1),
         translation("mod", "empty", "", 2),
+        translation("mod", "whitespace", "　 \t", 3),
     ];
     let namespaces = [NamespaceExport {
         namespace: "mod".to_owned(),
@@ -791,11 +797,9 @@ fn validation_reports_missing_version_duplicate_keys_and_placeholder_warnings() 
             .iter()
             .any(|issue| issue.code == ValidationIssueCode::DuplicateKeys)
     );
-    assert!(
-        issues
-            .iter()
-            .any(|issue| issue.code == ValidationIssueCode::UntranslatedEntries)
-    );
+    assert!(issues.iter().any(|issue| {
+        issue.code == ValidationIssueCode::UntranslatedEntries && issue.message.starts_with("2 ")
+    }));
     assert!(
         issues
             .iter()

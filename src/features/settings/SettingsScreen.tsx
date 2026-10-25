@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, logoutChatgpt, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
+import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, listAiModels, logoutChatgpt, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
 import { Checkbox, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { SecondaryButton } from "../../components/button/Buttons";
 import { useAppStore } from "../../stores/appStore";
 import { SETTING_DEFAULTS, useSettingsStore } from "../../stores/settingsStore";
-import { checkForUpdate, useUpdaterStore } from "../updater/updater";
+import { checkForUpdate, loadUpdateSupport, useUpdaterStore } from "../updater/updater";
 import type { AiProviderId, AiSettingsDto } from "../../types/ai";
 import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
@@ -27,7 +27,14 @@ const CATEGORIES: Array<[SettingsCategory, string]> = [
 const PROVIDERS: Array<[AiProviderId, string]> = [
   ["chatgpt", "ChatGPT（サブスクリプション）"],
   ["openai", "OpenAI"],
-  ["openai-compatible", "OpenAI 互換"],
+  ["anthropic", "Claude（Anthropic）"],
+  ["gemini", "Gemini"],
+  ["openrouter", "OpenRouter"],
+  ["deepseek", "DeepSeek"],
+  ["groq", "Groq"],
+  ["ollama", "Ollama"],
+  ["lm-studio", "LM Studio"],
+  ["openai-compatible", "OpenAI 互換（カスタム）"],
   ["deepl", "DeepL"],
 ];
 
@@ -72,15 +79,40 @@ export function SettingsScreen() {
   const settingsLoaded = useSettingsStore((state) => state.loaded);
   const loadSettings = useSettingsStore((state) => state.load);
   const saveSettings = useSettingsStore((state) => state.save);
+  const updatesSupported = useUpdaterStore((state) => state.updatesSupported);
   const updateInstalling = useUpdaterStore((state) => state.installing);
   const [ai, setAi] = useState<AiSettingsDto | null>(null);
   const [apiKey, setApiKey] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const modelRequestGeneration = useRef(0);
   const [appInfo, setAppInfo] = useState<AppInfoDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [loginPending, setLoginPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
+  const modelProvider = ai?.provider;
+  const modelBaseUrl = ai?.baseUrl;
+  const modelProviderConfigured = ai?.configured ?? false;
+
+  const refreshModels = useCallback(async (config: Pick<AiSettingsDto, "provider" | "baseUrl">, key?: string) => {
+    const generation = ++modelRequestGeneration.current;
+    setModelOptions([]);
+    setModelError(null);
+    if (config.provider === "chatgpt" || config.provider === "deepl") {
+      return;
+    }
+    try {
+      const models = await listAiModels(config.provider, config.baseUrl, key || undefined);
+      if (generation === modelRequestGeneration.current) setModelOptions(models);
+    } catch {
+      if (generation === modelRequestGeneration.current) {
+        setModelOptions([]);
+        setModelError("モデル一覧を取得できません。モデル名を入力してください。");
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -93,15 +125,33 @@ export function SettingsScreen() {
   }, [closeSettings]);
 
   useEffect(() => {
+    if (!modelProvider || !modelBaseUrl?.trim()) return;
+    const canListWithoutApiKey = modelProvider === "ollama"
+      || modelProvider === "lm-studio"
+      || modelProvider === "openai-compatible";
+    if (!apiKey && !modelProviderConfigured && !canListWithoutApiKey) return;
+    const timeout = window.setTimeout(() => {
+      void refreshModels({ provider: modelProvider, baseUrl: modelBaseUrl }, apiKey);
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [apiKey, modelBaseUrl, modelProvider, modelProviderConfigured, refreshModels]);
+
+  useEffect(() => {
     if (!settingsLoaded) void loadSettings();
   }, [loadSettings, settingsLoaded]);
 
   useEffect(() => {
+    void loadUpdateSupport();
+  }, []);
+
+  useEffect(() => {
     void getAppInfo().then(setAppInfo).catch((cause: unknown) => setError(errorMessage(cause)));
     void getAiSettings()
-      .then(setAi)
+      .then((settings) => {
+        setAi(settings);
+      })
       .catch((cause: unknown) => setError(errorMessage(cause)));
-  }, []);
+  }, [refreshModels]);
 
   const persist = useCallback(async (patch: Record<string, unknown>) => {
     setError(null);
@@ -114,10 +164,14 @@ export function SettingsScreen() {
   }, [saveSettings]);
 
   const selectProvider = async (provider: AiProviderId) => {
+    modelRequestGeneration.current += 1;
+    setModelOptions([]);
+    setModelError(null);
     setBusy(true);
     setError(null);
     try {
-      setAi(await getAiSettings(provider));
+      const settings = await getAiSettings(provider);
+      setAi(settings);
       setApiKey("");
     } catch (cause: unknown) {
       setError(errorMessage(cause));
@@ -315,19 +369,29 @@ export function SettingsScreen() {
               >
                 書き出し後にフォルダーを開く
               </Checkbox>
-              <Checkbox
-                className="settings-check"
-                checked={Boolean(settings["updates.checkOnStartup"] ?? true)}
-                onChange={(checked) => void persist({ "updates.checkOnStartup": checked })}
-              >
-                起動時に更新を確認
-              </Checkbox>
-              <div className="settings-field">
-                <span>更新</span>
-                <button className="settings-action settings-action--quiet" type="button" disabled={updateChecking || updateInstalling} onClick={() => void checkUpdates()}>
-                  {updateChecking ? "確認中…" : "今すぐ確認"}
-                </button>
-              </div>
+              {updatesSupported === true && (
+                <>
+                  <Checkbox
+                    className="settings-check"
+                    checked={Boolean(settings["updates.checkOnStartup"] ?? true)}
+                    onChange={(checked) => void persist({ "updates.checkOnStartup": checked })}
+                  >
+                    起動時に更新を確認
+                  </Checkbox>
+                  <div className="settings-field">
+                    <span>更新</span>
+                    <button className="settings-action settings-action--quiet" type="button" disabled={updateChecking || updateInstalling} onClick={() => void checkUpdates()}>
+                      {updateChecking ? "確認中…" : "今すぐ確認"}
+                    </button>
+                  </div>
+                </>
+              )}
+              {updatesSupported === false && (
+                <div className="settings-field">
+                  <span>更新</span>
+                  <span className="settings-field__hint">パッケージを再インストールして更新してください</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -362,7 +426,8 @@ export function SettingsScreen() {
                   </div>
                 )
               ) : (
-                <label className="settings-field">
+                !(ai?.provider === "ollama" || ai?.provider === "lm-studio") && (
+                  <label className="settings-field">
                   APIキー
                   <input
                     type="password"
@@ -372,7 +437,8 @@ export function SettingsScreen() {
                     placeholder={ai?.configured ? "変更する場合は入力" : ""}
                   />
                   {ai?.configured && <span className="settings-field__hint">設定済み</span>}
-                </label>
+                  </label>
+                )
               )}
               {ai?.provider !== "deepl" && (
                 ai?.provider === "chatgpt" ? (
@@ -387,17 +453,27 @@ export function SettingsScreen() {
                     />
                   </div>
                 ) : (
-                  <label className="settings-field">
-                    モデル
+                  <div className="settings-field">
+                    <label htmlFor="ai-model">モデル</label>
                     <input
+                      id="ai-model"
+                      list={modelOptions.length > 0 ? "ai-model-options" : undefined}
                       value={ai?.model ?? ""}
+                      aria-describedby={modelError ? "ai-model-error" : undefined}
                       onChange={(event) => {
                         // Reactが更新関数を後から実行しても、イベントのcurrentTargetに依存しない。
                         const model = event.currentTarget.value;
+                        setModelError(null);
                         setAi((current) => current ? { ...current, model } : current);
                       }}
                     />
-                  </label>
+                    {modelOptions.length > 0 && (
+                      <datalist id="ai-model-options">
+                        {modelOptions.map((model) => <option key={model}>{model}</option>)}
+                      </datalist>
+                    )}
+                    {modelError && <span id="ai-model-error" className="settings-field__hint settings-field__hint--error" role="alert">{modelError}</span>}
+                  </div>
                 )
               )}
               {ai?.provider === "openai-compatible" && (
@@ -555,7 +631,7 @@ export function SettingsScreen() {
             </div>
           )}
 
-          {error && <p className="settings-message settings-message--error" role="alert">{error}</p>}
+          {error && <p className="settings-message settings-message--error selectable" role="alert">{error}</p>}
           {message && <p className="settings-message" aria-live="polite">{message}</p>}
         </section>
       </div>

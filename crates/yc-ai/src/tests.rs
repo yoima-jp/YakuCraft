@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{header, method, path},
 };
 use yc_validation::ValidationIssue;
 
@@ -316,6 +316,46 @@ async fn compatible_provider_falls_back_when_response_format_is_rejected() {
             .unwrap()
             .contains("JSON object")
     );
+}
+
+#[tokio::test]
+async fn compatible_provider_sends_structured_request_to_nested_base_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/openai/chat/completions"))
+        .and(header("Authorization", "Bearer mock-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": {
+                    "content": "{\"translations\":[{\"id\":1,\"translation\":\"こんにちは\"}]}"
+                }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAiCompatibleProvider::new(
+        mock_url(&server, "/v1beta/openai/").as_ref(),
+        Some("mock-key".into()),
+        "gemini-model",
+    )
+    .unwrap();
+    let result = provider
+        .translate_batch(
+            &[entry(1, "Hello")],
+            &TranslationContext::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result[0].translation, "こんにちは");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "gemini-model");
+    assert_eq!(body["response_format"]["type"], "json_schema");
+    assert_eq!(body["response_format"]["json_schema"]["strict"], true);
 }
 
 #[tokio::test]

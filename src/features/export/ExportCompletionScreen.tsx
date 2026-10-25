@@ -4,12 +4,14 @@ import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons"
 import { AppCommandError, openOutputFolder } from "../../lib/tauri";
 import { useAppStore } from "../../stores/appStore";
 import { getExportRunDetails } from "./completionData";
+import { displayPath } from "./pathDisplay";
 import "./ExportCompletionScreen.css";
 
 const FORMAT_LABELS = {
   resourcePack: "リソースパック",
   modifiedJar: "Mod JAR",
   languageFile: "言語ファイル",
+  modpackFiles: "Modpack ファイル",
 } as const;
 
 function errorMessage(error: unknown) {
@@ -76,6 +78,11 @@ export function ExportCompletionScreen() {
     case "languageFile":
       instruction = `配置先: assets/${completion.namespace}/lang/`;
       break;
+    case "modpackFiles":
+      instruction = runDetails?.directInstall
+        ? "配置したファイルは書き出し画面から元に戻せます"
+        : "ZIP を展開してインスタンスへ配置してください";
+      break;
   }
 
   const successfulCount = runDetails?.modResults.filter((result) => result.status === "success").length ?? 0;
@@ -96,15 +103,15 @@ export function ExportCompletionScreen() {
           <>
             <div>
               <dt>出力パス</dt>
-              <dd className="selectable">{outputPaths[0]}</dd>
+              <dd className="selectable">{displayPath(outputPaths[0])}</dd>
             </div>
             <div>
               <dt>ファイル名</dt>
-              <dd className="selectable">{fileName(outputPaths[0])}</dd>
+              <dd className="selectable">{fileName(displayPath(outputPaths[0]))}</dd>
             </div>
             <div>
               <dt>保存先</dt>
-              <dd className="selectable">{directoryName(outputPaths[0])}</dd>
+              <dd className="selectable">{directoryName(displayPath(outputPaths[0]))}</dd>
             </div>
           </>
         )}
@@ -119,7 +126,7 @@ export function ExportCompletionScreen() {
         <section className="export-completion__section" aria-label="出力パス">
           <h2>出力パス</h2>
           <ul>
-            {outputPaths.map((path) => <li className="selectable" key={path}>{path}</li>)}
+            {outputPaths.map((path) => <li className="selectable" key={path}>{displayPath(path)}</li>)}
           </ul>
         </section>
       )}
@@ -131,7 +138,7 @@ export function ExportCompletionScreen() {
               <li key={result.modUnitId}>
                 <strong>{result.modName}</strong>
                 <span>{statusLabel(result.status)}</span>
-                {result.outputPath && <code className="selectable">{result.outputPath}</code>}
+                {result.outputPath && <code className="selectable">{displayPath(result.outputPath)}</code>}
                 {result.message && <p>{result.message}</p>}
               </li>
             ))}

@@ -20,15 +20,15 @@ use yc_language::{
     TranslationOrigin, normalize_locale,
 };
 use yc_project::{
-    AnalysisData as ProjectAnalysisData, AssetRecord, IncludedNamespace, LanguageRecord, ModRecord,
-    ModUnitRecord, NamespaceRecord, NestedArchiveRecord, OpenedProject, ProjectAssetIndex,
-    ProjectEntry, ProjectEntrySummary, ProjectReviewSettings, ProjectSummary, RecentProject,
-    RecentProjects, TranslationAssetMatch, TranslationProgress, create_project,
-    delete_project as remove_project, list_projects, load_recent_projects, load_settings,
-    normalize_project_name, open_project as open_project_file,
-    rename_project as rename_project_file, save_recent_projects,
+    AnalysisData as ProjectAnalysisData, AssetRecord, DocumentEntryInput, IncludedNamespace,
+    LanguageRecord, ModRecord, ModUnitRecord, ModUnitSourceKind, ModpackSource, NamespaceRecord,
+    NestedArchiveRecord, OpenedProject, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
+    ProjectReviewSettings, ProjectSummary, RecentProject, RecentProjects, TranslationAssetMatch,
+    TranslationProgress, create_project_with_modpack, delete_project as remove_project,
+    list_projects, load_recent_projects, load_settings, normalize_project_name,
+    open_project as open_project_file, rename_project as rename_project_file, save_recent_projects,
 };
-use yc_validation::compare_placeholders;
+use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
 const PROJECT_ASSET_SOURCE_ID: &str = "project-source";
 
@@ -168,6 +168,7 @@ pub struct ModImportFailure {
 #[serde(rename_all = "camelCase")]
 pub struct ModUnitSummary {
     pub id: i64,
+    pub source_kind: ModUnitSourceKind,
     pub source_filename: String,
     pub mod_id: Option<String>,
     pub name: Option<String>,
@@ -177,12 +178,14 @@ pub struct ModUnitSummary {
     pub total: usize,
     pub translated: usize,
     pub needs_review: usize,
+    pub ftb_quest_entries: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModUnitRemovalInfo {
     pub has_unrestored_replacements: bool,
+    pub has_unrestored_file_deployments: bool,
 }
 
 pub(crate) struct CreatedProject {
@@ -358,10 +361,21 @@ fn load_project_analysis(
         .repository()
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| database_error(error.to_string()))?;
-    let analysis = Arc::new(
-        yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), on_progress)
-            .map_err(analysis_error)?,
-    );
+    let source_kind = opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .find(|unit| unit.id == mod_unit_id)
+        .map(|unit| unit.source_kind)
+        .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+    let analysis = Arc::new(match source_kind {
+        ModUnitSourceKind::Jar => {
+            yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), on_progress)
+                .map_err(analysis_error)?
+        }
+        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_path)?.0,
+    });
     cache_project_analysis(cache, project_id, mod_unit_id, Arc::clone(&analysis))?;
     Ok(analysis)
 }
@@ -416,6 +430,7 @@ pub enum ScanModsFolderEvent {
         scanned_folder: PathBuf,
         instance_dir: Option<PathBuf>,
         looks_like_instance_dir: bool,
+        modpack_scan: Option<yc_modpack::ModpackScan>,
     },
     Failed {
         job_id: String,
@@ -507,21 +522,35 @@ pub fn scan_mods_folder(
                         }
                     },
                 )
-                .map(|results| (resolved, results))
+                .map(|results| {
+                    let candidate = resolved
+                        .instance_dir
+                        .clone()
+                        .unwrap_or_else(|| folder.clone());
+                    let scan = yc_modpack::scan_instance(&candidate);
+                    let modpack_scan = (!scan.files.is_empty()
+                        || scan.ftb_quests != yc_modpack::FtbQuestsStatus::None)
+                        .then_some(scan);
+                    let instance_dir = resolved
+                        .instance_dir
+                        .or_else(|| modpack_scan.as_ref().map(|_| candidate));
+                    (resolved.scanned_folder, instance_dir, results, modpack_scan)
+                })
             });
 
         let event = match result {
-            Ok((resolved, results)) => {
-                let instance_dir = resolved.instance_dir;
+            Ok((scanned_folder, instance_dir, results, modpack_scan)) => {
                 let looks_like_instance_dir = instance_dir
                     .as_deref()
-                    .is_some_and(yc_export::looks_like_instance_dir);
+                    .is_some_and(yc_export::looks_like_instance_dir)
+                    || modpack_scan.is_some();
                 ScanModsFolderEvent::Completed {
                     job_id: task_job_id.clone(),
                     results,
-                    scanned_folder: resolved.scanned_folder,
+                    scanned_folder,
                     instance_dir,
                     looks_like_instance_dir,
+                    modpack_scan,
                 }
             }
             Err(error) => {
@@ -557,10 +586,11 @@ pub fn scan_mods_folder(
 pub fn create_project_from_jars(
     paths: Vec<String>,
     instance_path: Option<String>,
+    include_modpack: bool,
     channel: Channel<AnalysisChannelEvent>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
-    if paths.is_empty() {
+    if paths.is_empty() && !include_modpack {
         return Err(AppError::simple(
             "no_jar_selected",
             "JARファイルを選んでください。",
@@ -604,6 +634,7 @@ pub fn create_project_from_jars(
             &app_paths,
             &source_paths,
             instance_path,
+            include_modpack,
             &cancellation,
             |progress, mod_index, mod_count, mod_filename| {
                 if let Err(error) = channel.send(AnalysisChannelEvent::Progress {
@@ -833,9 +864,13 @@ pub async fn list_mod_units(state: State<'_, AppState>) -> Result<Vec<ModUnitSum
             .as_ref()
             .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
         let repository = opened.repository();
-        repository
+        let units = repository
             .list_mod_units()
-            .map_err(|error| database_error(error.to_string()))?
+            .map_err(|error| database_error(error.to_string()))?;
+        let documents = repository
+            .list_document_entries(None)
+            .map_err(|error| database_error(error.to_string()))?;
+        units
             .into_iter()
             .map(|unit: ModUnitRecord| {
                 let summary = repository
@@ -843,6 +878,7 @@ pub async fn list_mod_units(state: State<'_, AppState>) -> Result<Vec<ModUnitSum
                     .map_err(|error| database_error(error.to_string()))?;
                 Ok(ModUnitSummary {
                     id: unit.id,
+                    source_kind: unit.source_kind,
                     source_filename: unit.source_filename,
                     mod_id: unit.mod_id,
                     name: unit.name,
@@ -852,12 +888,301 @@ pub async fn list_mod_units(state: State<'_, AppState>) -> Result<Vec<ModUnitSum
                     total: summary.total,
                     translated: summary.translated,
                     needs_review: summary.needs_review,
+                    ftb_quest_entries: documents
+                        .iter()
+                        .filter(|entry| {
+                            entry.mod_unit_id == unit.id
+                                && entry.entry_kind == yc_project::TranslationEntryKind::Ftbquests
+                        })
+                        .count(),
                 })
             })
             .collect()
     })
     .await
     .map_err(|error| task_error(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn refresh_modpack_unit(
+    mod_unit_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let active_project = Arc::clone(&state.active_project);
+    let project_analysis_cache = Arc::clone(&state.project_analysis_cache);
+    let project_asset_index_cache = Arc::clone(&state.project_asset_index_cache);
+    let preview_context = Arc::clone(&state.preview_context);
+    let ai_job_tokens = Arc::clone(&state.ai_job_tokens);
+    let recent_lock = Arc::clone(&state.recent_lock);
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut active = active_project
+            .lock()
+            .map_err(|_| internal_state_error("active Project state"))?;
+        let opened = active
+            .as_mut()
+            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
+        let project_id = opened.summary().id.clone();
+        if ai_job_tokens
+            .lock()
+            .map_err(|_| internal_state_error("AI job state"))?
+            .values()
+            .any(|job| job.project_id == project_id)
+        {
+            return Err(AppError::simple(
+                "ai_job_in_progress",
+                "AI翻訳中は Modpack を再取り込みできません。",
+            ));
+        }
+        refresh_modpack_unit_core(opened, mod_unit_id)?;
+        {
+            let mut cache = project_analysis_cache
+                .lock()
+                .map_err(|_| internal_state_error("Project analysis cache"))?;
+            if let Some(cache) = cache.as_mut().filter(|cache| cache.project_id == project_id) {
+                cache.analyses.remove(&mod_unit_id);
+            }
+        }
+        {
+            let mut cache = project_asset_index_cache
+                .lock()
+                .map_err(|_| internal_state_error("Project asset index cache"))?;
+            if let Some(cache) = cache.as_mut().filter(|cache| cache.project_id == project_id) {
+                cache.indices.remove(&mod_unit_id);
+            }
+        }
+        {
+            let mut cached = preview_context
+                .lock()
+                .map_err(|_| internal_state_error("preview cache"))?;
+            if cached
+                .as_ref()
+                .is_some_and(|context| context.belongs_to_unit(&project_id, mod_unit_id))
+            {
+                *cached = None;
+            }
+        }
+        super::preview::clear_mod_icon_cache()?;
+        let summary = opened
+            .refresh_summary()
+            .map_err(|error| database_error(error.to_string()))?;
+        match recent_lock.lock() {
+            Ok(_guard) => {
+                if let Err(error) = refresh_recent_project_progress(&paths, &summary) {
+                    tracing::warn!(%error.user_message, "recent project record could not be updated after Modpack refresh");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "recent projects lock was poisoned after Modpack refresh"),
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| task_error(error.to_string()))?
+}
+
+fn refresh_modpack_unit_core(opened: &mut OpenedProject, mod_unit_id: i64) -> Result<(), AppError> {
+    let repository = opened.repository();
+    let unit = repository
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .find(|unit| unit.id == mod_unit_id && unit.source_kind == ModUnitSourceKind::Modpack)
+        .ok_or_else(|| AppError::simple("modpack_unit_required", "Modpack が見つかりません。"))?;
+    let recorded_game_directory = PathBuf::from(&unit.original_path);
+    let instance_root = match recorded_game_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("minecraft" | ".minecraft") => recorded_game_directory
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| {
+                AppError::simple(
+                    "modpack_instance_missing",
+                    "Modpack のインスタンスフォルダーを確認できません。",
+                )
+            })?,
+        _ => recorded_game_directory,
+    };
+    ensure_modpack_translation_directories_accessible(&instance_root)?;
+    let scan = yc_modpack::scan_instance(&instance_root);
+    refresh_modpack_unit_from_scan(opened, mod_unit_id, &instance_root, scan)
+}
+
+fn ensure_modpack_translation_directories_accessible(root: &Path) -> Result<(), AppError> {
+    let game_directory = yc_modpack::resolve_game_directory(root);
+    let ftb_lang = game_directory.join("config/ftbquests/quests/lang");
+    check_optional_modpack_directory(&ftb_lang)?;
+
+    let kubejs_assets = game_directory.join("kubejs/assets");
+    let namespaces = match fs::read_dir(&kubejs_assets) {
+        Ok(namespaces) => namespaces,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(modpack_directory_access_error(&kubejs_assets, error)),
+    };
+    for namespace in namespaces {
+        let namespace =
+            namespace.map_err(|error| modpack_directory_access_error(&kubejs_assets, error))?;
+        let is_directory = namespace
+            .file_type()
+            .map_err(|error| modpack_directory_access_error(&namespace.path(), error))?
+            .is_dir();
+        if is_directory {
+            check_optional_modpack_directory(&namespace.path().join("lang"))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_optional_modpack_directory(path: &Path) -> Result<(), AppError> {
+    match fs::metadata(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(modpack_directory_access_error(path, error)),
+    }
+}
+
+fn modpack_directory_access_error(path: &Path, error: impl std::fmt::Display) -> AppError {
+    let detail = format!("{}: {error}", path.display());
+    AppError::new(
+        "modpack_scan_incomplete",
+        &format!(
+            "Modpack の翻訳ディレクトリを確認できませんでした。アクセス権を確認して再試行してください: {detail}"
+        ),
+        Some(detail),
+    )
+}
+
+fn refresh_modpack_unit_from_scan(
+    opened: &mut OpenedProject,
+    mod_unit_id: i64,
+    instance_root: &Path,
+    scan: yc_modpack::ModpackScan,
+) -> Result<(), AppError> {
+    let repository = opened.repository();
+    if !scan.issues.is_empty() {
+        let detail = scan.issues.join("\n");
+        return Err(AppError::new(
+            "modpack_scan_incomplete",
+            &format!(
+                "Modpack の翻訳ファイルを確認できませんでした。次のファイルを確認して再試行してください: {detail}"
+            ),
+            Some(detail),
+        ));
+    }
+    if scan.files.is_empty() {
+        return Err(AppError::simple(
+            "modpack_files_missing",
+            "Modpack の翻訳ファイルが見つかりません。インスタンスを確認してください。",
+        ));
+    }
+    let files = super::modpack::collect_instance_files(instance_root, &scan)?;
+    let game_directory = if scan.game_directory == "." {
+        instance_root.to_path_buf()
+    } else {
+        instance_root.join(&scan.game_directory)
+    };
+    let canonical_game_directory =
+        fs::canonicalize(&game_directory).map_err(modpack_refresh_io_error)?;
+    let archive_bytes = super::modpack::write_modpack_source_archive(&files)?;
+    let source_path = repository
+        .mod_unit_source_path(mod_unit_id)
+        .map_err(|error| database_error(error.to_string()))?;
+    let refresh_path =
+        source_path.with_file_name(format!("{}.refresh-{}.zip", mod_unit_id, Uuid::new_v4()));
+    fs::write(&refresh_path, archive_bytes).map_err(modpack_refresh_io_error)?;
+    let result = (|| {
+        let (analysis, data) = super::modpack::analyze_modpack_archive(&refresh_path)?;
+        let saved_entries = repository
+            .list_entries(Some(mod_unit_id))
+            .map_err(|error| database_error(error.to_string()))?;
+        let old_settings = repository
+            .review_settings_for_unit(mod_unit_id)
+            .map_err(|error| database_error(error.to_string()))?;
+        let old_namespace_selection: HashMap<_, _> = repository
+            .project_metadata()
+            .map_err(|error| database_error(error.to_string()))?
+            .namespaces
+            .iter()
+            .filter(|namespace| namespace.mod_unit_id == mod_unit_id)
+            .map(|namespace| (namespace.namespace.clone(), namespace.included))
+            .collect();
+        let mut settings = analysis.default_review_settings();
+        let default_included: HashSet<_> = settings.included_namespaces.iter().cloned().collect();
+        settings.source_locale = resolve_source_locale(&analysis, &old_settings.source_locale);
+        settings.fallback_priority = old_settings.fallback_priority;
+        settings.preserve_existing_japanese = old_settings.preserve_existing_japanese;
+        settings.fill_missing_from_other_languages = old_settings.fill_missing_from_other_languages;
+        settings.included_namespaces = analysis
+            .result
+            .namespaces
+            .iter()
+            .filter(|namespace| {
+                old_namespace_selection
+                    .get(&namespace.namespace)
+                    .copied()
+                    .unwrap_or_else(|| default_included.contains(&namespace.namespace))
+            })
+            .map(|namespace| namespace.namespace.clone())
+            .collect();
+        let mut merged = merge_for_review(&analysis, &settings);
+        exclude_empty_modpack_entries(&mut merged.entries);
+        preserve_saved_translations(&mut merged.entries, saved_entries);
+        mark_existing_placeholder_errors(&mut merged.entries);
+        let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+        let source_sha256 = yc_archive::sha256_file(&refresh_path)
+            .map_err(modpack_refresh_io_error)?
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let backup_path = source_path.with_file_name(format!(
+            "{}.refresh-backup-{}.zip",
+            mod_unit_id,
+            Uuid::new_v4()
+        ));
+        fs::rename(&source_path, &backup_path).map_err(modpack_refresh_io_error)?;
+        if let Err(error) = fs::rename(&refresh_path, &source_path) {
+            let _ = fs::rename(&backup_path, &source_path);
+            return Err(modpack_refresh_io_error(error));
+        }
+        if let Err(error) = opened.writer().update_modpack_source(
+            mod_unit_id,
+            source_sha256,
+            canonical_game_directory.to_string_lossy().into_owned(),
+        ) {
+            let _ = fs::remove_file(&source_path);
+            let _ = fs::rename(&backup_path, &source_path);
+            return Err(database_error(error.to_string()));
+        }
+        opened
+            .writer()
+            .save_analysis(mod_unit_id, project_analysis)
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_document_entries(mod_unit_id, modpack_document_entries(&data, &settings))
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_review_settings(mod_unit_id, settings, true)
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_asset_index(mod_unit_id, ProjectAssetIndex::default())
+            .map_err(|error| database_error(error.to_string()))?;
+        if let Err(error) = fs::remove_file(backup_path) {
+            tracing::warn!(%error, "previous Modpack source archive could not be removed after refresh");
+        }
+        Ok(())
+    })();
+    if let Err(error) = fs::remove_file(&refresh_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::debug!(path = %refresh_path.display(), %error, "temporary Modpack refresh archive could not be removed");
+    }
+    result
 }
 
 #[tauri::command]
@@ -891,6 +1216,57 @@ pub async fn get_review_asset_summary(
                         &progress.message,
                     );
                 })?;
+            if unit.source_kind == ModUnitSourceKind::Modpack {
+                let settings = review_settings_from_input(&analysis, &settings, unit.id)?;
+                let merged = merge_for_review(&analysis, &settings);
+                let existing_documents = opened
+                    .repository()
+                    .list_document_entries(Some(unit.id))
+                    .map_err(|error| database_error(error.to_string()))?
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .target_text
+                            .as_deref()
+                            .is_some_and(|text| !text.trim().is_empty())
+                    })
+                    .count();
+                add_review_setup_summary(
+                    &mut aggregate,
+                    ReviewSetupSummary {
+                        existing_japanese_translation_count: merged
+                            .existing_japanese_translation_count
+                            + existing_documents,
+                        missing_source_keys_count: merged
+                            .entries
+                            .iter()
+                            .filter(|entry| {
+                                entry
+                                    .source_text
+                                    .as_deref()
+                                    .is_some_and(|source| !source.trim().is_empty())
+                                    && entry.target_text.trim().is_empty()
+                            })
+                            .count(),
+                        assets: ProjectAssetSummary {
+                            total: 0,
+                            block_models: 0,
+                            item_models: 0,
+                            entity_textures: 0,
+                            geometry_models: 0,
+                            unresolved_entries: 0,
+                        },
+                    },
+                );
+                cache_project_asset_index(
+                    &project_asset_index_cache,
+                    &opened.summary().id,
+                    unit.id,
+                    &settings.included_namespaces,
+                    ProjectAssetIndex::default(),
+                )?;
+                continue;
+            }
             let (unit_summary, index) = review_asset_summary_core_with_index_and_progress(
                 opened,
                 unit.id,
@@ -980,6 +1356,55 @@ pub async fn save_review_settings(
                 },
             )?;
             first_signed.get_or_insert(analysis.result.is_signed);
+            if unit.source_kind == ModUnitSourceKind::Modpack {
+                let unit_settings = review_settings_from_input(&analysis, &settings, unit.id)?;
+                let merged = merge_for_review(&analysis, &unit_settings);
+                let mut entries = merged.entries;
+                exclude_empty_modpack_entries(&mut entries);
+                let saved_entries = opened
+                    .repository()
+                    .list_entries(Some(unit.id))
+                    .map_err(|error| database_error(error.to_string()))?;
+                preserve_saved_translations(&mut entries, saved_entries);
+                mark_existing_placeholder_errors(&mut entries);
+                let project_analysis = project_analysis_data(&analysis, entries, &unit_settings);
+                let source_path = opened
+                    .repository()
+                    .mod_unit_source_path(unit.id)
+                    .map_err(|error| database_error(error.to_string()))?;
+                let (_, data) = super::modpack::analyze_modpack_archive(&source_path)?;
+                opened
+                    .writer()
+                    .save_analysis(unit.id, project_analysis)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_document_entries(
+                        unit.id,
+                        modpack_document_entries(&data, &unit_settings),
+                    )
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_review_settings(unit.id, unit_settings, false)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_asset_index(unit.id, ProjectAssetIndex::default())
+                    .map_err(|error| database_error(error.to_string()))?;
+                existing_japanese_translation_count += merged.existing_japanese_translation_count
+                    + opened
+                        .repository()
+                        .list_document_entries(Some(unit.id))
+                        .map_err(|error| database_error(error.to_string()))?
+                        .iter()
+                        .filter(|entry| {
+                            entry.target_text.as_deref().is_some_and(|text| !text.trim().is_empty())
+                        })
+                        .count();
+                missing_source_keys_count += merged.missing_source_keys_count;
+                continue;
+            }
             let unit_namespaces = selected_namespaces(&settings, unit.id);
             let cached_asset_index = take_cached_project_asset_index(
                 &project_asset_index_cache,
@@ -1172,8 +1597,13 @@ pub async fn get_mod_unit_removal_info(
             .repository()
             .has_unrestored_jar_replacements(mod_unit_id)
             .map_err(|error| database_error(error.to_string()))?;
+        let has_unrestored_file_deployments = opened
+            .repository()
+            .has_unrestored_file_deployments(mod_unit_id)
+            .map_err(|error| database_error(error.to_string()))?;
         Ok(ModUnitRemovalInfo {
             has_unrestored_replacements,
+            has_unrestored_file_deployments,
         })
     })
     .await
@@ -1234,10 +1664,15 @@ pub async fn remove_mod_unit(
         let has_unrestored_replacements = repository
             .has_unrestored_jar_replacements(mod_unit_id)
             .map_err(|error| database_error(error.to_string()))?;
-        if has_unrestored_replacements && !confirm_unrestored_replacements {
+        let has_unrestored_file_deployments = repository
+            .has_unrestored_file_deployments(mod_unit_id)
+            .map_err(|error| database_error(error.to_string()))?;
+        if (has_unrestored_replacements || has_unrestored_file_deployments)
+            && !confirm_unrestored_replacements
+        {
             return Err(AppError::simple(
-                "jar_replacements_pending",
-                "上書きしたjarを元に戻せなくなります。",
+                "unit_deployments_pending",
+                "配置したファイルのバックアップを復元できなくなります。",
             ));
         }
         if repository.list_mod_units().map_err(|error| database_error(error.to_string()))?.len() <= 1 {
@@ -1430,11 +1865,43 @@ pub(crate) fn create_project_from_sources_core(
     paths: &AppPaths,
     sources: &[PathBuf],
     instance_path: Option<&Path>,
+    include_modpack: bool,
     cancellation: &CancellationToken,
     mut on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
 ) -> Result<CreatedProject, AppError> {
-    let summary = create_project(&paths.projects_dir, sources, instance_path)
-        .map_err(|error| database_error(error.to_string()))?;
+    let modpack_data = if include_modpack {
+        let instance_root = instance_path.ok_or_else(|| {
+            AppError::simple(
+                "modpack_instance_required",
+                "インスタンスを選び直してください。",
+            )
+        })?;
+        let scan = yc_modpack::scan_instance(instance_root);
+        if scan.files.is_empty() {
+            return Err(AppError::simple(
+                "modpack_files_missing",
+                "Modpack の翻訳ファイルが見つかりません。再スキャンしてください。",
+            ));
+        }
+        let files = super::modpack::collect_instance_files(instance_root, &scan)?;
+        let game_directory = if scan.game_directory == "." {
+            instance_root.to_path_buf()
+        } else {
+            instance_root.join(&scan.game_directory)
+        };
+        Some((game_directory, files))
+    } else {
+        None
+    };
+    let modpack_source = modpack_data
+        .as_ref()
+        .map(|(game_directory, files)| ModpackSource {
+            game_directory,
+            files,
+        });
+    let summary =
+        create_project_with_modpack(&paths.projects_dir, sources, instance_path, modpack_source)
+            .map_err(|error| database_error(error.to_string()))?;
     let project_id = summary.id.clone();
     let result = (|| {
         let opened = open_project_file(
@@ -1460,6 +1927,33 @@ pub(crate) fn create_project_from_sources_core(
                 .mod_unit_source_path(unit.id)
                 .map_err(|error| database_error(error.to_string()))?;
             let filename = unit.source_filename.clone();
+            if unit.source_kind == ModUnitSourceKind::Modpack {
+                let (analysis, data) = super::modpack::analyze_modpack_archive(&source_path)?;
+                let mut settings = analysis.default_review_settings();
+                settings.included_namespaces = data.scan.kubejs_namespaces.clone();
+                let mut merged = merge_for_review(&analysis, &settings);
+                exclude_empty_modpack_entries(&mut merged.entries);
+                mark_existing_placeholder_errors(&mut merged.entries);
+                let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+                opened
+                    .writer()
+                    .save_analysis(unit.id, project_analysis)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_document_entries(unit.id, modpack_document_entries(&data, &settings))
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_review_settings(unit.id, settings, false)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_asset_index(unit.id, ProjectAssetIndex::default())
+                    .map_err(|error| database_error(error.to_string()))?;
+                analyses.insert(unit.id, Arc::new(analysis));
+                continue;
+            }
             let analysis = yc_analysis::analyze_jar(&source_path, cancellation, |progress| {
                 on_progress(progress, index + 1, mod_count, filename.clone());
             });
@@ -1502,6 +1996,10 @@ pub(crate) fn create_project_from_sources_core(
             opened
                 .writer()
                 .save_analysis(unit.id, project_analysis)
+                .map_err(|error| database_error(error.to_string()))?;
+            opened
+                .writer()
+                .save_document_entries(unit.id, document_entries_for_analysis(&analysis, &settings))
                 .map_err(|error| database_error(error.to_string()))?;
             opened
                 .writer()
@@ -1566,6 +2064,7 @@ pub(crate) fn create_project_core(
         paths,
         &[source.to_path_buf()],
         None,
+        false,
         cancellation,
         |progress, _, _, _| on_progress(progress),
     )?;
@@ -1653,6 +2152,11 @@ fn save_review_settings_core_with_cached_asset_index(
         entry_count = merged.entries.len(),
         "Review save phase completed"
     );
+    let saved_entries = opened
+        .repository()
+        .list_entries(Some(mod_unit_id))
+        .map_err(|error| database_error(error.to_string()))?;
+    preserve_saved_translations(&mut merged.entries, saved_entries);
     let placeholder_started = Instant::now();
     mark_existing_placeholder_errors(&mut merged.entries);
     tracing::info!(
@@ -1699,6 +2203,13 @@ fn save_review_settings_core_with_cached_asset_index(
     opened
         .writer()
         .save_analysis(mod_unit_id, project_analysis)
+        .map_err(|error| database_error(error.to_string()))?;
+    opened
+        .writer()
+        .save_document_entries(
+            mod_unit_id,
+            document_entries_for_analysis(analysis, &settings),
+        )
         .map_err(|error| database_error(error.to_string()))?;
     tracing::info!(
         stage = "save_analysis_database",
@@ -1923,19 +2434,39 @@ fn project_details_core_with_analysis(
         .repository()
         .list_entries(Some(mod_unit_id))
         .map_err(|error| database_error(error.to_string()))?;
-    let counts = counts_for_entries(&entries);
+    let existing_document_translation_count = opened
+        .repository()
+        .list_document_entries(Some(mod_unit_id))
+        .map_err(|error| database_error(error.to_string()))?
+        .iter()
+        .filter(|entry| {
+            entry
+                .target_text
+                .as_deref()
+                .is_some_and(|target| !target.trim().is_empty())
+        })
+        .count();
+    let counts = project_counts_from_summary(
+        opened
+            .repository()
+            .entry_summary(Some(mod_unit_id))
+            .map_err(|error| database_error(error.to_string()))?,
+    );
     let asset_type_counts = opened
         .repository()
         .asset_type_counts(Some(mod_unit_id))
         .map_err(|error| database_error(error.to_string()))?;
     let asset_summary = project_asset_summary(&asset_type_counts, &entries);
-    let entry_counts = analysis.result.language_files.iter().fold(
+    let mut entry_counts = analysis.result.language_files.iter().fold(
         HashMap::<String, usize>::new(),
         |mut counts, language| {
             *counts.entry(language.namespace.clone()).or_default() += language.entry_count;
             counts
         },
     );
+    for entry in &analysis.patchouli_entries {
+        *entry_counts.entry(entry.namespace.clone()).or_default() += 1;
+    }
     let namespaces = analysis
         .result
         .namespaces
@@ -1972,21 +2503,17 @@ fn project_details_core_with_analysis(
             archive_path: language.archive_path.clone(),
         })
         .collect();
-    let available_included_namespaces: HashSet<_> = opened
-        .repository()
-        .project_metadata()
-        .map_err(|error| database_error(error.to_string()))?
-        .languages
-        .into_iter()
-        .filter(|language| language.entry_count > 0)
-        .map(|language| (language.mod_unit_id, language.namespace))
+    let available_included_namespaces: HashSet<_> = entry_counts
+        .iter()
+        .filter(|(_, entry_count)| **entry_count > 0)
+        .map(|(namespace, _)| (mod_unit_id, namespace.as_str()))
         .collect();
     let included_namespaces = review
         .included_namespaces
         .iter()
         .filter(|selection| {
             available_included_namespaces
-                .contains(&(selection.mod_unit_id, selection.namespace.clone()))
+                .contains(&(selection.mod_unit_id, selection.namespace.as_str()))
         })
         .cloned()
         .collect();
@@ -2080,7 +2607,8 @@ fn project_details_core_with_analysis(
         fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
         included_namespaces,
         setup_completed: review.setup_completed,
-        existing_japanese_translation_count: merged.existing_japanese_translation_count,
+        existing_japanese_translation_count: merged.existing_japanese_translation_count
+            + existing_document_translation_count,
         missing_source_keys_count: merged.missing_source_keys_count,
         counts,
         target_language_file_name,
@@ -2133,6 +2661,9 @@ fn project_details_for_all_units(
             aggregate.mods.extend(unit_details.mods);
             aggregate.namespaces.extend(unit_details.namespaces);
             aggregate.languages.extend(unit_details.languages);
+            aggregate
+                .included_namespaces
+                .extend(unit_details.included_namespaces);
             aggregate
                 .nested_archives
                 .extend(unit_details.nested_archives);
@@ -2188,18 +2719,30 @@ fn project_details_from_stored_data(
                 .map(|language| language.locale.clone())
         })
         .unwrap_or_default();
-    // 名前空間レコードはアセットだけを持つ場合もあるため、Review対象は言語Entryの有無で決める。
-    let namespaces_with_entries: HashSet<_> = metadata
-        .languages
-        .iter()
-        .filter(|language| language.entry_count > 0)
-        .map(|language| (language.mod_unit_id, language.namespace.as_str()))
-        .collect();
+    // 名前空間レコードはアセットだけを持つ場合があるため、言語または文書Entryがあるものを選択肢にする。
+    let mut namespace_entry_counts = HashMap::<(i64, String), usize>::new();
+    for language in &metadata.languages {
+        if language.entry_count > 0 {
+            *namespace_entry_counts
+                .entry((language.mod_unit_id, language.namespace.clone()))
+                .or_default() += language.entry_count;
+        }
+    }
+    for entry in repository
+        .list_document_entries(None)
+        .map_err(|error| database_error(error.to_string()))?
+    {
+        *namespace_entry_counts
+            .entry((entry.mod_unit_id, entry.namespace))
+            .or_default() += 1;
+    }
     let included_namespaces: Vec<_> = review
         .included_namespaces
         .iter()
         .filter(|selection| {
-            namespaces_with_entries.contains(&(selection.mod_unit_id, selection.namespace.as_str()))
+            namespace_entry_counts
+                .get(&(selection.mod_unit_id, selection.namespace.clone()))
+                .is_some_and(|entry_count| *entry_count > 0)
         })
         .cloned()
         .collect();
@@ -2211,7 +2754,9 @@ fn project_details_from_stored_data(
         .namespaces
         .iter()
         .filter(|namespace| {
-            namespaces_with_entries.contains(&(namespace.mod_unit_id, namespace.namespace.as_str()))
+            namespace_entry_counts
+                .get(&(namespace.mod_unit_id, namespace.namespace.clone()))
+                .is_some_and(|entry_count| *entry_count > 0)
         })
         .map(|namespace| NamespaceSummary {
             mod_unit_id: namespace.mod_unit_id,
@@ -2219,7 +2764,10 @@ fn project_details_from_stored_data(
             container_path: namespace.container_path.clone(),
             included: included_namespace_set
                 .contains(&(namespace.mod_unit_id, namespace.namespace.as_str())),
-            entry_count: namespace.entry_count,
+            entry_count: namespace_entry_counts
+                .get(&(namespace.mod_unit_id, namespace.namespace.clone()))
+                .copied()
+                .unwrap_or_default(),
         })
         .collect();
     let languages = metadata
@@ -2270,12 +2818,21 @@ fn project_details_from_stored_data(
     let is_signed = match is_signed {
         Some(is_signed) => is_signed,
         None => {
-            let source_path = repository
-                .mod_unit_source_path(first_mod_unit_id(opened)?)
-                .map_err(|error| database_error(error.to_string()))?;
-            yc_archive::Archive::open(source_path)
-                .map_err(|error| analysis_error(yc_analysis::AnalysisError::Archive(error)))?
-                .is_signed()
+            let jar_unit = repository
+                .list_mod_units()
+                .map_err(|error| database_error(error.to_string()))?
+                .into_iter()
+                .find(|unit| unit.source_kind == ModUnitSourceKind::Jar);
+            if let Some(unit) = jar_unit {
+                let source_path = repository
+                    .mod_unit_source_path(unit.id)
+                    .map_err(|error| database_error(error.to_string()))?;
+                yc_archive::Archive::open(source_path)
+                    .map_err(|error| analysis_error(yc_analysis::AnalysisError::Archive(error)))?
+                    .is_signed()
+            } else {
+                false
+            }
         }
     };
     let mut asset_summary = project_asset_summary(&asset_type_counts, &[]);
@@ -2393,6 +2950,13 @@ pub(crate) fn review_settings_from_record(
         .iter()
         .filter(|language| language.entry_count > 0)
         .map(|language| language.namespace.as_str())
+        .chain(
+            analysis
+                .result
+                .patchouli_books
+                .iter()
+                .map(|book| book.namespace.as_str()),
+        )
         .collect();
     ReviewSettings {
         source_locale: resolve_source_locale(
@@ -2429,18 +2993,51 @@ pub(crate) fn merge_for_review(
     }
 }
 
+fn exclude_empty_modpack_entries(entries: &mut Vec<TranslationEntry>) {
+    entries.retain(|entry| {
+        !entry
+            .source_text
+            .as_deref()
+            .is_some_and(|source| source.trim().is_empty())
+    });
+}
+
 fn mark_existing_placeholder_errors(entries: &mut [TranslationEntry]) {
     for entry in entries.iter_mut().filter(|entry| {
         entry.origin == TranslationOrigin::Existing && !entry.target_text.is_empty()
     }) {
-        if entry
-            .source_text
-            .as_deref()
-            .is_some_and(|source| !compare_placeholders(source, &entry.target_text).is_valid)
-            && !entry.flags.contains(&EntryFlag::PlaceholderError)
+        if entry.source_text.as_deref().is_some_and(|source| {
+            let profile = if entry.flags.contains(&EntryFlag::PatchouliText) {
+                PlaceholderProfile::Patchouli
+            } else {
+                PlaceholderProfile::Lang
+            };
+            !compare_placeholders_for_profile(source, &entry.target_text, profile).is_valid
+        }) && !entry.flags.contains(&EntryFlag::PlaceholderError)
         {
             // 解析時に取り込む既存訳も編集済み訳と同じ基準で警告し、Exportまで不一致を引き継ぐ。
             entry.flags.push(EntryFlag::PlaceholderError);
+        }
+    }
+}
+
+fn preserve_saved_translations(entries: &mut [TranslationEntry], saved_entries: Vec<ProjectEntry>) {
+    let saved_by_key: HashMap<_, _> = saved_entries
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                entry.origin,
+                TranslationOrigin::Ai | TranslationOrigin::Edited
+            )
+        })
+        .map(|entry| ((entry.namespace.clone(), entry.key.clone()), entry))
+        .collect();
+    for entry in entries {
+        if let Some(saved) = saved_by_key.get(&(entry.namespace.clone(), entry.key.clone())) {
+            entry.target_text = saved.target_text.clone().unwrap_or_default();
+            entry.target_original_text = saved.target_original_text.clone();
+            entry.translated_source_text = saved.translated_source_text.clone();
+            entry.origin = saved.origin.clone();
         }
     }
 }
@@ -2806,13 +3403,20 @@ pub(crate) fn project_analysis_data(
     entries: Vec<TranslationEntry>,
     settings: &ReviewSettings,
 ) -> ProjectAnalysisData {
-    let entry_counts = analysis.result.language_files.iter().fold(
+    let mut entry_counts = analysis.result.language_files.iter().fold(
         HashMap::<String, usize>::new(),
         |mut counts, language| {
             *counts.entry(language.namespace.clone()).or_default() += language.entry_count;
             counts
         },
     );
+    for entry in analysis
+        .patchouli_entries
+        .iter()
+        .filter(|entry| settings.included_namespaces.contains(&entry.namespace))
+    {
+        *entry_counts.entry(entry.namespace.clone()).or_default() += 1;
+    }
     ProjectAnalysisData {
         mods: analysis
             .result
@@ -2879,26 +3483,101 @@ pub(crate) fn project_analysis_data(
     }
 }
 
-pub(crate) fn counts_for_entries(entries: &[ProjectEntry]) -> ProjectCounts {
-    let translated = entries
+fn document_entries_for_analysis(
+    analysis: &AnalysisData,
+    settings: &ReviewSettings,
+) -> Vec<DocumentEntryInput> {
+    analysis
+        .patchouli_entries
         .iter()
-        .filter(|entry| {
-            entry
-                .target_text
-                .as_deref()
-                .is_some_and(|text| !text.is_empty())
+        .filter(|entry| settings.included_namespaces.contains(&entry.namespace))
+        .enumerate()
+        .map(|(sort_index, entry)| {
+            let target_text = settings
+                .preserve_existing_japanese
+                .then(|| entry.target_text.clone())
+                .flatten();
+            let existing = target_text.is_some();
+            let mut flags = Vec::new();
+            if existing
+                && !compare_placeholders_for_profile(
+                    &entry.source_text,
+                    entry.target_text.as_deref().unwrap_or_default(),
+                    PlaceholderProfile::Patchouli,
+                )
+                .is_valid
+            {
+                flags.push(EntryFlag::PlaceholderError);
+            }
+            DocumentEntryInput {
+                namespace: entry.namespace.clone(),
+                key: entry.key.clone(),
+                entry_kind: yc_project::TranslationEntryKind::Patchouli,
+                document_path: entry.document_path.clone(),
+                document_pointer: entry.pointer.clone(),
+                source_text: Some(entry.source_text.clone()),
+                source_locale: Some("en_us".to_owned()),
+                target_text: target_text.clone(),
+                target_original_text: target_text,
+                translated_source_text: existing.then(|| entry.source_text.clone()),
+                origin: if existing {
+                    TranslationOrigin::Existing
+                } else {
+                    TranslationOrigin::Missing
+                },
+                sort_index,
+                flags,
+            }
         })
-        .count();
-    let needs_review = entries
+        .collect()
+}
+
+fn modpack_document_entries(
+    data: &yc_modpack::ModpackData,
+    settings: &ReviewSettings,
+) -> Vec<DocumentEntryInput> {
+    data.entries
         .iter()
-        .filter(|entry| entry.flags.contains(&EntryFlag::NeedsReview))
-        .count();
-    ProjectCounts {
-        total: entries.len(),
-        translated,
-        missing: entries.len().saturating_sub(translated),
-        needs_review,
-    }
+        .filter(|entry| entry.translatable && entry.key.starts_with("ftbquests:"))
+        .enumerate()
+        .map(|(sort_index, entry)| {
+            let target_text = settings
+                .preserve_existing_japanese
+                .then(|| entry.existing_translation.clone())
+                .flatten();
+            let existing = target_text.is_some();
+            let mut flags = Vec::new();
+            if existing
+                && !compare_placeholders_for_profile(
+                    &entry.source_text,
+                    target_text.as_deref().unwrap_or_default(),
+                    PlaceholderProfile::FtbQuests,
+                )
+                .is_valid
+            {
+                flags.push(EntryFlag::PlaceholderError);
+            }
+            DocumentEntryInput {
+                namespace: "ftbquests".to_owned(),
+                key: entry.key.clone(),
+                entry_kind: yc_project::TranslationEntryKind::Ftbquests,
+                document_path: entry.document_path.clone(),
+                document_pointer: entry.pointer.clone(),
+                source_text: Some(entry.source_text.clone()),
+                source_locale: Some("en_us".to_owned()),
+                target_text: target_text.clone(),
+                target_original_text: target_text,
+                translated_source_text: existing.then(|| entry.source_text.clone()),
+                origin: if existing {
+                    TranslationOrigin::Existing
+                } else {
+                    TranslationOrigin::Missing
+                },
+                sort_index,
+                flags,
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn touch_recent_project(
@@ -2912,10 +3591,11 @@ pub(crate) fn touch_recent_project(
     recent.retain_existing(&paths.projects_dir);
     let repository =
         yc_project::Repository::new(paths.projects_dir.join(&summary.id).join("project.sqlite"));
-    let entries = repository
-        .list_entries(None)
-        .map_err(|error| database_error(error.to_string()))?;
-    let progress = counts_for_entries(&entries);
+    let progress = project_counts_from_summary(
+        repository
+            .entry_summary(None)
+            .map_err(|error| database_error(error.to_string()))?,
+    );
     let last_opened = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .map_err(|error| database_error(error.to_string()))?;
@@ -2954,11 +3634,13 @@ pub(crate) fn refresh_recent_project_progress(
     let mut recent = load_recent_projects(&paths.recent_file)
         .map_err(|error| database_error(error.to_string()))?;
     recent.retain_existing(&paths.projects_dir);
-    let entries =
-        yc_project::Repository::new(paths.projects_dir.join(&summary.id).join("project.sqlite"))
-            .list_entries(None)
-            .map_err(|error| database_error(error.to_string()))?;
-    let progress = counts_for_entries(&entries);
+    let repository =
+        yc_project::Repository::new(paths.projects_dir.join(&summary.id).join("project.sqlite"));
+    let progress = project_counts_from_summary(
+        repository
+            .entry_summary(None)
+            .map_err(|error| database_error(error.to_string()))?,
+    );
     if let Some(project) = recent
         .projects
         .iter_mut()
@@ -3016,8 +3698,8 @@ pub(crate) fn list_recent_projects_core(paths: &AppPaths) -> Result<Vec<RecentPr
         let repository = yc_project::Repository::new(
             paths.projects_dir.join(&project.id).join("project.sqlite"),
         );
-        if let Ok(entries) = repository.list_entries(None) {
-            let counts = counts_for_entries(&entries);
+        if let Ok(summary) = repository.entry_summary(None) {
+            let counts = project_counts_from_summary(summary);
             project.translation_progress = TranslationProgress {
                 translated: counts.translated,
                 missing: counts.missing,
@@ -3066,6 +3748,14 @@ fn format_label(format: &LanguageFileFormat) -> &'static str {
         LanguageFileFormat::Json => "json",
         LanguageFileFormat::LegacyLang => "legacyLang",
     }
+}
+
+fn modpack_refresh_io_error(error: impl std::fmt::Display) -> AppError {
+    AppError::new(
+        "modpack_refresh",
+        "Modpack のファイルを再取り込みできませんでした。",
+        Some(error.to_string()),
+    )
 }
 
 fn analysis_error(error: yc_analysis::AnalysisError) -> AppError {

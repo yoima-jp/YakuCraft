@@ -1,32 +1,38 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 use yc_analysis::CancellationToken;
 use yc_export::{
     ExportError, ExportInput, ExportKind, ExportValidationRequest, ManualPackFormat, MergedPackMod,
-    MergedResourcePackConflict, MergedResourcePackOptions, NamespaceExport, PlaceholderWarning,
-    ResourcePackMod, ResourcePackOptions, ValidationIssueCode, ValidationSeverity,
-    export_merged_resource_pack, export_modified_jar as write_modified_jar,
-    export_resource_pack as write_resource_pack, install_resource_pack_to,
-    merged_resource_pack_display_name, merged_resource_pack_filename, replace_jar_in_place,
-    replace_jar_in_place_with_backup, restore_jar_from_backup, validate_export as check_export,
+    MergedResourcePackConflict, MergedResourcePackOptions, NamespaceExport,
+    PatchouliDocumentExport, PatchouliDocumentTranslation, PlaceholderWarning, ResourcePackMod,
+    ResourcePackOptions, ValidationIssueCode, ValidationSeverity, export_merged_resource_pack,
+    export_modified_jar as write_modified_jar, export_resource_pack as write_resource_pack,
+    install_resource_pack_to, merged_resource_pack_display_name, merged_resource_pack_filename,
+    replace_jar_in_place, replace_jar_in_place_with_backup, restore_jar_from_backup,
+    validate_export as check_export,
 };
-use yc_language::{EntryFlag, ReviewSettings, TranslationEntry, WriterOptions};
-use yc_project::{JarReplacementRecord, ModUnitRecord, OpenedProject, ProjectEntry};
-use yc_validation::{PlaceholderSeverity, compare_placeholders};
+use yc_language::{
+    EntryFlag, ReviewSettings, TranslationEntry, WriterOptions, is_empty_translation,
+};
+use yc_project::{
+    DocumentProjectEntry, FileDeploymentRecord, JarReplacementRecord, ModUnitRecord,
+    ModUnitSourceKind, OpenedProject, ProjectEntry, TranslationEntryKind,
+};
+use yc_validation::{PlaceholderProfile, PlaceholderSeverity, compare_placeholders_for_profile};
 
 use crate::{
     commands::project::{
-        counts_for_entries, detect_minecraft_version_for_project, discovered_languages,
-        merge_for_review, project_review_settings_for_unit, review_settings_from_record,
+        detect_minecraft_version_for_project, discovered_languages, merge_for_review,
+        project_review_settings_for_unit, review_settings_from_record,
     },
     error::AppError,
     state::AppState,
@@ -38,6 +44,7 @@ pub enum ExportKindInput {
     LanguageFile,
     ResourcePack,
     ModifiedJar,
+    ModpackFiles,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,6 +58,7 @@ pub struct ExportIssue {
     pub count: Option<usize>,
     pub namespace: Option<String>,
     pub key: Option<String>,
+    pub display_label: Option<String>,
     pub source_text: Option<String>,
     pub target_text: Option<String>,
 }
@@ -68,6 +76,7 @@ pub struct ExportValidationResult {
 #[serde(rename_all = "camelCase")]
 pub struct ExportUnitStatus {
     pub id: i64,
+    pub source_kind: ModUnitSourceKind,
     pub source_filename: String,
     pub name: Option<String>,
     pub version: Option<String>,
@@ -82,6 +91,7 @@ pub struct ExportOverview {
     pub instance_path: Option<String>,
     pub units: Vec<ExportUnitStatus>,
     pub active_replacements: Vec<JarReplacementRecord>,
+    pub active_file_deployments: Vec<FileDeploymentRecord>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -121,6 +131,33 @@ pub enum MergedPackExportOutcome {
 )]
 pub enum RestoreJarOutcome {
     ConfirmationRequired { target_path: String },
+    Restored { target_path: String },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModpackFilesExportOutcome {
+    OverwriteRequired {
+        target_path: String,
+    },
+    Completed {
+        output_path: String,
+        directly_installed: bool,
+        file_count: usize,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RestoreFileDeploymentOutcome {
     Restored { target_path: String },
 }
 
@@ -166,10 +203,13 @@ struct ExportContext {
     source_jar_filename: String,
     mods: Vec<ResourcePackMod>,
     entries: Vec<TranslationEntry>,
+    document_entries: Vec<DocumentProjectEntry>,
     namespaces: Vec<NamespaceExport>,
     language_files: Vec<yc_language::DiscoveredLanguageFile>,
     legacy_parse_escapes_namespaces: Vec<String>,
     placeholder_warnings: Vec<PlaceholderWarning>,
+    patchouli_documents: Vec<PatchouliDocumentExport>,
+    counts: crate::commands::project::ProjectCounts,
     malformed_translation_files: Vec<String>,
     duplicate_key_warnings: Vec<(String, String)>,
     source_locale: String,
@@ -185,12 +225,10 @@ impl ExportContext {
             language_files: &self.language_files,
             legacy_parse_escapes_namespaces: &self.legacy_parse_escapes_namespaces,
             source_locale: &self.source_locale,
-            writer_options: WriterOptions {
-                include_empty_translations: false,
-                ..WriterOptions::default()
-            },
+            writer_options: WriterOptions::default(),
             malformed_translation_files: &self.malformed_translation_files,
             placeholder_warnings: &self.placeholder_warnings,
+            patchouli_documents: &self.patchouli_documents,
         }
     }
 }
@@ -323,6 +361,7 @@ pub async fn get_export_overview(
             .into_iter()
             .map(|unit| ExportUnitStatus {
                 id: unit.id,
+                source_kind: unit.source_kind,
                 source_filename: unit.source_filename,
                 name: unit.name,
                 version: unit.version,
@@ -335,10 +374,15 @@ pub async fn get_export_overview(
             .repository()
             .list_jar_replacements(false)
             .map_err(|error| project_error(error.to_string()))?;
+        let active_file_deployments = opened
+            .repository()
+            .list_file_deployments(false)
+            .map_err(|error| project_error(error.to_string()))?;
         Ok(ExportOverview {
             instance_path: opened.summary().instance_path.clone(),
             units,
             active_replacements,
+            active_file_deployments,
         })
     })
     .await
@@ -466,6 +510,54 @@ pub async fn export_selected_language_files(
 }
 
 #[tauri::command]
+pub async fn export_modpack_files(
+    project_id: String,
+    mod_unit_ids: Vec<i64>,
+    output_path: Option<String>,
+    direct_install: bool,
+    overwrite: bool,
+    state: State<'_, AppState>,
+) -> Result<ModpackFilesExportOutcome, AppError> {
+    let active_project = Arc::clone(&state.active_project);
+    let exported_paths = Arc::clone(&state.exported_paths);
+    tauri::async_runtime::spawn_blocking(move || {
+        let active = active_project
+            .lock()
+            .map_err(|_| state_error("active Project state"))?;
+        let opened = active_project_for_id(&active, &project_id)?;
+        export_modpack_files_core(
+            opened,
+            &mod_unit_ids,
+            output_path.as_deref().map(Path::new),
+            direct_install,
+            overwrite,
+            &exported_paths,
+        )
+    })
+    .await
+    .map_err(|error| task_error(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn restore_modpack_file(
+    project_id: String,
+    deployment_id: i64,
+    state: State<'_, AppState>,
+) -> Result<RestoreFileDeploymentOutcome, AppError> {
+    let active_project = Arc::clone(&state.active_project);
+    let exported_paths = Arc::clone(&state.exported_paths);
+    tauri::async_runtime::spawn_blocking(move || {
+        let active = active_project
+            .lock()
+            .map_err(|_| state_error("active Project state"))?;
+        let opened = active_project_for_id(&active, &project_id)?;
+        restore_modpack_file_core(opened, deployment_id, &exported_paths)
+    })
+    .await
+    .map_err(|error| task_error(error.to_string()))?
+}
+
+#[tauri::command]
 pub async fn restore_modified_jar(
     project_id: String,
     replacement_id: i64,
@@ -486,7 +578,11 @@ pub async fn restore_modified_jar(
 }
 
 #[tauri::command]
-pub fn open_output_folder(path: String, state: State<'_, AppState>) -> Result<(), AppError> {
+pub fn open_output_folder(
+    app: AppHandle,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
     let requested = fs::canonicalize(&path).map_err(export_error)?;
     // Explorer起動を過去にこのアプリが書き出したファイルに限定し、任意パスを開くIPCを防ぐ。
     let exported = state
@@ -502,17 +598,9 @@ pub fn open_output_folder(path: String, state: State<'_, AppState>) -> Result<()
     let folder = requested
         .parent()
         .ok_or_else(|| AppError::simple("invalid_output_path", "保存先フォルダーを開けません。"))?;
-    #[cfg(target_os = "windows")]
-    Command::new("explorer.exe")
-        .arg(folder)
-        .spawn()
+    app.opener()
+        .open_path(folder.to_string_lossy().into_owned(), None::<&str>)
         .map_err(export_error)?;
-    #[cfg(not(target_os = "windows"))]
-    return Err(AppError::simple(
-        "unsupported_platform",
-        "保存先フォルダーを開けません。",
-    ));
-    #[cfg(target_os = "windows")]
     Ok(())
 }
 
@@ -597,7 +685,10 @@ pub(crate) fn export_modified_jar_core(
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?;
     let mut first_output = None;
-    for unit in &units {
+    for unit in units
+        .iter()
+        .filter(|unit| unit.source_kind == ModUnitSourceKind::Jar)
+    {
         let context = export_context(opened, unit.id)?;
         if !context
             .namespaces
@@ -613,6 +704,15 @@ pub(crate) fn export_modified_jar_core(
         write_modified_jar(&context.input(), &context.source_jar, &unit_output, true)
             .map_err(export_error)?;
         first_output.get_or_insert(unit_output);
+    }
+    if units
+        .iter()
+        .all(|unit| unit.source_kind == ModUnitSourceKind::Modpack)
+    {
+        return Err(AppError::simple(
+            "jar_unit_required",
+            "Mod JAR を選んでください。",
+        ));
     }
     first_output.ok_or_else(invalid_export_selection_error)
 }
@@ -684,6 +784,18 @@ fn validate_project_core_for_units(
             return Err(invalid_selected_mods_error());
         }
     }
+    if kind == ExportKindInput::ModpackFiles {
+        let selected_units: Vec<_> = units
+            .into_iter()
+            .filter(|unit| {
+                selected_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&unit.id))
+                    && unit.source_kind == ModUnitSourceKind::Modpack
+            })
+            .collect();
+        return validate_modpack_files_for_units(opened, &selected_units);
+    }
     let mut combined = ExportValidationResult {
         issues: Vec::new(),
         counts: crate::commands::project::ProjectCounts {
@@ -700,6 +812,7 @@ fn validate_project_core_for_units(
         selected_ids
             .as_ref()
             .is_none_or(|ids| ids.contains(&unit.id))
+            && (kind != ExportKindInput::ModifiedJar || unit.source_kind == ModUnitSourceKind::Jar)
     }) {
         let context = match export_context(opened, unit.id) {
             Ok(context) => context,
@@ -714,6 +827,7 @@ fn validate_project_core_for_units(
                     count: None,
                     namespace: None,
                     key: None,
+                    display_label: None,
                     source_text: None,
                     target_text: None,
                 });
@@ -728,6 +842,7 @@ fn validate_project_core_for_units(
                 .namespaces
                 .iter()
                 .any(|candidate| candidate.included),
+            ExportKindInput::ModpackFiles => unreachable!("Modpack validation is handled above"),
         };
         if !has_selection {
             continue;
@@ -761,6 +876,7 @@ fn validate_project_core_for_units(
             count: None,
             namespace: None,
             key: None,
+            display_label: None,
             source_text: None,
             target_text: None,
         });
@@ -998,7 +1114,16 @@ fn export_selected_modified_jars_core(
     replace_in_place: bool,
     exported_paths: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
 ) -> Result<Vec<ModExportResult>, AppError> {
-    let units = selected_units(opened, selected_ids)?;
+    let units: Vec<_> = selected_units(opened, selected_ids)?
+        .into_iter()
+        .filter(|unit| unit.source_kind == ModUnitSourceKind::Jar)
+        .collect();
+    if units.is_empty() {
+        return Err(AppError::simple(
+            "jar_unit_required",
+            "Mod JAR を選んでください。",
+        ));
+    }
     if replace_in_place && opened.summary().instance_path.is_none() {
         return Err(AppError::simple(
             "invalid_output_path",
@@ -1315,24 +1440,45 @@ fn export_selected_language_files_core(
                 continue;
             }
         };
-        let Some(artifact) = artifact else {
+        let document_artifacts = match yc_export::create_patchouli_document_files(&input) {
+            Ok(documents) => documents,
+            Err(error) => {
+                results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "failed",
+                    None,
+                    export_operation_error(error).user_message,
+                ));
+                continue;
+            }
+        };
+        if artifact.is_none() && document_artifacts.is_empty() {
             results.push(mod_export_result(
                 unit.id,
                 label,
                 "skipped",
                 None,
-                "言語ファイルを書き出せませんでした。".to_owned(),
+                "書き出す翻訳がありません。".to_owned(),
             ));
             continue;
-        };
+        }
         let stem = Path::new(&unit.source_filename)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("mod");
         let unit_directory =
             output_directory.join(format!("{}-{}", safe_file_component(stem), unit.id));
-        let output = unit_directory.join(artifact.file_name);
-        if output.exists() {
+        let output = artifact
+            .as_ref()
+            .map(|artifact| unit_directory.join(&artifact.file_name));
+        let document_outputs: Vec<_> = document_artifacts
+            .iter()
+            .map(|document| unit_directory.join(&document.path))
+            .collect();
+        if output.as_ref().is_some_and(|output| output.exists())
+            || document_outputs.iter().any(|output| output.exists())
+        {
             results.push(mod_export_result(
                 unit.id,
                 label,
@@ -1347,20 +1493,46 @@ fn export_selected_language_files_core(
             // 作成後にシンボリックリンクも解決した実際の出力パスをもう一度検証する。
             fs::canonicalize(output_directory).map_err(export_error)?;
             fs::create_dir_all(&unit_directory).map_err(export_error)?;
-            ensure_output_is_safe(&context.source_jar, &output)?;
-            ensure_output_is_within_directory(output_directory, &output)?;
-            atomic_write_selected_if_absent(&output, &artifact.bytes).map_err(export_error)?;
-            record_exported_path(exported_paths, &output)?;
+            if let (Some(output), Some(artifact)) = (output.as_ref(), artifact.as_ref()) {
+                ensure_output_is_safe(&context.source_jar, output)?;
+                ensure_output_is_within_directory(output_directory, output)?;
+                atomic_write_selected_if_absent(output, &artifact.bytes).map_err(export_error)?;
+                record_exported_path(exported_paths, output)?;
+            }
+            for document in &document_artifacts {
+                let document_output = unit_directory.join(&document.path);
+                ensure_output_is_safe(&context.source_jar, &document_output)?;
+                if let Some(parent) = document_output.parent() {
+                    fs::create_dir_all(parent).map_err(export_error)?;
+                }
+                ensure_output_is_within_directory(output_directory, &document_output)?;
+            }
+            let written = yc_export::write_patchouli_document_files(
+                &unit_directory,
+                &document_artifacts,
+                false,
+            )
+            .map_err(export_error)?;
+            for path in &written {
+                record_exported_path(exported_paths, path)?;
+            }
             Ok::<(), AppError>(())
         })();
         match result {
-            Ok(()) => results.push(mod_export_result(
-                unit.id,
-                label,
-                "success",
-                Some(output.to_string_lossy().into_owned()),
-                "言語ファイルを書き出しました。".to_owned(),
-            )),
+            Ok(()) => {
+                let result_path = output.or_else(|| {
+                    document_artifacts
+                        .first()
+                        .map(|document| unit_directory.join(&document.path))
+                });
+                results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "success",
+                    result_path.map(|path| path.to_string_lossy().into_owned()),
+                    "翻訳データを書き出しました。".to_owned(),
+                ))
+            }
             Err(error) => results.push(mod_export_result(
                 unit.id,
                 label,
@@ -1371,6 +1543,677 @@ fn export_selected_language_files_core(
         }
     }
     Ok(results)
+}
+
+pub(crate) fn export_modpack_files_core(
+    opened: &OpenedProject,
+    selected_ids: &[i64],
+    output_path: Option<&Path>,
+    direct_install: bool,
+    overwrite: bool,
+    exported_paths: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+) -> Result<ModpackFilesExportOutcome, AppError> {
+    let selected = selected_units(opened, selected_ids)?;
+    let units: Vec<_> = selected
+        .into_iter()
+        .filter(|unit| unit.source_kind == ModUnitSourceKind::Modpack)
+        .collect();
+    if units.is_empty() {
+        return Err(AppError::simple(
+            "modpack_unit_required",
+            "Modpack 固有の項目を選んでください。",
+        ));
+    }
+    let repository = opened.repository();
+    let mut files = BTreeMap::<String, Vec<u8>>::new();
+    let mut direct_files = Vec::new();
+    for unit in &units {
+        let source = repository
+            .mod_unit_source_path(unit.id)
+            .map_err(|error| project_error(error.to_string()))?;
+        let (analysis, data) = super::modpack::analyze_modpack_archive(&source)?;
+        let settings = repository
+            .review_settings_for_unit(unit.id)
+            .map_err(|error| project_error(error.to_string()))?;
+        let (translations, excluded_kubejs_output_paths) =
+            modpack_export_translations(opened, unit.id, &data, &settings)?;
+        let output_files = yc_modpack::write_ja_jp(&data, &translations)
+            .map_err(export_error)?
+            .into_iter()
+            .filter(|output| !excluded_kubejs_output_paths.contains(&output.path))
+            .collect::<Vec<_>>();
+        let instance_root = modpack_instance_root(unit, &data.scan.game_directory)?;
+        for output in &output_files {
+            if direct_install {
+                let relative = safe_modpack_relative_path(&output.path)?;
+                direct_files.push((
+                    unit,
+                    instance_root.clone(),
+                    instance_root.join(relative),
+                    output.bytes.clone(),
+                ));
+            }
+            if let Some(previous) = files.get(&output.path)
+                && previous != &output.bytes
+            {
+                return Err(AppError::new(
+                    "modpack_output_conflict",
+                    "選択した Modpack の出力先が重複しています。",
+                    Some(output.path.clone()),
+                ));
+            }
+            files.insert(output.path.clone(), output.bytes.clone());
+        }
+        let _ = analysis;
+    }
+
+    if direct_install {
+        let mut seen = HashSet::new();
+        for (_, _, target, _) in &direct_files {
+            if !seen.insert(target.clone()) {
+                return Err(AppError::new(
+                    "modpack_output_conflict",
+                    "選択した Modpack の配置先が重複しています。",
+                    Some(target.to_string_lossy().into_owned()),
+                ));
+            }
+        }
+        for (unit, instance_root, target, _) in &direct_files {
+            validate_modpack_target_path(instance_root, target, false)?;
+            let target_string = target.to_string_lossy();
+            let active = repository
+                .active_file_deployment(unit.id, &target_string)
+                .map_err(|error| project_error(error.to_string()))?;
+            if let Some(record) = active.as_ref() {
+                ensure_modpack_deployment_unchanged(target, &record.deployed_sha256)?;
+            } else if target.exists() && !overwrite {
+                return Ok(ModpackFilesExportOutcome::OverwriteRequired {
+                    target_path: target.to_string_lossy().into_owned(),
+                });
+            }
+        }
+        let mut first_target = None;
+        for (unit, instance_root, target, bytes) in direct_files {
+            deploy_modpack_file(
+                opened,
+                unit,
+                &instance_root,
+                &target,
+                &bytes,
+                exported_paths,
+            )?;
+            first_target.get_or_insert(target);
+        }
+        return Ok(ModpackFilesExportOutcome::Completed {
+            output_path: first_target
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            directly_installed: true,
+            file_count: files.len(),
+        });
+    }
+
+    let output_path = output_path.ok_or_else(|| {
+        AppError::simple(
+            "invalid_output_path",
+            "Modpack ZIP の保存先を選んでください。",
+        )
+    })?;
+    ensure_file_extension(output_path, "zip")?;
+    let zip_bytes = write_modpack_output_zip(&files)?;
+    if output_path.exists() && !overwrite {
+        return Ok(ModpackFilesExportOutcome::OverwriteRequired {
+            target_path: output_path.to_string_lossy().into_owned(),
+        });
+    }
+    let parent = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent).map_err(export_error)?;
+    atomic_write_selected(output_path, &zip_bytes).map_err(export_error)?;
+    record_exported_path(exported_paths, output_path)?;
+    Ok(ModpackFilesExportOutcome::Completed {
+        output_path: output_path.to_string_lossy().into_owned(),
+        directly_installed: false,
+        file_count: files.len(),
+    })
+}
+
+fn modpack_export_translations(
+    opened: &OpenedProject,
+    mod_unit_id: i64,
+    data: &yc_modpack::ModpackData,
+    settings: &ReviewSettings,
+) -> Result<(BTreeMap<String, String>, HashSet<String>), AppError> {
+    let repository = opened.repository();
+    let saved_lang = repository
+        .list_entries(Some(mod_unit_id))
+        .map_err(|error| project_error(error.to_string()))?;
+    let saved_documents = repository
+        .list_document_entries(Some(mod_unit_id))
+        .map_err(|error| project_error(error.to_string()))?;
+    let excluded_kubejs_output_paths: HashSet<_> = data
+        .scan
+        .files
+        .iter()
+        .filter(|file| file.kind == yc_modpack::ModpackFileKind::KubeJsLanguage)
+        .filter(|file| {
+            file.namespace
+                .as_ref()
+                .is_some_and(|namespace| !settings.included_namespaces.contains(namespace))
+        })
+        .filter_map(|file| {
+            let (directory, _) = file.path.rsplit_once('/')?;
+            Some(format!("{directory}/ja_jp.json"))
+        })
+        .collect();
+    let mut translations = BTreeMap::new();
+    for entry in &data.entries {
+        let saved_translation = if let Some(key) = entry.key.strip_prefix("ftbquests:") {
+            saved_documents
+                .iter()
+                .find(|saved| {
+                    saved.entry_kind == TranslationEntryKind::Ftbquests && saved.key == entry.key
+                })
+                .and_then(|saved| saved.target_text.as_ref())
+                .or_else(|| {
+                    saved_documents
+                        .iter()
+                        .find(|saved| {
+                            saved.entry_kind == TranslationEntryKind::Ftbquests && saved.key == key
+                        })
+                        .and_then(|saved| saved.target_text.as_ref())
+                })
+        } else if let Some(rest) = entry.key.strip_prefix("kubejs:") {
+            let (namespace, key) = rest.split_once('#').unwrap_or(("", rest));
+            saved_lang
+                .iter()
+                .find(|saved| saved.namespace == namespace && saved.key == key)
+                .and_then(|saved| saved.target_text.as_ref())
+        } else {
+            None
+        };
+        if let Some(target) = saved_translation {
+            if is_empty_translation(target) {
+                if entry.key.starts_with("kubejs:") {
+                    // Explicitly cleared KubeJS translations suppress the previous Japanese value.
+                    translations.insert(entry.key.clone(), target.clone());
+                } else if entry.key.starts_with("ftbquests:")
+                    && !settings.preserve_existing_japanese
+                    && entry.translatable
+                {
+                    translations.insert(entry.key.clone(), entry.source_text.clone());
+                }
+            } else {
+                translations.insert(entry.key.clone(), target.clone());
+            }
+        } else if !settings.preserve_existing_japanese && entry.translatable {
+            if entry.key.starts_with("ftbquests:") {
+                translations.insert(entry.key.clone(), entry.source_text.clone());
+            } else if entry.key.starts_with("kubejs:") {
+                // An empty value tells the KubeJS writer to omit this key and its old translation.
+                translations.insert(entry.key.clone(), String::new());
+            }
+        }
+    }
+    Ok((translations, excluded_kubejs_output_paths))
+}
+
+fn validate_modpack_files_for_units(
+    opened: &OpenedProject,
+    units: &[ModUnitRecord],
+) -> Result<ExportValidationResult, AppError> {
+    let mut issues = Vec::new();
+    for unit in units {
+        let source = opened
+            .repository()
+            .mod_unit_source_path(unit.id)
+            .map_err(|error| project_error(error.to_string()))?;
+        let (_analysis, data) = super::modpack::analyze_modpack_archive(&source)?;
+        let settings = opened
+            .repository()
+            .review_settings_for_unit(unit.id)
+            .map_err(|error| project_error(error.to_string()))?;
+        let (translations, _) = modpack_export_translations(opened, unit.id, &data, &settings)?;
+
+        for entry in &data.entries {
+            let (namespace, key, profile, display_label) = if entry.key.starts_with("ftbquests:") {
+                (
+                    "ftbquests",
+                    format!("{}#{}", entry.document_path, entry.pointer),
+                    PlaceholderProfile::FtbQuests,
+                    Some(ftb_quests_warning_label(
+                        &entry.document_path,
+                        &entry.pointer,
+                    )),
+                )
+            } else if let Some(rest) = entry.key.strip_prefix("kubejs:") {
+                let (namespace, key) = rest.split_once('#').unwrap_or(("", rest));
+                if !settings
+                    .included_namespaces
+                    .iter()
+                    .any(|included| included == namespace)
+                {
+                    continue;
+                }
+                (namespace, key.to_owned(), PlaceholderProfile::Lang, None)
+            } else {
+                continue;
+            };
+            if entry.key.starts_with("kubejs:")
+                && translations
+                    .get(&entry.key)
+                    .is_some_and(|target| is_empty_translation(target))
+            {
+                continue;
+            }
+            let target = if entry.translatable {
+                translations
+                    .get(&entry.key)
+                    .filter(|target| !is_empty_translation(target))
+                    .or_else(|| {
+                        entry
+                            .existing_translation
+                            .as_ref()
+                            .filter(|target| !is_empty_translation(target))
+                    })
+                    .unwrap_or(&entry.source_text)
+            } else {
+                entry
+                    .existing_translation
+                    .as_ref()
+                    .filter(|target| !is_empty_translation(target))
+                    .unwrap_or(&entry.source_text)
+            };
+            let comparison = compare_placeholders_for_profile(&entry.source_text, target, profile);
+            let Some(severity) = comparison.severity else {
+                continue;
+            };
+            let (severity, code, message) = match severity {
+                PlaceholderSeverity::Error => (
+                    "error",
+                    "placeholderError",
+                    format!("Placeholderの書式エラー: {namespace}:{key}"),
+                ),
+                PlaceholderSeverity::Warning => (
+                    "warning",
+                    "placeholderWarning",
+                    format!("引数が表示されない可能性があります: {namespace}:{key}"),
+                ),
+            };
+            issues.push(ExportIssue {
+                severity: severity.to_owned(),
+                code: code.to_owned(),
+                message,
+                mod_unit_id: Some(unit.id),
+                mod_name: Some(export_unit_label(unit)),
+                count: None,
+                namespace: Some(namespace.to_owned()),
+                key: Some(key),
+                display_label,
+                source_text: Some(entry.source_text.clone()),
+                target_text: Some(target.clone()),
+            });
+        }
+    }
+    if units.is_empty() {
+        issues.push(ExportIssue {
+            severity: "error".to_owned(),
+            code: "invalidExportSelection".to_owned(),
+            message: "Modpack 固有の項目を選んでください。".to_owned(),
+            mod_unit_id: None,
+            mod_name: None,
+            count: None,
+            namespace: None,
+            key: None,
+            display_label: None,
+            source_text: None,
+            target_text: None,
+        });
+    }
+    Ok(ExportValidationResult {
+        issues,
+        counts: crate::commands::project::ProjectCounts {
+            total: 0,
+            translated: 0,
+            missing: 0,
+            needs_review: 0,
+        },
+        is_signed: false,
+        minecraft_version_detection: None,
+    })
+}
+
+fn ftb_quests_warning_label(document_path: &str, pointer: &str) -> String {
+    let display_path = document_path
+        .split_once("ftbquests/quests/lang/")
+        .map(|(_, path)| path)
+        .map(|path| path.split_once('/').map_or(path, |(_, relative)| relative))
+        .unwrap_or_else(|| document_path.rsplit('/').next().unwrap_or(document_path));
+    format!("{display_path} › {pointer}")
+}
+
+fn ensure_modpack_deployment_unchanged(
+    target: &Path,
+    deployed_sha256: &str,
+) -> Result<(), AppError> {
+    let current_bytes = match fs::read(target) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(modpack_deployment_changed_error(target));
+        }
+        Err(error) => return Err(export_error(error)),
+    };
+    if sha256_bytes_hex(&current_bytes) != deployed_sha256 {
+        return Err(modpack_deployment_changed_error(target));
+    }
+    Ok(())
+}
+
+fn modpack_deployment_changed_error(target: &Path) -> AppError {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| target.as_os_str().to_string_lossy());
+    AppError::new(
+        "modpack_file_changed",
+        &format!(
+            "配置後に変更されたファイル「{name}」は上書きできません。手動で解決してください。"
+        ),
+        Some(target.to_string_lossy().into_owned()),
+    )
+}
+
+fn modpack_instance_root(unit: &ModUnitRecord, game_directory: &str) -> Result<PathBuf, AppError> {
+    let game_path = PathBuf::from(&unit.original_path);
+    if game_directory == "." {
+        Ok(game_path)
+    } else {
+        game_path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| project_error("Modpack のインスタンスフォルダーを確認できません"))
+    }
+}
+
+fn safe_modpack_relative_path(value: &str) -> Result<PathBuf, AppError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.contains('\\')
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(AppError::new(
+            "invalid_modpack_path",
+            "Modpack のファイルパスが不正です。",
+            Some(value.to_owned()),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn validate_modpack_target_path(
+    instance_root: &Path,
+    target: &Path,
+    create_missing_parents: bool,
+) -> Result<(), AppError> {
+    let invalid_path =
+        || AppError::simple("invalid_modpack_path", "インスタンス外には配置できません。");
+    let canonical_root = fs::canonicalize(instance_root).map_err(export_error)?;
+    let parent = target.parent().unwrap_or(instance_root);
+    let relative_parent = parent
+        .strip_prefix(instance_root)
+        .map_err(|_| invalid_path())?;
+    let mut current = canonical_root.clone();
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(invalid_path());
+        };
+        let next = current.join(name);
+        match fs::symlink_metadata(&next) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(invalid_path());
+                }
+                current = fs::canonicalize(next).map_err(export_error)?;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && create_missing_parents =>
+            {
+                fs::create_dir(&next).map_err(export_error)?;
+                current = fs::canonicalize(next).map_err(export_error)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(export_error(error)),
+        }
+        if !current.starts_with(&canonical_root) {
+            return Err(invalid_path());
+        }
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(AppError::simple(
+                "invalid_modpack_path",
+                "シンボリックリンクには配置できません。",
+            ));
+        }
+        Ok(_) => {
+            if !fs::canonicalize(target)
+                .map_err(export_error)?
+                .starts_with(&canonical_root)
+            {
+                return Err(invalid_path());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(export_error(error)),
+    }
+    Ok(())
+}
+
+fn write_modpack_output_zip(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, AppError> {
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (path, bytes) in files {
+        safe_modpack_relative_path(path)?;
+        archive.start_file(path, options).map_err(export_error)?;
+        archive.write_all(bytes).map_err(export_error)?;
+    }
+    archive
+        .finish()
+        .map(|archive| archive.into_inner())
+        .map_err(export_error)
+}
+
+fn deploy_modpack_file(
+    opened: &OpenedProject,
+    unit: &ModUnitRecord,
+    instance_root: &Path,
+    target: &Path,
+    bytes: &[u8],
+    exported_paths: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+) -> Result<(), AppError> {
+    let repository = opened.repository();
+    let target_string = target.to_string_lossy().into_owned();
+    validate_modpack_target_path(instance_root, target, true)?;
+    let active = repository
+        .active_file_deployment(unit.id, &target_string)
+        .map_err(|error| project_error(error.to_string()))?;
+    if let Some(record) = active.as_ref() {
+        ensure_modpack_deployment_unchanged(target, &record.deployed_sha256)?;
+    }
+    let previous_bytes = if target.is_file() {
+        Some(fs::read(target).map_err(export_error)?)
+    } else {
+        None
+    };
+    let (existed_before, previous_sha256, backup_path) = if let Some(active) = active.as_ref() {
+        (
+            active.existed_before,
+            active.previous_sha256.clone(),
+            active.backup_path.clone(),
+        )
+    } else if target.is_file() {
+        let previous_sha256 = sha256_file_hex(target)?;
+        let backup_path = opened
+            .directory()
+            .join("backups/modpack")
+            .join(unit.id.to_string())
+            .join(format!("{}.bak", uuid::Uuid::new_v4()));
+        fs::create_dir_all(backup_path.parent().expect("backup path has a parent"))
+            .map_err(export_error)?;
+        copy_atomic_selected(target, &backup_path).map_err(export_error)?;
+        (
+            true,
+            Some(previous_sha256),
+            Some(backup_path.to_string_lossy().into_owned()),
+        )
+    } else {
+        (false, None, None)
+    };
+    if let Some(record) = active.as_ref() {
+        ensure_modpack_deployment_unchanged(target, &record.deployed_sha256)?;
+    }
+    let deployed_sha256 = sha256_bytes_hex(bytes);
+    if let Err(error) = atomic_write_selected(target, bytes) {
+        return Err(export_error(error));
+    }
+    let deployment = FileDeploymentRecord {
+        id: 0,
+        mod_unit_id: unit.id,
+        target_path: target_string,
+        existed_before,
+        previous_sha256,
+        backup_path: backup_path.clone(),
+        deployed_sha256,
+        deployed_at: export_timestamp(),
+        restored_at: None,
+    };
+    if let Err(error) = opened.writer().save_file_deployment(deployment) {
+        let rollback = if let Some(previous_bytes) = previous_bytes {
+            atomic_write_selected(target, &previous_bytes).map_err(export_error)
+        } else {
+            fs::remove_file(target)
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(export_error)
+        };
+        if let Err(rollback_error) = rollback {
+            tracing::error!(target = %target.display(), %error, rollback_error = %rollback_error.user_message, "modpack deployment record failed and target rollback also failed");
+            return Err(AppError::new(
+                "file_deployment_record",
+                "配置記録を保存できず、ファイルの復元にも失敗しました。",
+                Some(format!("{}; {}", error, rollback_error.user_message)),
+            ));
+        }
+        return Err(project_error(error.to_string()));
+    }
+    record_exported_path(exported_paths, target)?;
+    Ok(())
+}
+
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+pub(crate) fn restore_modpack_file_core(
+    opened: &OpenedProject,
+    deployment_id: i64,
+    exported_paths: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+) -> Result<RestoreFileDeploymentOutcome, AppError> {
+    let repository = opened.repository();
+    let deployment = repository
+        .list_file_deployments(false)
+        .map_err(|error| project_error(error.to_string()))?
+        .into_iter()
+        .find(|record| record.id == deployment_id)
+        .ok_or_else(|| {
+            AppError::simple("deployment_not_found", "復元するファイルが見つかりません。")
+        })?;
+    let unit = repository
+        .list_mod_units()
+        .map_err(|error| project_error(error.to_string()))?
+        .into_iter()
+        .find(|unit| {
+            unit.id == deployment.mod_unit_id && unit.source_kind == ModUnitSourceKind::Modpack
+        })
+        .ok_or_else(|| {
+            AppError::simple(
+                "deployment_not_found",
+                "復元する Modpack が見つかりません。",
+            )
+        })?;
+    let target = PathBuf::from(&deployment.target_path);
+    let source = repository
+        .mod_unit_source_path(unit.id)
+        .map_err(|error| project_error(error.to_string()))?;
+    let (_, data) = super::modpack::analyze_modpack_archive(&source)?;
+    let instance_root = modpack_instance_root(&unit, &data.scan.game_directory)?;
+    validate_modpack_target_path(&instance_root, &target, false)?;
+    let canonical_root = fs::canonicalize(&instance_root).map_err(export_error)?;
+    let canonical_target = canonical_path_with_missing_leaf(&target)?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(AppError::simple(
+            "invalid_deployment_path",
+            "インスタンス外のファイルは復元できません。",
+        ));
+    }
+    if deployment.existed_before {
+        let backup_path = deployment.backup_path.as_deref().ok_or_else(|| {
+            AppError::simple(
+                "invalid_deployment_backup",
+                "バックアップを確認できません。",
+            )
+        })?;
+        let backup_path = Path::new(backup_path);
+        validate_project_backup_path(
+            opened.directory(),
+            backup_path,
+            deployment.previous_sha256.as_deref().unwrap_or_default(),
+        )?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(export_error)?;
+        }
+        ensure_modpack_deployment_unchanged(&target, &deployment.deployed_sha256)?;
+        copy_atomic_selected(backup_path, &target).map_err(export_error)?;
+    } else {
+        ensure_modpack_deployment_unchanged(&target, &deployment.deployed_sha256)?;
+        match fs::remove_file(&target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(export_error(error)),
+        }
+    }
+    opened
+        .writer()
+        .mark_file_deployment_restored(deployment.id, export_timestamp())
+        .map_err(|error| project_error(error.to_string()))?;
+    if deployment.existed_before {
+        record_exported_path(exported_paths, &target)?;
+    } else {
+        forget_exported_path(exported_paths, &target)?;
+    }
+    Ok(RestoreFileDeploymentOutcome::Restored {
+        target_path: deployment.target_path,
+    })
 }
 
 fn restore_modified_jar_core(
@@ -1443,6 +2286,10 @@ fn restore_modified_jar_core(
 }
 
 fn export_unit_label(unit: &ModUnitRecord) -> String {
+    if unit.source_kind == ModUnitSourceKind::Modpack {
+        return "Modpack 固有（クエスト・KubeJS）".to_owned();
+    }
+
     let name = unit
         .name
         .as_deref()
@@ -1582,7 +2429,7 @@ fn validate_export_context(
     namespace: Option<&str>,
     manual_format: Option<ManualPackFormatInput>,
 ) -> Result<ExportValidationResult, AppError> {
-    let kind = export_kind(kind);
+    let kind = export_kind(kind)?;
     let base_input = context.input();
     let selected_namespaces: Vec<_> = context
         .namespaces
@@ -1621,7 +2468,7 @@ fn validate_export_context(
             .map_or((None, None), |(namespace, key)| {
                 (Some(namespace.to_owned()), Some(key.to_owned()))
             });
-        let entry = namespace
+        let lang_entry = namespace
             .as_deref()
             .zip(key.as_deref())
             .and_then(|(namespace, key)| {
@@ -1630,11 +2477,40 @@ fn validate_export_context(
                     .iter()
                     .find(|entry| entry.namespace == namespace && entry.key == key)
             });
+        let document_entry =
+            namespace
+                .as_deref()
+                .zip(key.as_deref())
+                .and_then(|(namespace, key)| {
+                    context
+                        .document_entries
+                        .iter()
+                        .find(|entry| entry.namespace == namespace && entry.key == key)
+                });
+        let source_text = lang_entry
+            .and_then(|entry| entry.source_text.as_deref())
+            .or_else(|| document_entry.and_then(|entry| entry.source_text.as_deref()));
+        let target_text = lang_entry
+            .map(|entry| entry.target_text.as_str())
+            .or_else(|| document_entry.and_then(|entry| entry.target_text.as_deref()));
         let placeholder_comparison = (issue.code == ValidationIssueCode::PlaceholderWarning)
             .then(|| {
-                let entry = entry?;
-                let source = entry.source_text.as_deref()?;
-                Some(compare_placeholders(source, &entry.target_text))
+                let source = source_text?;
+                let target = target_text?;
+                let profile = if let Some(entry) = document_entry {
+                    match entry.entry_kind {
+                        TranslationEntryKind::Patchouli => PlaceholderProfile::Patchouli,
+                        TranslationEntryKind::Ftbquests => PlaceholderProfile::FtbQuests,
+                        TranslationEntryKind::Lang => PlaceholderProfile::Lang,
+                    }
+                } else if lang_entry
+                    .is_some_and(|entry| entry.flags.contains(&EntryFlag::PatchouliText))
+                {
+                    PlaceholderProfile::Patchouli
+                } else {
+                    PlaceholderProfile::Lang
+                };
+                Some(compare_placeholders_for_profile(source, target, profile))
             })
             .flatten();
         let (severity, code, message) = match placeholder_comparison
@@ -1678,8 +2554,9 @@ fn validate_export_context(
             count,
             namespace,
             key,
-            source_text: entry.and_then(|entry| entry.source_text.clone()),
-            target_text: entry.map(|entry| entry.target_text.clone()),
+            display_label: None,
+            source_text: source_text.map(str::to_owned),
+            target_text: target_text.map(str::to_owned),
         }
     })
     .collect();
@@ -1696,6 +2573,7 @@ fn validate_export_context(
                 count: None,
                 namespace: None,
                 key: None,
+                display_label: None,
                 source_text: None,
                 target_text: None,
             }),
@@ -1714,6 +2592,7 @@ fn validate_export_context(
             count: None,
             namespace: None,
             key: None,
+            display_label: None,
             source_text: None,
             target_text: None,
         });
@@ -1733,31 +2612,14 @@ fn validate_export_context(
             count: None,
             namespace: None,
             key: None,
+            display_label: None,
             source_text: None,
             target_text: None,
         });
     }
-    let entries: Vec<_> = context
-        .entries
-        .iter()
-        .map(|entry| ProjectEntry {
-            id: 0,
-            mod_unit_id: context.mod_unit_id,
-            namespace: entry.namespace.clone(),
-            key: entry.key.clone(),
-            source_text: entry.source_text.clone(),
-            source_locale: entry.source_locale.clone(),
-            target_text: (!entry.target_text.is_empty()).then(|| entry.target_text.clone()),
-            target_original_text: entry.target_original_text.clone(),
-            translated_source_text: entry.translated_source_text.clone(),
-            origin: entry.origin.clone(),
-            sort_index: entry.sort_index,
-            flags: entry.flags.clone(),
-        })
-        .collect();
     Ok(ExportValidationResult {
         issues,
-        counts: counts_for_entries(&entries),
+        counts: context.counts.clone(),
         is_signed: context.is_signed,
         minecraft_version_detection: context.minecraft_version_detection.clone(),
     })
@@ -1795,22 +2657,58 @@ pub(crate) fn export_language_file_core(
             ..context.input()
         };
         let artifacts = yc_export::create_language_files(&input).map_err(export_error)?;
-        let artifact = artifacts.first().ok_or_else(|| {
-            AppError::simple(
-                "export",
-                "言語ファイルを書き出せませんでした。Namespaceを確認してください。",
-            )
-        })?;
-        let extension = artifact
-            .file_name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension)
-            .unwrap_or_default();
-        let artifact_output = output_path.with_extension(extension);
-        let unit_output = output_path_for_mod(&artifact_output, unit.id, units.len());
-        ensure_file_extension(&unit_output, extension)?;
-        atomic_write_selected(&unit_output, &artifact.bytes).map_err(export_error)?;
-        first_output.get_or_insert(unit_output);
+        let documents = yc_export::create_patchouli_document_files(&input).map_err(export_error)?;
+        if artifacts.is_empty() && documents.is_empty() {
+            continue;
+        }
+        let output_root = if let Some(artifact) = artifacts.first() {
+            let extension = artifact
+                .file_name
+                .rsplit_once('.')
+                .map(|(_, extension)| extension)
+                .unwrap_or_default();
+            let artifact_output = output_path.with_extension(extension);
+            let unit_output = output_path_for_mod(&artifact_output, unit.id, units.len());
+            ensure_file_extension(&unit_output, extension)?;
+            atomic_write_selected(&unit_output, &artifact.bytes).map_err(export_error)?;
+            first_output.get_or_insert_with(|| unit_output.clone());
+            if units.len() > 1 {
+                let parent = unit_output.parent().unwrap_or(Path::new("."));
+                let stem = unit_output
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("export");
+                parent.join(stem)
+            } else {
+                unit_output.parent().unwrap_or(Path::new(".")).to_path_buf()
+            }
+        } else {
+            let parent = output_path.parent().unwrap_or(Path::new("."));
+            if units.len() <= 1 {
+                parent.to_path_buf()
+            } else {
+                let stem = output_path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("export");
+                parent.join(format!("{stem}-{unit_id}", unit_id = unit.id))
+            }
+        };
+        fs::create_dir_all(&output_root).map_err(export_error)?;
+        for document in &documents {
+            let document_output = output_root.join(&document.path);
+            ensure_output_is_safe(&context.source_jar, &document_output)?;
+            if let Some(parent) = document_output.parent() {
+                fs::create_dir_all(parent).map_err(export_error)?;
+            }
+        }
+        yc_export::write_patchouli_document_files(&output_root, &documents, false)
+            .map_err(export_error)?;
+        if first_output.is_none() {
+            first_output = documents
+                .first()
+                .map(|document| output_root.join(&document.path));
+        }
     }
     first_output.ok_or_else(|| {
         AppError::simple(
@@ -1831,14 +2729,20 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
     let source_jar = repository
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| project_error(error.to_string()))?;
-    let analysis = yc_analysis::analyze_jar(&source_jar, &CancellationToken::default(), |_| {})
-        .map_err(|error| {
-            AppError::new(
-                "archive_read",
-                "JARを読み込めませんでした。プロジェクトを開き直してください。",
-                Some(error.to_string()),
-            )
-        })?;
+    let analysis = match unit.source_kind {
+        ModUnitSourceKind::Jar => {
+            yc_analysis::analyze_jar(&source_jar, &CancellationToken::default(), |_| {}).map_err(
+                |error| {
+                    AppError::new(
+                        "archive_read",
+                        "JARを読み込めませんでした。プロジェクトを開き直してください。",
+                        Some(error.to_string()),
+                    )
+                },
+            )?
+        }
+        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_jar)?.0,
+    };
     let saved_settings = project_review_settings_for_unit(opened, mod_unit_id)?;
     let settings: ReviewSettings =
         review_settings_from_record(&saved_settings, &analysis, mod_unit_id);
@@ -1847,12 +2751,30 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .list_entries(Some(mod_unit_id))
         .map_err(|error| project_error(error.to_string()))?;
     overlay_saved_entries(&mut entries, saved_entries);
-    let placeholder_warnings = entries
+    let saved_document_entries = repository
+        .list_document_entries(Some(mod_unit_id))
+        .map_err(|error| project_error(error.to_string()))?;
+    let patchouli_documents = patchouli_document_exports(&source_jar, &saved_document_entries)?;
+    let summary = repository
+        .entry_summary(Some(mod_unit_id))
+        .map_err(|error| project_error(error.to_string()))?;
+    let counts = crate::commands::project::ProjectCounts {
+        total: summary.total,
+        translated: summary.translated,
+        missing: summary.total.saturating_sub(summary.translated),
+        needs_review: summary.needs_review,
+    };
+    let mut placeholder_warnings: Vec<_> = entries
         .iter_mut()
         .filter_map(|entry| {
-            let mismatch = !entry.target_text.is_empty()
+            let mismatch = !is_empty_translation(&entry.target_text)
                 && entry.source_text.as_deref().is_some_and(|source| {
-                    !compare_placeholders(source, &entry.target_text).is_valid
+                    let profile = if entry.flags.contains(&EntryFlag::PatchouliText) {
+                        PlaceholderProfile::Patchouli
+                    } else {
+                        PlaceholderProfile::Lang
+                    };
+                    !compare_placeholders_for_profile(source, &entry.target_text, profile).is_valid
                 });
             // Exportでは保存済みflagではなく、今のsource/targetから警告を再計算する。
             entry
@@ -1864,6 +2786,22 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
             })
         })
         .collect();
+    for entry in &saved_document_entries {
+        let profile = match entry.entry_kind {
+            TranslationEntryKind::Patchouli => PlaceholderProfile::Patchouli,
+            TranslationEntryKind::Ftbquests => PlaceholderProfile::FtbQuests,
+            TranslationEntryKind::Lang => continue,
+        };
+        if let (Some(source), Some(target)) = (&entry.source_text, &entry.target_text)
+            && !is_empty_translation(target)
+            && !compare_placeholders_for_profile(source, target, profile).is_valid
+        {
+            placeholder_warnings.push(PlaceholderWarning {
+                namespace: entry.namespace.clone(),
+                key: entry.key.clone(),
+            });
+        }
+    }
     let source_locale = if settings.source_locale.is_empty() {
         analysis
             .result
@@ -1909,6 +2847,24 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         &source_locale,
         &settings.included_namespaces,
     )?;
+    let mut namespaces: Vec<_> = analysis
+        .result
+        .namespaces
+        .iter()
+        .map(|namespace| NamespaceExport {
+            namespace: namespace.namespace.clone(),
+            included: settings.included_namespaces.contains(&namespace.namespace),
+        })
+        .collect();
+    if saved_document_entries
+        .iter()
+        .any(|entry| entry.entry_kind == TranslationEntryKind::Ftbquests)
+    {
+        namespaces.push(NamespaceExport {
+            namespace: "ftbquests".to_owned(),
+            included: true,
+        });
+    }
     Ok(ExportContext {
         mod_unit_id,
         mod_name: export_unit_label(&unit),
@@ -1924,24 +2880,110 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
             })
             .collect(),
         entries,
-        namespaces: analysis
-            .result
-            .namespaces
-            .iter()
-            .map(|namespace| NamespaceExport {
-                namespace: namespace.namespace.clone(),
-                included: settings.included_namespaces.contains(&namespace.namespace),
-            })
-            .collect(),
+        document_entries: saved_document_entries,
+        namespaces,
         language_files,
         legacy_parse_escapes_namespaces,
         placeholder_warnings,
+        patchouli_documents,
+        counts,
         malformed_translation_files,
         duplicate_key_warnings,
         source_locale,
         is_signed: analysis.result.is_signed,
         minecraft_version_detection,
     })
+}
+
+fn patchouli_document_exports(
+    source_jar: &Path,
+    entries: &[DocumentProjectEntry],
+) -> Result<Vec<PatchouliDocumentExport>, AppError> {
+    let mut grouped =
+        BTreeMap::<(String, String), (String, Vec<PatchouliDocumentTranslation>)>::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.entry_kind == TranslationEntryKind::Patchouli)
+    {
+        let (container_path, document_path) = entry.document_path.split_once("!/").map_or(
+            (String::new(), entry.document_path.as_str()),
+            |(container, path)| (container.to_owned(), path),
+        );
+        let target_path =
+            yc_language::patchouli_target_document_path(document_path, "en_us", "ja_jp")
+                .ok_or_else(|| {
+                    export_error(format!(
+                        "Patchouli文書のパスを確認できません: {document_path}"
+                    ))
+                })?;
+        let translations = grouped
+            .entry((container_path, document_path.to_owned()))
+            .or_insert_with(|| (target_path, Vec::new()));
+        translations.1.push(PatchouliDocumentTranslation {
+            key: entry.key.clone(),
+            pointer: entry.document_pointer.clone(),
+            source_text: entry.source_text.clone().unwrap_or_default(),
+            target_text: entry.target_text.clone().unwrap_or_default(),
+        });
+    }
+    if grouped.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let nested_paths: Vec<_> = grouped
+        .keys()
+        .map(|(container, _)| container.as_str())
+        .filter(|container| !container.is_empty())
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut archive = yc_archive::Archive::open(source_jar).map_err(export_error)?;
+    let mut nested_archives = if nested_paths.is_empty() {
+        Vec::new()
+    } else {
+        archive
+            .discover_nested(&nested_paths)
+            .map_err(export_error)?
+    };
+
+    let mut documents = Vec::with_capacity(grouped.len());
+    for ((container_path, source_path), (target_path, translations)) in grouped {
+        let source_bytes = if container_path.is_empty() {
+            archive.read_entry(&source_path, yc_archive::EntryKind::Text)
+        } else {
+            let Some(nested) = nested_archives
+                .iter_mut()
+                .find(|nested| nested.path == container_path)
+                .and_then(|nested| nested.archive.as_mut())
+            else {
+                return Err(export_error(format!(
+                    "同梱JARを読み込めません: {container_path}"
+                )));
+            };
+            nested.read_entry(&source_path, yc_archive::EntryKind::Text)
+        }
+        .map_err(export_error)?;
+        let namespace = source_path
+            .strip_prefix("assets/")
+            .and_then(|path| path.split_once('/'))
+            .map(|(namespace, _)| namespace)
+            .ok_or_else(|| {
+                export_error(format!(
+                    "Patchouli文書のnamespaceを確認できません: {source_path}"
+                ))
+            })?
+            .to_owned();
+        documents.push(PatchouliDocumentExport {
+            namespace,
+            container_path,
+            source_path,
+            target_path,
+            source_bytes,
+            translations,
+        });
+    }
+    Ok(documents)
 }
 
 fn legacy_parse_escapes_namespaces(
@@ -2050,16 +3092,24 @@ fn overlay_saved_entries(entries: &mut [TranslationEntry], saved_entries: Vec<Pr
             entry.translated_source_text = saved.translated_source_text;
             entry.origin = saved.origin;
             entry.sort_index = saved.sort_index;
+            let has_patchouli_text = entry.flags.contains(&EntryFlag::PatchouliText);
             entry.flags = saved.flags;
+            if has_patchouli_text && !entry.flags.contains(&EntryFlag::PatchouliText) {
+                entry.flags.push(EntryFlag::PatchouliText);
+            }
         }
     }
 }
 
-fn export_kind(kind: ExportKindInput) -> ExportKind {
+fn export_kind(kind: ExportKindInput) -> Result<ExportKind, AppError> {
     match kind {
-        ExportKindInput::LanguageFile => ExportKind::LanguageFile,
-        ExportKindInput::ResourcePack => ExportKind::ResourcePack,
-        ExportKindInput::ModifiedJar => ExportKind::ModifiedJar,
+        ExportKindInput::LanguageFile => Ok(ExportKind::LanguageFile),
+        ExportKindInput::ResourcePack => Ok(ExportKind::ResourcePack),
+        ExportKindInput::ModifiedJar => Ok(ExportKind::ModifiedJar),
+        ExportKindInput::ModpackFiles => Err(AppError::simple(
+            "invalid_export_kind",
+            "Modpack ファイルの検証方法が不正です。",
+        )),
     }
 }
 
@@ -2347,6 +3397,18 @@ fn record_exported_path(
     Ok(())
 }
 
+fn forget_exported_path(
+    exported_paths: &Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    path: &Path,
+) -> Result<(), AppError> {
+    let canonical = canonical_path_with_missing_leaf(path)?;
+    exported_paths
+        .lock()
+        .map_err(|_| state_error("exported paths state"))?
+        .remove(&canonical);
+    Ok(())
+}
+
 fn export_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "export",
@@ -2401,6 +3463,48 @@ mod overwrite_decision_tests {
             jar_overwrite_decision("updated", "source", Some("written")),
             JarOverwriteDecision::Changed
         );
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::overlay_saved_entries;
+    use yc_language::{EntryFlag, TranslationEntry, TranslationOrigin};
+    use yc_project::ProjectEntry;
+
+    #[test]
+    fn saved_entry_flags_keep_patchouli_classification_from_analysis() {
+        let mut entries = vec![TranslationEntry {
+            namespace: "fixture".to_owned(),
+            key: "book.landing".to_owned(),
+            source_text: Some("Welcome $(bold)world$(/bold)".to_owned()),
+            source_locale: Some("en_us".to_owned()),
+            target_text: String::new(),
+            target_original_text: None,
+            translated_source_text: None,
+            origin: TranslationOrigin::Missing,
+            flags: vec![EntryFlag::PatchouliText],
+            sort_index: 0,
+        }];
+        let saved = ProjectEntry {
+            id: 1,
+            mod_unit_id: 1,
+            namespace: "fixture".to_owned(),
+            key: "book.landing".to_owned(),
+            source_text: Some("Welcome $(bold)world$(/bold)".to_owned()),
+            source_locale: Some("en_us".to_owned()),
+            target_text: Some("ようこそ 世界".to_owned()),
+            target_original_text: None,
+            translated_source_text: None,
+            origin: TranslationOrigin::Edited,
+            sort_index: 0,
+            flags: Vec::new(),
+        };
+
+        overlay_saved_entries(&mut entries, vec![saved]);
+
+        assert!(entries[0].flags.contains(&EntryFlag::PatchouliText));
+        assert_eq!(entries[0].target_text, "ようこそ 世界");
     }
 }
 
@@ -2484,6 +3588,7 @@ mod export_path_regression_tests {
             &paths,
             &[source],
             with_instance.then_some(instance.as_path()),
+            false,
             &CancellationToken::default(),
             |_, _, _, _| {},
         )
@@ -2789,6 +3894,7 @@ mod export_path_regression_tests {
             &paths,
             std::slice::from_ref(&source),
             None,
+            false,
             &CancellationToken::default(),
             |_, _, _, _| {},
         )

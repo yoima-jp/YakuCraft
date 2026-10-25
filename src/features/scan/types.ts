@@ -28,6 +28,22 @@ export interface ModScanResultDto {
   status: ModLanguageStatusDto;
 }
 
+export interface ModpackScanDto {
+  gameDirectory: string;
+  ftbQuests: "none" | "single" | "split" | "legacy_inline";
+  files: Array<{
+    path: string;
+    kind: "ftb_quests_language" | "kube_js_language";
+    locale: string;
+    namespace: string | null;
+  }>;
+  kubejsNamespaces: string[];
+  totalEntries: number;
+  ftbQuestEntries: number;
+  kubejsEntries: number;
+  issues: string[];
+}
+
 export interface ScanProgressDto {
   completed: number;
   total: number;
@@ -43,5 +59,6 @@ export type ScanModsFolderEventDto =
     scannedFolder: string;
     instanceDir: string | null;
     looksLikeInstanceDir: boolean;
+    modpackScan: ModpackScanDto | null;
   }
   | { kind: "failed"; jobId: string; error: AppError };

@@ -470,7 +470,7 @@ pub async fn detect_minecraft_jars(
                 })
                 .or_else(|| project_minecraft_version(&source_jar))
         });
-        Ok(detect_minecraft_jars_from_appdata(
+        Ok(detect_minecraft_jars_from_known_locations(
             preferred_version.as_deref(),
         ))
     })
@@ -831,19 +831,65 @@ fn read_preview_asset(reader: &dyn AssetSource, path: &str) -> Result<Vec<u8>, A
     }
 }
 
-fn detect_minecraft_jars_from_appdata(
+fn detect_minecraft_jars_from_known_locations(
     preferred_version: Option<&str>,
 ) -> Vec<MinecraftJarCandidate> {
-    let Some(versions_dir) = minecraft_versions_dir_from_appdata() else {
-        return Vec::new();
-    };
-    detect_minecraft_jars_in_versions_dir(&versions_dir, preferred_version)
+    let mut candidates = minecraft_versions_dirs()
+        .iter()
+        .flat_map(|versions_dir| {
+            detect_minecraft_jars_in_versions_dir(versions_dir, preferred_version)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        let left_matches = version_matches(preferred_version, &left.version);
+        let right_matches = version_matches(preferred_version, &right.version);
+        right_matches
+            .cmp(&left_matches)
+            .then_with(|| left.version.cmp(&right.version))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    candidates
 }
 
-fn minecraft_versions_dir_from_appdata() -> Option<PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|appdata| appdata.join(".minecraft").join("versions"))
+fn minecraft_versions_dirs() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|appdata| vec![appdata.join(".minecraft").join("versions")])
+            .unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        let mut versions_dirs = vec![home.join(".minecraft").join("versions")];
+        // 公式ランチャーとPrismの標準・Flatpak保存先を探し、各インスタンスのMinecraft JARも候補にする。
+        for launcher_data in [
+            home.join(".local/share/PrismLauncher"),
+            home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"),
+        ] {
+            // PrismはクライアントJARを共有ライブラリ領域に置くため、インスタンス内だけでなくここも探す。
+            versions_dirs.push(launcher_data.join("libraries/com/mojang/minecraft"));
+            let instances = launcher_data.join("instances");
+            let Ok(entries) = fs::read_dir(instances) else {
+                continue;
+            };
+            versions_dirs.extend(entries.flatten().filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|file_type| file_type.is_dir())
+                    .map(|_| entry.path().join(".minecraft/versions"))
+            }));
+        }
+        versions_dirs
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
+    Vec::new()
 }
 
 fn detect_minecraft_jars_in_versions_dir(
@@ -924,18 +970,18 @@ fn validate_selected_minecraft_jar(path: &Path) -> Result<PathBuf, AppError> {
             "検出済みのMinecraft JARを選んでください。",
         )
     };
-    let versions_dir = minecraft_versions_dir_from_appdata().ok_or_else(invalid_selection)?;
-    let versions_root = fs::canonicalize(versions_dir).map_err(|_| invalid_selection())?;
     let selected_path = fs::canonicalize(path).map_err(|_| invalid_selection())?;
-    if !selected_path.starts_with(&versions_root) {
-        return Err(invalid_selection());
-    }
-
-    let is_detected_candidate = detect_minecraft_jars_in_versions_dir(&versions_root, None)
-        .iter()
-        .any(|candidate| {
-            fs::canonicalize(&candidate.path)
-                .is_ok_and(|candidate_path| candidate_path == selected_path)
+    let is_detected_candidate = minecraft_versions_dirs()
+        .into_iter()
+        .filter_map(|versions_dir| fs::canonicalize(versions_dir).ok())
+        .filter(|versions_root| selected_path.starts_with(versions_root))
+        .any(|versions_root| {
+            detect_minecraft_jars_in_versions_dir(&versions_root, None)
+                .iter()
+                .any(|candidate| {
+                    fs::canonicalize(&candidate.path)
+                        .is_ok_and(|candidate_path| candidate_path == selected_path)
+                })
         });
     if !is_detected_candidate {
         return Err(invalid_selection());

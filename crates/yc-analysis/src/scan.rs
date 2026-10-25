@@ -16,7 +16,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use yc_archive::{Archive, ArchiveLimits, EntryKind, NestedDiscoveryError};
 use yc_language::{
-    LanguageArchivePath, discover_language_files, normalize_locale, parse_language_file,
+    LanguageArchivePath, PatchouliArchiveFile, discover_books, discover_language_files,
+    extract_entries, normalize_locale, parse_language_file,
 };
 use yc_metadata::{ModInfo, analyze_metadata};
 
@@ -365,7 +366,17 @@ fn scan_mod_jar_inner(
         }
     }
 
-    if keys_by_namespace.is_empty() {
+    let (patchouli_source_count, patchouli_translated_count) = scan_patchouli_counts(
+        &mut archive,
+        &mut nested,
+        &target_locale,
+        path,
+        cancellation,
+    )?;
+    result.source_key_count += patchouli_source_count;
+    result.translated_key_count += patchouli_translated_count;
+
+    if keys_by_namespace.is_empty() && patchouli_source_count == 0 {
         if let Some(reason) = first_language_error {
             result.status = ModLanguageStatus::Failed { reason };
         }
@@ -396,6 +407,104 @@ fn scan_mod_jar_inner(
     };
 
     Ok(result)
+}
+
+fn scan_patchouli_counts(
+    root: &mut Archive<File>,
+    nested: &mut [yc_archive::NestedArchive],
+    target_locale: &str,
+    jar_path: &Path,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(usize, usize), AnalysisError> {
+    let mut total = (0, 0);
+    let mut containers = Vec::with_capacity(nested.len() + 1);
+    let mut root_paths = Vec::new();
+    for entry in root.list_entries() {
+        ensure_optional_cancellation(cancellation)?;
+        if let Some(path) = entry.normalized_path.as_deref()
+            && is_patchouli_json_candidate(path)
+        {
+            root_paths.push(path.to_owned());
+        }
+    }
+    let mut root_files = Vec::new();
+    for path in root_paths {
+        ensure_optional_cancellation(cancellation)?;
+        let read = root.read_entry(&path, EntryKind::Text);
+        ensure_optional_cancellation(cancellation)?;
+        match read {
+            Ok(bytes) => root_files.push((path, bytes)),
+            Err(error) => {
+                tracing::warn!(path = %jar_path.display(), archive_path = %path, %error, "lightweight scan could not read Patchouli document")
+            }
+        }
+    }
+    containers.push((String::new(), root_files));
+
+    for candidate in nested {
+        ensure_optional_cancellation(cancellation)?;
+        let Some(archive) = candidate.archive.as_mut() else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        for entry in archive.list_entries() {
+            ensure_optional_cancellation(cancellation)?;
+            if let Some(path) = entry.normalized_path.as_deref()
+                && is_patchouli_json_candidate(path)
+            {
+                paths.push(path.to_owned());
+            }
+        }
+        let mut files = Vec::new();
+        for path in paths {
+            ensure_optional_cancellation(cancellation)?;
+            let read = archive.read_entry(&path, EntryKind::Text);
+            ensure_optional_cancellation(cancellation)?;
+            match read {
+                Ok(bytes) => files.push((path, bytes)),
+                Err(error) => {
+                    tracing::warn!(path = %jar_path.display(), nested_path = %candidate.path, archive_path = %path, %error, "lightweight scan could not read nested Patchouli document")
+                }
+            }
+        }
+        containers.push((candidate.path.clone(), files));
+    }
+
+    for (_, owned_files) in containers {
+        ensure_optional_cancellation(cancellation)?;
+        let files: Vec<_> = owned_files
+            .iter()
+            .map(|(path, bytes)| PatchouliArchiveFile {
+                path,
+                bytes: bytes.as_slice(),
+            })
+            .collect();
+        let books = discover_books(&files).books;
+        ensure_optional_cancellation(cancellation)?;
+        for book in books {
+            ensure_optional_cancellation(cancellation)?;
+            let extraction = extract_entries(&book, "en_us", target_locale);
+            ensure_optional_cancellation(cancellation)?;
+            total.0 += extraction.entries.len();
+            total.1 += extraction
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .target_text
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+                .count();
+        }
+    }
+    Ok(total)
+}
+
+fn is_patchouli_json_candidate(path: &str) -> bool {
+    path.ends_with(".json")
+        && (path.starts_with("assets/") || path.starts_with("data/"))
+        && path.contains("/patchouli_books/")
 }
 
 fn select_source_keys(locale_keys: &BTreeMap<String, HashSet<String>>) -> Option<&HashSet<String>> {
