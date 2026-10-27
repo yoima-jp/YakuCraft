@@ -11,6 +11,7 @@ import { AppCommandError, cancelAnalysis, createProjectFromJars, deleteProject, 
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
+import { logFrontendError } from "../../lib/errorLogging";
 import type { AnalysisChannelEvent } from "../../types/commands";
 import { useAppStore } from "../../stores/appStore";
 import { useEditorStore } from "../../stores/editorStore";
@@ -33,6 +34,7 @@ function isJarFilePath(path: string) {
 }
 
 function errorMessage(error: unknown) {
+  void logFrontendError(error, "home screen");
   if (error instanceof AppCommandError) return error.message;
   return "処理に失敗しました。もう一度お試しください。";
 }
@@ -249,7 +251,8 @@ export function HomeScreen() {
       });
       if (typeof selectedPath === "string") handleJarPath(selectedPath);
       else if (selectedPath) handleJarPaths(selectedPath);
-    } catch {
+    } catch (cause: unknown) {
+      void logFrontendError(cause, "home file picker");
       setError("ファイルを選べませんでした。もう一度お試しください。");
     }
   }, [handleJarPath, handleJarPaths, setProjectOpenError]);
@@ -261,7 +264,8 @@ export function HomeScreen() {
       const selectedPath = await openFileDialog({ multiple: false, directory: true });
       const path = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
       if (path) await handleModsFolder(path);
-    } catch {
+    } catch (cause: unknown) {
+      void logFrontendError(cause, "home folder picker");
       setError("フォルダを選べませんでした。もう一度お試しください。");
     }
   }, [handleModsFolder, setProjectOpenError]);
@@ -385,7 +389,8 @@ export function HomeScreen() {
         if (active) unlisten = stopListening;
         else stopListening();
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
+        void logFrontendError(cause, "home drag and drop setup");
         if (active) setError("ドラッグできませんでした。ファイルを選んでください。");
       });
 

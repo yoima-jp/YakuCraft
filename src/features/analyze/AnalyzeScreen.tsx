@@ -4,6 +4,7 @@ import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons"
 import { Disclosure } from "../../components/Controls";
 import { ProgressBar } from "../../components/progress/ProgressBar";
 import { AppCommandError, cancelAnalysis } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useScanStore } from "../scan/scanStore";
@@ -46,6 +47,7 @@ export function AnalyzeScreen() {
     try {
       await cancelAnalysis(jobId);
     } catch (error: unknown) {
+      void logFrontendError(error, "cancel analysis");
       const message = error instanceof AppCommandError ? error.message : "処理を中止できませんでした。";
       setCancelRequested(false);
       setAnalysisError(error instanceof AppCommandError

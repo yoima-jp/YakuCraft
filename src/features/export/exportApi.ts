@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { logFrontendError } from "../../lib/errorLogging";
 import type { ExportKind, ManualPackFormatDto } from "../../types/export";
 import type { MinecraftVersionDetectionDto } from "../../types/project";
 
@@ -109,6 +110,7 @@ async function invokeExport<T>(command: string, args?: Record<string, unknown>):
   try {
     return await invoke<T>(command, args);
   } catch (error: unknown) {
+    void logFrontendError(error, `Tauri command: ${command}`);
     if (typeof error === "object" && error !== null) {
       const appError = error as Record<string, unknown>;
       if (typeof appError.code === "string" && typeof appError.userMessage === "string") {

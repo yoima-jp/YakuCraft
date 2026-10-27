@@ -4,6 +4,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
+import { logFrontendError } from "../../lib/errorLogging";
 import { automaticUpdatesSupported } from "../../lib/tauri";
 import { useSettingsStore } from "../../stores/settingsStore";
 
@@ -47,6 +48,7 @@ export function loadUpdateSupport() {
     })
     .catch((cause: unknown) => {
       console.warn("更新の対応状況を確認できませんでした。", cause);
+      void logFrontendError(cause, "update support check");
       useUpdaterStore.setState({ updatesSupported: false });
       return false;
     })
@@ -121,11 +123,13 @@ export function checkForUpdateOnStartup() {
       window.localStorage.setItem(LAST_STARTUP_CHECK_KEY, today);
     } catch (cause: unknown) {
       console.warn("更新確認日の保存に失敗しました。", cause);
+      void logFrontendError(cause, "save update check date");
     }
 
     await checkForUpdate();
   })().catch((cause: unknown) => {
     console.warn("起動時の更新確認に失敗しました。", cause);
+    void logFrontendError(cause, "startup update check");
   });
 }
 
@@ -136,6 +140,7 @@ export async function installAvailableUpdate() {
       await checkRequest;
     } catch (cause: unknown) {
       console.error("更新を確認できなかったため、適用を中止しました。", cause);
+      void logFrontendError(cause, "update check before install");
       return;
     }
   }
@@ -182,6 +187,7 @@ export async function installAvailableUpdate() {
     await relaunch();
   } catch (cause: unknown) {
     console.error("更新を適用できませんでした。", cause);
+    void logFrontendError(cause, "install update");
     useUpdaterStore.setState({ installing: false });
   }
 }

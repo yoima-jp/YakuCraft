@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
+import { logFrontendError } from "./errorLogging";
 import type { AnalysisChannelEvent, AppError, OperationProgressDto } from "../types/commands";
 export type { AnalysisChannelEvent, AnalysisProgressDto, AppError } from "../types/commands";
 import type { AiJobEventDto, AiProviderId, AiSettingsDto, ChatGptCredentialStatusDto, SaveAiProviderDto } from "../types/ai";
@@ -50,6 +51,7 @@ export async function invokeApp<T>(
   try {
     return await invoke<T>(command, args);
   } catch (error: unknown) {
+    void logFrontendError(error, `Tauri command: ${command}`);
     if (isAppError(error)) {
       throw new AppCommandError(error);
     }
@@ -84,6 +86,14 @@ export function automaticUpdatesSupported() {
 
 export function clearCache() {
   return invokeApp<void>("clear_cache");
+}
+
+export function getRecentLog() {
+  return invokeApp<string>("get_recent_log");
+}
+
+export function openLogFolder() {
+  return invokeApp<void>("open_log_folder");
 }
 
 export function getAiSettings(provider?: AiProviderId) {

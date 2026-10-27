@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { AppCommandError, openOutputFolder } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { useAppStore } from "../../stores/appStore";
 import { getExportRunDetails } from "./completionData";
 import { displayPath } from "./pathDisplay";
@@ -15,6 +16,7 @@ const FORMAT_LABELS = {
 } as const;
 
 function errorMessage(error: unknown) {
+  void logFrontendError(error, "export completion screen");
   return error instanceof AppCommandError ? error.message : "フォルダを開けませんでした。";
 }
 

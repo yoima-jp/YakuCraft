@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Dialog } from "../../components/Controls";
 import { PrimaryButton, TertiaryButton } from "../../components/button/Buttons";
 import { AppCommandError, deleteGlossaryTerm, exportGlossary, glossaryCandidates, importGlossary, listGlossaryTerms, updateGlossaryTerm, upsertGlossaryTerm, upsertGlossaryTerms } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
 import { useEditorStore } from "../../stores/editorStore";
 import type { GlossaryCandidate, GlossaryTerm, GlossaryTermInput } from "../../types/translation";
@@ -372,6 +373,7 @@ function candidateKey(candidate: GlossaryCandidate) {
 }
 
 function errorMessage(error: unknown, fallback: string) {
+  void logFrontendError(error, "glossary panel");
   return error instanceof AppCommandError ? error.message : fallback;
 }
 
