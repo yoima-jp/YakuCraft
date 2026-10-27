@@ -1,3 +1,6 @@
+# 修正版・小さな版上げはまとめて1つの PR にし、互換性が崩れうる大きな版上げ（semver major）は
+# ライブラリごとに別の PR にする。まとめて1つにすると、手直しが要る1件のせいで
+# 安全な更新まで CI が落ちたまま溜まるため（2026-10 の #3 / #4 がそうだった）。
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,6 +11,9 @@ updates:
       dependencies:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: npm
     directory: "/"
@@ -17,6 +23,9 @@ updates:
       dependencies:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: "/"
