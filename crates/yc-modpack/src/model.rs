@@ -53,6 +53,8 @@ pub struct ModpackScan {
     pub ftb_quest_entries: usize,
     pub kubejs_entries: usize,
     pub issues: Vec<String>,
+    #[serde(skip)]
+    pub safe_issues: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

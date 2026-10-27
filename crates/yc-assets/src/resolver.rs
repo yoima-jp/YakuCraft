@@ -276,7 +276,13 @@ impl AssetResolver {
             let blockstate: RawBlockstate = match serde_json::from_slice(&bytes) {
                 Ok(value) => value,
                 Err(error) => {
-                    tracing::debug!(path = %state_path, %error, "blockstate parse failed");
+                    let detail = crate::parse_error::parse_error_detail(
+                        &format!("JSON {:?}", error.classify()),
+                        &blockstate_archive_path,
+                        error.line(),
+                        error.column(),
+                    );
+                    tracing::debug!(error = %detail, "blockstate parse failed");
                     return self.no_preview(translation_key, "invalid blockstate", None);
                 }
             };
@@ -384,7 +390,14 @@ impl AssetResolver {
                 let definition: Value = match serde_json::from_slice(&bytes) {
                     Ok(value) => value,
                     Err(error) => {
-                        tracing::debug!(path = %definition_path, %error, "item definition parse failed");
+                        // serde のメッセージは入力文字列を含みうるため、種別と位置だけを記録する。
+                        tracing::debug!(
+                            path = %definition_path,
+                            kind = ?error.classify(),
+                            line = error.line(),
+                            column = error.column(),
+                            "item definition parse failed"
+                        );
                         return self.no_preview(translation_key, "invalid item definition", None);
                     }
                 };
@@ -1139,7 +1152,12 @@ impl AssetResolver {
             serde_json::from_slice(&bytes).map_err(|error| ResolverError::InvalidModelJson {
                 source_id: asset.source_id.clone(),
                 path: asset.archive_path.clone(),
-                message: error.to_string(),
+                message: crate::parse_error::parse_error_detail(
+                    &format!("JSON {:?}", error.classify()),
+                    &asset.archive_path,
+                    error.line(),
+                    error.column(),
+                ),
             })?;
         // Banner/bed/chest等はvanilla JSONがparticle textureだけを持ち、実形状をBlockEntityRendererへ任せる。
         // Standalone previewではruntime stateを再現できないため、既知のmodelだけ代表形へ置き換える。

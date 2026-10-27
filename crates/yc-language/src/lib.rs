@@ -2,7 +2,9 @@ mod discovery;
 mod error;
 mod merge;
 mod model;
+mod parse_error;
 mod parser;
+pub use parse_error::parse_error_detail;
 mod patchouli;
 mod writer;
 

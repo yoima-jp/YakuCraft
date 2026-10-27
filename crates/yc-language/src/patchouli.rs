@@ -725,7 +725,14 @@ fn pointer_segments(pointer: &str) -> Option<Vec<String>> {
 fn parse_json(bytes: &[u8]) -> Result<Value, String> {
     let bytes = bytes.strip_prefix(UTF8_BOM).unwrap_or(bytes);
     let normalized = normalize_patchouli_json(bytes);
-    serde_json::from_slice(&normalized).map_err(|error| error.to_string())
+    serde_json::from_slice(&normalized).map_err(|error: serde_json::Error| {
+        crate::parse_error_detail(
+            &format!("JSON {:?}", error.classify()),
+            "<document>",
+            error.line(),
+            error.column(),
+        )
+    })
 }
 
 /// Gson's lenient reader accepts JavaScript-style comments and dangling commas. Remove those

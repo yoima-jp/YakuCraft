@@ -1064,13 +1064,15 @@ fn refresh_modpack_unit_from_scan(
     let repository = opened.repository();
     if !scan.issues.is_empty() {
         let detail = scan.issues.join("\n");
-        return Err(AppError::new(
+        let mut error = AppError::new(
             "modpack_scan_incomplete",
-            &format!(
-                "Modpack の翻訳ファイルを確認できませんでした。次のファイルを確認して再試行してください: {detail}"
-            ),
-            Some(detail),
-        ));
+            "Modpack の翻訳ファイルを確認できませんでした。",
+            Some(scan.safe_issues.join("\n")),
+        );
+        error.user_message = format!(
+            "Modpack の翻訳ファイルを確認できませんでした。次のファイルを確認して再試行してください: {detail}"
+        );
+        return Err(error);
     }
     if scan.files.is_empty() {
         return Err(AppError::simple(

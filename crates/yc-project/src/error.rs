@@ -10,8 +10,14 @@ pub enum ProjectError {
     Io(#[from] io::Error),
     #[error("SQLite操作に失敗しました: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("JSONを読み書きできません: {0}")]
+    #[error("JSONを読み書きできません: {}", yc_language::parse_error_detail(&format!("JSON {:?}", .0.classify()), "<unknown>", .0.line(), .0.column()))]
     Json(#[from] serde_json::Error),
+    #[error("JSONを読み書きできません: {}", yc_language::parse_error_detail(&format!("JSON {:?}", .source.classify()), &.path.to_string_lossy(), .source.line(), .source.column()))]
+    JsonFile {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("用語集CSVを読み書きできません: {0}")]
     Csv(#[from] csv::Error),
     #[error("時刻を処理できません: {0}")]

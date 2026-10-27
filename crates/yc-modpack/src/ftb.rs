@@ -8,16 +8,35 @@ use crate::{
 use yc_language::is_empty_translation;
 
 pub(crate) fn parse_ftb_document(path: &str, bytes: &[u8]) -> Result<SnbtDocument, ModpackError> {
-    let text = std::str::from_utf8(bytes).map_err(|error| ModpackError::Snbt {
-        path: path.to_owned(),
-        offset: error.valid_up_to(),
-        message: "file is not valid UTF-8".to_owned(),
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        let prefix =
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).expect("valid UTF-8 prefix");
+        let (line, column) = position(prefix);
+        ModpackError::Snbt {
+            path: path.to_owned(),
+            offset: error.valid_up_to(),
+            line,
+            column,
+            message: "file is not valid UTF-8".to_owned(),
+        }
     })?;
-    parse_snbt(text).map_err(|(offset, message)| ModpackError::Snbt {
-        path: path.to_owned(),
-        offset,
-        message,
+    parse_snbt(text).map_err(|(offset, message)| {
+        let (line, column) = position(&text[..offset]);
+        ModpackError::Snbt {
+            path: path.to_owned(),
+            offset,
+            line,
+            column,
+            message,
+        }
     })
+}
+
+fn position(prefix: &str) -> (usize, usize) {
+    (
+        prefix.bytes().filter(|&byte| byte == b'\n').count() + 1,
+        prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1,
+    )
 }
 
 pub(crate) fn add_ftb_entries(entries: &mut Vec<ModpackEntry>, document: &FtbDocument) {

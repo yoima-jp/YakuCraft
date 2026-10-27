@@ -29,7 +29,12 @@ where
     T: serde::de::DeserializeOwned + Default,
 {
     match fs::read(path) {
-        Ok(contents) => Ok(serde_json::from_slice(&contents)?),
+        Ok(contents) => {
+            serde_json::from_slice(&contents).map_err(|source| ProjectError::JsonFile {
+                path: path.to_owned(),
+                source,
+            })
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(error) => Err(ProjectError::Io(error)),
     }

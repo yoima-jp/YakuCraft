@@ -329,10 +329,17 @@ fn scan_mod_jar_inner(
             let parsed = match parse_language_file(file, &bytes) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    tracing::warn!(path = %path.display(), archive_path, error = %error, "軽量JARスキャンで言語ファイルを解析できません");
+                    let yc_language::LanguageError::Json(source) = &error;
+                    let detail = yc_language::parse_error_detail(
+                        &format!("JSON {:?}", source.classify()),
+                        &archive_path,
+                        source.line(),
+                        source.column(),
+                    );
+                    tracing::warn!(path = %path.display(), archive_path, error = %detail, "軽量JARスキャンで言語ファイルを解析できません");
                     // Full analysis reports malformed locales as warnings and keeps usable locales;
                     // mirror that behavior so one broken translation file cannot hide an otherwise readable mod.
-                    first_language_error.get_or_insert_with(|| format!("{archive_path}: {error}"));
+                    first_language_error.get_or_insert(detail);
                     continue;
                 }
             };

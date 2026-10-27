@@ -2,6 +2,8 @@ mod builtin;
 mod index;
 mod ir;
 mod model;
+#[path = "../../yc-language/src/parse_error.rs"]
+mod parse_error;
 mod resolver;
 mod source;
 
