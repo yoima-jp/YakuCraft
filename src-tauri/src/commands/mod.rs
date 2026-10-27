@@ -3,6 +3,7 @@ pub mod app;
 pub mod editor;
 pub mod export;
 pub mod glossary;
+pub mod logs;
 mod modpack;
 pub mod preview;
 pub mod project;

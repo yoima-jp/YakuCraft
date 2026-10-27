@@ -11,6 +11,7 @@ import {
   getProjectSummary,
   listModUnits,
 } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import type { AnalysisChannelEvent, AppError } from "../../types/commands";
 import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -48,6 +49,7 @@ const DEFAULT_STATUS_FILTERS: StatusFilters = {
 };
 
 function appError(error: unknown): AppError {
+  void logFrontendError(error, "scan screen");
   return error instanceof AppCommandError
     ? error.appError
     : { code: "unexpected", userMessage: "処理に失敗しました。もう一度お試しください。", recoverable: true };

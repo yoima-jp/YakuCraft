@@ -6,6 +6,7 @@ import { Checkbox, Disclosure, RadioGroup, Select } from "../../components/Contr
 import { StepProgress } from "../../components/progress/StepProgress";
 import { localeDisplayName } from "../../lib/locale";
 import { AppCommandError, getReviewAssetSummary, listEntries, saveReviewSettings } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { useAppStore } from "../../stores/appStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -240,6 +241,7 @@ export function ReviewScreen() {
       if (active) setReviewSummaryState({ key: currentSelectionKey, summary });
     }).catch((error: unknown) => {
       if (!active) return;
+      void logFrontendError(error, "review summary");
       setReviewError(error instanceof AppCommandError
         ? error.appError
         : { code: "unexpected", userMessage: "確認項目を読み込めませんでした。選択を変えて再試行してください。", recoverable: true });
@@ -299,6 +301,7 @@ export function ReviewScreen() {
       useEditorStore.getState().loadEntries(entries, savedDetails.project.id);
       await goTo("editor");
     } catch (error: unknown) {
+      void logFrontendError(error, "save review settings");
       setOperationProgress(null);
       setReviewError(error instanceof AppCommandError
         ? error.appError

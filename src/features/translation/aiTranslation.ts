@@ -1,4 +1,5 @@
 import { AppCommandError, entryFromProject, getAiSettings, listEntries, listModUnits, startAiJob } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
 import type { RequestConfirmation } from "../../components/useDialogConfirmation";
 import { useAiJobStore } from "../../stores/aiJobStore";
@@ -126,6 +127,7 @@ export async function translateWithAi(entryIds: number[], requestConfirmation: R
     );
     useAiJobStore.getState().attachJobId(jobId);
   } catch (error: unknown) {
+    void logFrontendError(error, "start AI translation");
     unitScopedAiJobActive = false;
     if (error instanceof AppCommandError && error.appError.code === "ai_not_configured") {
       await useAppStore.getState().openSettings("ai");
@@ -348,6 +350,7 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
     const activeJob = useAiJobStore.getState().activeJob;
     if (activeJob) useAiJobStore.setState({ activeJob: { ...activeJob, id: jobId } });
   } catch (error: unknown) {
+    void logFrontendError(error, "translate whole project with AI");
     const message = error instanceof Error ? error.message : "AI翻訳を実行できませんでした。";
     useAiJobStore.getState().failToStart(message);
   } finally {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, listAiModels, logoutChatgpt, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
+import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, getRecentLog, listAiModels, logoutChatgpt, openLogFolder, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
 import { Checkbox, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
@@ -13,7 +14,7 @@ import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
 import "./SettingsScreen.css";
 
-type SettingsCategory = "general" | "ai" | "editor" | "appearance" | "advanced";
+type SettingsCategory = "general" | "ai" | "editor" | "appearance" | "advanced" | "logs";
 
 const CATEGORIES: Array<[SettingsCategory, string]> = [
   ["general", "一般"],
@@ -21,6 +22,7 @@ const CATEGORIES: Array<[SettingsCategory, string]> = [
   ["editor", "エディター"],
   ["appearance", "表示"],
   ["advanced", "詳細"],
+  ["logs", "ログ"],
 ];
 
 // 既定の ChatGPT を先頭に置く（既定値は settingsStore と commands/ai.rs の provider_from_settings）。
@@ -59,6 +61,7 @@ function aiSaveConfig(settings: AiSettingsDto) {
 }
 
 function errorMessage(error: unknown) {
+  void logFrontendError(error, "settings screen");
   return error instanceof AppCommandError ? error.message : "処理に失敗しました。もう一度お試しください。";
 }
 
@@ -70,6 +73,76 @@ function stringSetting(settings: Record<string, unknown>, key: string, fallback:
 function numberSetting(settings: Record<string, unknown>, key: string, fallback: number) {
   const value = settings[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function LogViewer() {
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const load = useCallback(async (refreshing: boolean) => {
+    if (refreshing) {
+      setLoading(true);
+      setError(null);
+      setMessage(null);
+    }
+    try {
+      setContent(await getRecentLog());
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ログ閲覧カテゴリを開いた時点でRustから内容を取得する。状態更新は非同期取得後に行う。
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    void load(false);
+  }, [load]);
+
+  const reload = () => void load(true);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setMessage("コピーしました");
+      setError(null);
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    }
+  };
+
+  const openFolder = async () => {
+    try {
+      await openLogFolder();
+      setError(null);
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    }
+  };
+
+  return (
+    <div className="settings-fields">
+      <div className="settings-actions">
+        <button className="settings-action" type="button" disabled={loading} onClick={reload}>
+          再読み込み
+        </button>
+        <button className="settings-action" type="button" disabled={!content} onClick={() => void copy()}>
+          コピー
+        </button>
+        <button className="settings-action" type="button" onClick={() => void openFolder()}>
+          ログフォルダを開く
+        </button>
+      </div>
+      {loading && <output className="settings-field__hint" aria-live="polite">読み込み中…</output>}
+      {!loading && !content && <p className="settings-field__hint">ログはありません</p>}
+      {content && <pre className="settings-log selectable" aria-label="ログ">{content}</pre>}
+      {error && <p className="settings-message settings-message--error selectable" role="alert">{error}</p>}
+      {message && <p className="settings-message" aria-live="polite">{message}</p>}
+    </div>
+  );
 }
 
 export function SettingsScreen() {
@@ -306,6 +379,7 @@ export function SettingsScreen() {
         : update ? `新しいバージョン ${update.version} があります` : "最新です");
     } catch (cause: unknown) {
       console.warn("手動の更新確認に失敗しました。", cause);
+      void logFrontendError(cause, "manual update check");
       setError("更新を確認できませんでした。");
     } finally {
       setUpdateChecking(false);
@@ -630,6 +704,8 @@ export function SettingsScreen() {
               <MinecraftJarSection />
             </div>
           )}
+
+          {category === "logs" && <LogViewer />}
 
           {error && <p className="settings-message settings-message--error selectable" role="alert">{error}</p>}
           {message && <p className="settings-message" aria-live="polite">{message}</p>}

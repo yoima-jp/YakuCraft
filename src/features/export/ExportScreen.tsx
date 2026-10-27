@@ -5,6 +5,7 @@ import { join as joinPath } from "@tauri-apps/api/path";
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
 import type { ExportKind, ManualPackFormatDto } from "../../types/export";
 import type { MinecraftVersionDetectionDto, ProjectDetailsDto } from "../../types/project";
@@ -69,6 +70,7 @@ function languageFileNameForNamespace(details: ProjectDetailsDto, namespace: str
 }
 
 function errorMessage(error: unknown) {
+  void logFrontendError(error, "export screen");
   if (error instanceof ExportCommandError || error instanceof AppCommandError) return error.message;
   return "処理に失敗しました。もう一度お試しください。";
 }

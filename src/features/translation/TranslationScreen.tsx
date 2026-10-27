@@ -5,6 +5,7 @@ import { useAppStore } from "../../stores/appStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
 import { AppCommandError, getModUnitRemovalInfo, getProjectSummary, listEntries, listGlossaryTerms, listModUnits, refreshModpackUnit, removeModUnit } from "../../lib/tauri";
+import { logFrontendError } from "../../lib/errorLogging";
 import { useProjectStore } from "../../stores/projectStore";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -214,6 +215,7 @@ export function TranslationScreen() {
     })()
       .catch((error: unknown) => {
         if (!active) return;
+        void logFrontendError(error, "load translation data");
         setLoadError({
           projectId,
           message: error instanceof AppCommandError ? error.message : "翻訳データを読み込めませんでした。",
@@ -299,6 +301,7 @@ export function TranslationScreen() {
       commitTabPreferences(next);
     } catch (error: unknown) {
       if (requestId !== tabSwitchRequestRef.current) return;
+      void logFrontendError(error, "switch translation tab");
       setLoadError({
         projectId,
         message: error instanceof AppCommandError ? error.message : "翻訳データを読み込めませんでした。",
@@ -388,6 +391,7 @@ export function TranslationScreen() {
         try {
           await removeModUnit(modUnitId, confirmUnrestoredReplacements);
         } catch (error: unknown) {
+          void logFrontendError(error, "remove mod from project");
           if (
             !confirmUnrestoredReplacements &&
             error instanceof AppCommandError &&
@@ -430,6 +434,7 @@ export function TranslationScreen() {
       commitTabPreferences(next);
       useEditorStore.getState().discardClosedModUnits(remainingIds);
     } catch (error: unknown) {
+      void logFrontendError(error, "remove mod from project");
       setModActionError(error instanceof AppCommandError ? error.message : "modをプロジェクトから外せませんでした。もう一度お試しください。");
     }
   }, [commitTabPreferences, projectId, requestConfirmation, selectModUnit, tabPreferences]);
@@ -466,6 +471,7 @@ export function TranslationScreen() {
       }
       clearModIconCacheInUi();
     } catch (error: unknown) {
+      void logFrontendError(error, "refresh modpack");
       if (useProjectStore.getState().details?.project.id === projectId) {
         setModActionError(error instanceof AppCommandError ? error.message : "Modpack を再取り込みできませんでした。");
       }

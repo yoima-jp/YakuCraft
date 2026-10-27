@@ -70,6 +70,10 @@ ChatGPT、OpenAI、Claude（Anthropic）、Gemini、OpenRouter、DeepSeek、Groq
 
 Mod の翻訳を含むリソースパックや JAR を配布する前に、各 Mod のライセンスと配布条件を確認してください。再配布できるかどうかは各 Mod のライセンスに従います。
 
+## 不具合の報告
+
+不具合を報告する際は、設定画面の「ログ」からログをコピーして添付してください。
+
 ## 開発者向け
 
 ### 必要な環境
