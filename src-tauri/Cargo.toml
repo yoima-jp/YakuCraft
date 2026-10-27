@@ -10,24 +10,24 @@ name = "yakucraft"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tauri = { version = "~2.12.0", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
-tokio = { version = "1", features = ["macros", "sync"] }
+tauri-plugin-opener = "2.7.2"
+tokio = { version = "1.54", features = ["macros", "sync"] }
 futures-util = "0.3"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 time = { version = "0.3", features = ["formatting"] }
-uuid = { version = "1", features = ["serde", "v4"] }
+uuid = { version = "1.28", features = ["serde", "v4"] }
 yc-analysis = { path = "../crates/yc-analysis" }
 yc-ai = { path = "../crates/yc-ai" }
 yc-archive = { path = "../crates/yc-archive" }
@@ -38,9 +38,9 @@ yc-metadata = { path = "../crates/yc-metadata" }
 yc-modpack = { path = "../crates/yc-modpack" }
 yc-project = { path = "../crates/yc-project" }
 yc-validation = { path = "../crates/yc-validation" }
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "385f60c07710310f169c1cf0617baae03e258038" }
 tauri-plugin-process = "2"
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

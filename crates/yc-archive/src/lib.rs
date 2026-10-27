@@ -1305,8 +1305,8 @@ fn build_entry_infos<R: Read + Seek>(
     let mut zip_indices_by_path = HashMap::with_capacity(zip.len());
     for zip_index in 0..zip.len() {
         check_cancelled()?;
-        if let Some(path) = zip.name_for_index(zip_index) {
-            let key = normalize_archive_path(path).unwrap_or_else(|_| path.to_owned());
+        if let Some(Ok(path)) = zip.name_for_index(zip_index) {
+            let key = normalize_archive_path(&path).unwrap_or_else(|_| path.to_string());
             zip_indices_by_path.insert(Arc::<str>::from(key), zip_index);
         }
     }

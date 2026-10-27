@@ -84,7 +84,9 @@ fn is_decodable_png(bytes: &[u8]) -> bool {
     let Ok(mut reader) = decoder.read_info() else {
         return false;
     };
-    let output_size = reader.output_buffer_size();
+    let Some(output_size) = reader.output_buffer_size() else {
+        return false;
+    };
     if output_size > MAX_ICON_BYTES {
         return false;
     }

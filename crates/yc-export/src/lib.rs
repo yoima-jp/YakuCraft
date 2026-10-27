@@ -552,8 +552,8 @@ fn validate_zip(path: &Path, expected_entries: &[String]) -> Result<(), ExportEr
     })?;
     let mut names = std::collections::HashSet::with_capacity(archive.len());
     for index in 0..archive.len() {
-        if let Some(name) = archive.name_for_index(index) {
-            names.insert(name.to_owned());
+        if let Some(Ok(name)) = archive.name_for_index(index) {
+            names.insert(name.into_owned());
         }
     }
     for expected in expected_entries {

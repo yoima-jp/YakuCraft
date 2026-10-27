@@ -61,7 +61,7 @@ pub(crate) fn read_modpack_archive(path: &Path) -> Result<BTreeMap<String, Vec<u
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(modpack_archive_error)?.into_owned();
         safe_relative_path(&name)?;
         let mut bytes = Vec::new();
         entry

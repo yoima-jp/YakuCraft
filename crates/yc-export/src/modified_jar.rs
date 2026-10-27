@@ -181,7 +181,7 @@ fn rewrite_nested_documents(
     let mut replaced = HashSet::new();
     for index in 0..source.len() {
         let mut entry = source.by_index(index)?;
-        let name = entry.name().to_owned();
+        let name = entry.name()?.into_owned();
         if let Some(bytes) = replacements.get(name.as_str()) {
             output.start_file(&name, options)?;
             output.write_all(bytes)?;
@@ -219,8 +219,8 @@ fn copy_jar_with_replacements(
     let mut source = ZipArchive::new(source_file)?;
     let mut source_path_counts = HashMap::<String, usize>::with_capacity(source.len());
     for index in 0..source.len() {
-        if let Some(name) = source.name_for_index(index) {
-            *source_path_counts.entry(name.to_owned()).or_default() += 1;
+        if let Some(Ok(name)) = source.name_for_index(index) {
+            *source_path_counts.entry(name.into_owned()).or_default() += 1;
         }
     }
     for path in generated.keys() {
@@ -235,8 +235,9 @@ fn copy_jar_with_replacements(
     for index in 0..source.len() {
         let name = source
             .name_for_index(index)
+            .and_then(Result::ok)
             .ok_or_else(|| ExportError::UnsafeArchivePath(format!("entry #{index}")))?
-            .to_owned();
+            .into_owned();
         if let Some(bytes) = generated.get(&name) {
             writer.start_file(&name, deflate)?;
             writer.write_all(bytes)?;
