@@ -194,8 +194,15 @@ pub fn scan_instance(root: &Path) -> ModpackScan {
     let ftb_paths = find_ftb_language_paths(game_files.keys().map(String::as_str));
     let kubejs_paths = find_kubejs_language_paths(game_files.keys().map(String::as_str));
     let status = ftb_status(&ftb_paths, has_legacy_chapters);
-    let (ftb_quest_entries, kubejs_entries) =
-        count_source_entries(&game_files, &prefix, &ftb_paths, &kubejs_paths, &mut issues);
+    let mut safe_issues = issues.clone();
+    let (ftb_quest_entries, kubejs_entries) = count_source_entries(
+        &game_files,
+        &prefix,
+        &ftb_paths,
+        &kubejs_paths,
+        &mut issues,
+        &mut safe_issues,
+    );
     let total_entries = ftb_quest_entries + kubejs_entries;
     let mut scan = build_scan(
         &prefix,
@@ -212,6 +219,7 @@ pub fn scan_instance(root: &Path) -> ModpackScan {
         game_prefix
     };
     scan.issues = issues;
+    scan.safe_issues = safe_issues;
     scan
 }
 
@@ -221,6 +229,7 @@ fn count_source_entries(
     ftb_paths: &[FtbLanguagePath],
     kubejs_paths: &[KubeJsLanguagePath],
     issues: &mut Vec<String>,
+    safe_issues: &mut Vec<String>,
 ) -> (usize, usize) {
     let mut ftb_count = 0;
     for source in english_ftb_sources(ftb_paths) {
@@ -241,7 +250,10 @@ fn count_source_entries(
                     })
                     .sum::<usize>();
             }
-            Err(error) => issues.push(error.to_string()),
+            Err(error) => {
+                safe_issues.push(error.safe_detail());
+                issues.push(error.to_string());
+            }
         }
     }
     let mut kubejs_count = 0;
@@ -261,7 +273,10 @@ fn count_source_entries(
                     .filter(|value| !value.trim().is_empty())
                     .count()
             }
-            Err(error) => issues.push(error.to_string()),
+            Err(error) => {
+                safe_issues.push(error.safe_detail());
+                issues.push(error.to_string());
+            }
         }
     }
     (ftb_count, kubejs_count)
@@ -489,6 +504,7 @@ fn build_scan(
         ftb_quest_entries,
         kubejs_entries,
         issues: Vec::new(),
+        safe_issues: Vec::new(),
     }
 }
 

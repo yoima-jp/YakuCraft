@@ -80,7 +80,7 @@ pub(crate) fn analyze_modpack_archive(
         AppError::new(
             "modpack_analysis",
             "Modpack の翻訳ファイルを解析できませんでした。",
-            Some(error.to_string()),
+            Some(error.safe_detail()),
         )
     })?;
     let mut jar = zip::ZipWriter::new(Cursor::new(Vec::new()));

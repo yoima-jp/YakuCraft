@@ -1578,7 +1578,7 @@ pub(crate) fn export_modpack_files_core(
         let (translations, excluded_kubejs_output_paths) =
             modpack_export_translations(opened, unit.id, &data, &settings)?;
         let output_files = yc_modpack::write_ja_jp(&data, &translations)
-            .map_err(export_error)?
+            .map_err(|error| export_error(error.safe_detail()))?
             .into_iter()
             .filter(|output| !excluded_kubejs_output_paths.contains(&output.path))
             .collect::<Vec<_>>();

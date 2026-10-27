@@ -1,6 +1,8 @@
 mod icon;
 mod json;
 mod manifest;
+#[path = "../../yc-language/src/parse_error.rs"]
+mod parse_error;
 mod toml_metadata;
 
 #[cfg(test)]
@@ -142,7 +144,7 @@ pub fn analyze_metadata<A: ArchiveLookup + ?Sized>(archive: &A) -> MetadataAnaly
                 result.mods.extend(mods);
                 result.nested_jars.extend(nested_jars);
             }
-            Err(error) => add_warning(&mut result, path, error.to_string()),
+            Err(error) => add_parse_warning(&mut result, path, &bytes, error),
         }
     }
 
@@ -151,7 +153,7 @@ pub fn analyze_metadata<A: ArchiveLookup + ?Sized>(archive: &A) -> MetadataAnaly
         match archive.read(jarjar_path) {
             Some(bytes) => match json::parse_jarjar(&bytes) {
                 Ok(nested_jars) => result.nested_jars.extend(nested_jars),
-                Err(error) => add_warning(&mut result, jarjar_path, error.to_string()),
+                Err(error) => add_parse_warning(&mut result, jarjar_path, &bytes, error),
             },
             None => add_warning(
                 &mut result,
@@ -224,6 +226,37 @@ pub(crate) fn find_namespaces(paths: &BTreeSet<String>) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn add_parse_warning(
+    result: &mut MetadataAnalysis,
+    path: &str,
+    bytes: &[u8],
+    error: MetadataParseError,
+) {
+    let detail = match &error {
+        MetadataParseError::Json(source) => parse_error::parse_error_detail(
+            &format!("JSON {:?}", source.classify()),
+            path,
+            source.line(),
+            source.column(),
+        ),
+        MetadataParseError::Toml(source) => {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            let offset = source.span().map_or(0, |span| span.start).min(text.len());
+            let prefix = text.get(..offset).unwrap_or("");
+            let line = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
+            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            parse_error::parse_error_detail("TOML", path, line, column)
+        }
+        _ => error.to_string(),
+    };
+    tracing::warn!(path, error = %detail, "Mod metadataを解析できませんでした");
+    result.warnings.push(MetadataWarning {
+        path: path.to_owned(),
+        message: error.to_string(),
+    });
 }
 
 pub(crate) fn add_warning(result: &mut MetadataAnalysis, path: &str, message: String) {
