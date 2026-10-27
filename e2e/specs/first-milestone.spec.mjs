@@ -82,7 +82,7 @@ describe("最初の翻訳マイルストーン", () => {
     await browser.execute(() => { window.__YAKUCRAFT_E2E__.jarPath = null; });
     await browser.keys(["Control", "o"]);
     await $(".home-screen").waitForDisplayed({ timeout: 10_000 });
-    const draftResumeProject = await $("button.recent-projects__open");
+    const draftResumeProject = await $("li.recent-projects__item:first-child > button.recent-projects__open");
     await draftResumeProject.waitForClickable({ timeout: 30_000 });
     await draftResumeProject.click();
     await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 30_000 });
@@ -130,7 +130,7 @@ describe("最初の翻訳マイルストーン", () => {
     assert.ok(settingsButton, "Editorのヘッダーに設定がありません。");
     await settingsButton.click();
     await $(".settings-screen").waitForDisplayed({ timeout: 10_000 });
-    await $(".settings-actions button").click();
+    await $("footer.settings-actions button").click();
     await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 10_000 });
     assert.equal(await search.getValue(), translationKey, "設定から戻ると検索語が消えています。");
     await browser.waitUntil(async () => (await $(selectedRowSelector).getAttribute("aria-selected")) === "true", {
@@ -169,7 +169,7 @@ describe("最初の翻訳マイルストーン", () => {
     });
 
     await browser.reloadSession();
-    const recentProject = await $("button.recent-projects__open");
+    const recentProject = await $("li.recent-projects__item:first-child > button.recent-projects__open");
     await recentProject.waitForClickable({ timeout: 30_000 });
     await recentProject.click();
     await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 30_000 });

@@ -289,7 +289,7 @@ async function selectAiProvider(value, label) {
 }
 
 async function captureSettings(theme, modelServerUrl, modelServerRequests) {
-  await $("nav.app-header__actions button").click();
+  await $("nav.app-header__actions").$("button=設定").click();
   await $(".settings-screen").waitForDisplayed({ timeout: 10_000 });
 
   // 設定画面からテーマを切り替え、他のカテゴリも同じ配色で撮影する。
@@ -476,7 +476,7 @@ async function captureProjectFlow(theme, fixturePath) {
     timeout: 5_000,
     timeoutMsg: "AI翻訳メニューが開きませんでした。",
   });
-  await $('[role="menuitem"]').moveTo();
+  await $(".editor-toolbar__ai-menu-panel").$("button=未翻訳を翻訳").moveTo();
   await capture(theme, "editor-ai-menu-open");
   await browser.keys("Escape");
 
@@ -567,7 +567,7 @@ async function setModTabPosition(position) {
   await select.click();
   await $(`[role="option"][data-value="${position}"]`).click();
   await waitForText('[aria-label="modタブの位置"]', position === "left" ? "左" : "上");
-  await $(".settings-actions button").click();
+  await $("footer.settings-actions button").click();
   await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 10_000 });
 }
 
@@ -663,7 +663,7 @@ async function captureMultiModFlow(theme, instancePath) {
   await glossary.$('[aria-label="閉じる"]').click();
 
   await selectedRow.click({ button: "right" });
-  await $('[role="menuitem"]').waitForDisplayed({ timeout: 5_000 });
+  await $(".context-menu").waitForDisplayed({ timeout: 5_000 });
   await capture(theme, "editor-multiple-top-context-menu");
   await browser.keys("Escape");
   await $(".mod-tabs__all-button").click();
@@ -712,20 +712,20 @@ async function captureMultiModFlow(theme, instancePath) {
     });
   }), { timeout: 5_000, interval: 100, timeoutMsg: "未翻訳とPlaceholderの検証欄が画面内に収まりませんでした。" });
   await capture(theme, "export-multiple-mods-validation");
-  await $(".export-screen__actions button").click();
+  await $("footer.export-screen__actions").$("button=戻る").click();
   await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 10_000 });
 
   await $('[aria-label="ホームへ戻る"]').click();
-  await $(".recent-projects__item").waitForDisplayed({ timeout: 10_000 });
+  await $("li.recent-projects__item:first-child").waitForDisplayed({ timeout: 10_000 });
   await capture(theme, "home-recent-projects");
-  const recentProject = await $(".recent-projects__item");
+  const recentProject = await $("li.recent-projects__item:first-child");
   await browser.execute((element) => element.focus(), recentProject);
   assert.equal(await recentProject.isFocused(), true, "Recent項目にフォーカスできませんでした。");
   await browser.keys(["Shift", "F10"]);
-  await $('[role="menuitem"]').waitForDisplayed({ timeout: 5_000 });
+  await $(".context-menu").waitForDisplayed({ timeout: 5_000 });
   await capture(theme, "home-recent-project-context-menu");
   await browser.keys("Escape");
-  await $(".recent-projects__open").click();
+  await $("li.recent-projects__item:first-child > button.recent-projects__open").click();
   await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 60_000 });
 }
 

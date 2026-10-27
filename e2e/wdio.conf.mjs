@@ -1,3 +1,5 @@
+// @ts-check
+
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -9,6 +11,7 @@ const driverPidFile = process.env.YAKUCRAFT_E2E_DRIVER_PID_FILE;
 const webDriverPort = Number(process.env.YAKUCRAFT_E2E_WEBDRIVER_PORT ?? 4444);
 const nativeDriverPort = Number(process.env.YAKUCRAFT_E2E_NATIVE_PORT ?? webDriverPort + 1);
 const defaultApplication = process.platform === "win32" ? "yakucraft.exe" : "yakucraft";
+/** @type {import("node:child_process").ChildProcess | undefined} */
 let tauriDriver;
 
 // tauri-driver は --native-driver を PATH 検索しないため、実行ファイルを絶対パスに解決する。
@@ -26,10 +29,12 @@ function resolveLinuxNativeDriver() {
 }
 
 async function waitForDriver() {
+  const driver = tauriDriver;
+  if (!driver) throw new Error("tauri-driver が起動していません。");
   const timeoutAt = Date.now() + 15_000;
   while (Date.now() < timeoutAt) {
-    if (tauriDriver.exitCode !== null) {
-      throw new Error(`tauri-driver が起動時に終了しました (code ${tauriDriver.exitCode})`);
+    if (driver.exitCode !== null) {
+      throw new Error(`tauri-driver が起動時に終了しました (code ${driver.exitCode})`);
     }
     try {
       const response = await fetch(`http://127.0.0.1:${webDriverPort}/status`);
@@ -43,24 +48,37 @@ async function waitForDriver() {
 }
 
 async function stopTauriDriver() {
-  if (!tauriDriver?.pid || tauriDriver.exitCode !== null) return;
+  const driver = tauriDriver;
+  if (!driver?.pid || driver.exitCode !== null) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill.exe", ["/PID", String(tauriDriver.pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill.exe", ["/PID", String(driver.pid), "/T", "/F"], { stdio: "ignore" });
   } else {
-    tauriDriver.kill("SIGTERM");
+    driver.kill("SIGTERM");
   }
-  await new Promise((resolve) => {
-    if (tauriDriver.exitCode !== null) return resolve();
+  /** @type {Promise<void>} */
+  const driverStopped = new Promise((resolve) => {
+    if (driver.exitCode !== null) return resolve();
     const timeout = setTimeout(resolve, 5_000);
-    tauriDriver.once("exit", () => {
+    driver.once("exit", () => {
       clearTimeout(timeout);
       resolve();
     });
   });
+  await driverStopped;
   if (driverPidFile && existsSync(driverPidFile)) unlinkSync(driverPidFile);
   tauriDriver = undefined;
 }
 
+/** @type {import("@wdio/types").Capabilities.RequestedStandaloneCapabilities & { "tauri:options": { application: string } }} */
+const tauriCapabilities = {
+  ...(process.platform === "linux" ? { "wdio:enforceWebDriverClassic": true } : {}),
+  "tauri:options": {
+    application: process.env.YAKUCRAFT_E2E_APPLICATION
+      ?? path.join(projectRoot, "target", "debug", defaultApplication),
+  },
+};
+
+/** @type {import("@wdio/types").Options.Testrunner & import("@wdio/types").Capabilities.WithRequestedTestrunnerCapabilities} */
 export const config = {
   logLevel: "warn",
   runner: "local",
@@ -85,15 +103,7 @@ export const config = {
   maxInstances: 1,
   hostname: "127.0.0.1",
   port: webDriverPort,
-  capabilities: [
-    {
-      ...(process.platform === "linux" ? { "wdio:enforceWebDriverClassic": true } : {}),
-      "tauri:options": {
-        application: process.env.YAKUCRAFT_E2E_APPLICATION
-          ?? path.join(projectRoot, "target", "debug", defaultApplication),
-      },
-    },
-  ],
+  capabilities: [tauriCapabilities],
   framework: "mocha",
   reporters: ["spec"],
   mochaOpts: {
@@ -132,7 +142,7 @@ process.once("exit", () => {
     try {
       process.kill(tauriDriver.pid, "SIGTERM");
     } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
     }
   }
 });
