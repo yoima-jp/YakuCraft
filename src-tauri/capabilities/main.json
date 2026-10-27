@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "メインウィンドウでJAR選択と出力先選択に使います。core:event の listen / unlisten は Home のJARドラッグ&ドロップ検知（onDragDropEvent）が使うため削除しないこと。",
+  "description": "メインウィンドウでJAR選択と出力先選択に使います。core:event の listen / unlisten は Home のJARドラッグ&ドロップ検知（onDragDropEvent）が使うため削除しないこと。core:path:allow-join は書き出し画面が既定の書き出し先とファイル名を joinPath() で連結するのに必要（無いと保存ダイアログ前に失敗する。issue #5）。",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "dialog:allow-open", "dialog:allow-save", "updater:allow-check", "updater:allow-download", "updater:allow-install", "process:allow-restart", {"identifier": "opener:allow-open-url", "allow": [{"url": "https://auth.openai.com/*"}]}]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "dialog:allow-open", "dialog:allow-save", "core:path:allow-join", "updater:allow-check", "updater:allow-download", "updater:allow-install", "process:allow-restart", {"identifier": "opener:allow-open-url", "allow": [{"url": "https://auth.openai.com/*"}]}]
 }
