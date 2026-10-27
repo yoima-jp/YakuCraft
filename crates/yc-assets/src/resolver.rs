@@ -390,7 +390,14 @@ impl AssetResolver {
                 let definition: Value = match serde_json::from_slice(&bytes) {
                     Ok(value) => value,
                     Err(error) => {
-                        tracing::debug!(path = %definition_path, %error, "item definition parse failed");
+                        // serde のメッセージは入力文字列を含みうるため、種別と位置だけを記録する。
+                        tracing::debug!(
+                            path = %definition_path,
+                            kind = ?error.classify(),
+                            line = error.line(),
+                            column = error.column(),
+                            "item definition parse failed"
+                        );
                         return self.no_preview(translation_key, "invalid item definition", None);
                     }
                 };
