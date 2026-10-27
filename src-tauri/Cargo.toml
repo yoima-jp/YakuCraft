@@ -38,7 +38,7 @@ yc-metadata = { path = "../crates/yc-metadata" }
 yc-modpack = { path = "../crates/yc-modpack" }
 yc-project = { path = "../crates/yc-project" }
 yc-validation = { path = "../crates/yc-validation" }
-tauri-plugin-updater = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "385f60c07710310f169c1cf0617baae03e258038" }
+tauri-plugin-updater = "2.14"
 tauri-plugin-process = "2"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
