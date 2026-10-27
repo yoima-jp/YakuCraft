@@ -57,6 +57,7 @@ describe("TranslationTable keyboard editing", () => {
   const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
   const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+  const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   const originalTextareaMeasurements = ["clientWidth", "scrollWidth", "clientHeight", "scrollHeight"]
     .map((name) => Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, name));
   const originalSettings = useSettingsStore.getState();
@@ -80,7 +81,14 @@ describe("TranslationTable keyboard editing", () => {
     Object.defineProperty(HTMLElement.prototype, "clientWidth", {
       configurable: true,
       get() {
+        if (this.classList.contains("editor-table__scroll")) return 1024;
         return this.classList.contains("editor-table__target") ? 280 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return this.classList.contains("editor-table__scroll") ? 520 : 0;
       },
     });
     Object.defineProperties(HTMLTextAreaElement.prototype, {
@@ -102,6 +110,8 @@ describe("TranslationTable keyboard editing", () => {
     else Reflect.deleteProperty(HTMLElement.prototype, "offsetWidth");
     if (originalClientWidth) Object.defineProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientWidth");
+    if (originalClientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
     ["clientWidth", "scrollWidth", "clientHeight", "scrollHeight"].forEach((name, index) => {
       const descriptor = originalTextareaMeasurements[index];
       if (descriptor) Object.defineProperty(HTMLTextAreaElement.prototype, name, descriptor);
@@ -319,9 +329,10 @@ describe("TranslationTable keyboard editing", () => {
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
 
     const keyHandle = screen.getByRole("separator", { name: "キー列の幅" });
+    const keyWidth = Number(keyHandle.getAttribute("aria-valuenow"));
     fireEvent.keyDown(keyHandle, { key: "ArrowRight", altKey: true });
-    expect(keyHandle.getAttribute("aria-valuenow")).toBe("236");
-    await waitFor(() => expect(useSettingsStore.getState().settings["editor.tableColumnWidths"]).toMatchObject({ key: 236 }));
+    expect(Number(keyHandle.getAttribute("aria-valuenow"))).toBe(keyWidth + 16);
+    await waitFor(() => expect(useSettingsStore.getState().settings["editor.tableColumnWidths"]).toMatchObject({ key: keyWidth + 16 }));
   });
 
   it("長い翻訳を拡大欄で編集でき、確定すると通常のセルへ戻る", async () => {
