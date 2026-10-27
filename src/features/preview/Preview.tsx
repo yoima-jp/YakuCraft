@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Checkbox, Select } from "../../components/Controls";
+import { logFrontendError } from "../../lib/errorLogging";
 import {
   classifyPreviewManifest,
   previewKindOrNoPreview,
@@ -85,7 +86,9 @@ export function Preview({ manifest, getTextureBytes, getModelJson, className = "
     try {
       renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-    } catch {
+    } catch (error) {
+      // 画面には「表示できません」としか出ないため、GPU / ドライバ由来の原因はログで追う。
+      void logFrontendError(error, "3D preview: WebGL renderer initialization");
       queueMicrotask(() => setRendererAvailable(false));
       return;
     }
