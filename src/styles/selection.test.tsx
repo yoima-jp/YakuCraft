@@ -8,7 +8,8 @@ import { resolve } from "node:path";
 const globalStyles = readFileSync(resolve(process.cwd(), "src/styles/global.css"), "utf8");
 
 const stylesheet = document.createElement("style");
-stylesheet.textContent = globalStyles;
+// jsdom 30 は疑似要素を含むセレクターリストを通常要素の計算スタイルへ適用できない。
+stylesheet.textContent = globalStyles.replace(/^\*,\r?\n\*::before,\r?\n\*::after\s*\{/m, "* {");
 document.head.append(stylesheet);
 
 afterEach(cleanup);

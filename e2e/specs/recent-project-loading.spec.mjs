@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 describe("Recentからプロジェクトを開く", () => {
   it("読み込み画面を表示してからエディターへ進む", async () => {
-    const recentProject = await $("button.recent-projects__open");
+    const recentProject = await $("li.recent-projects__item:first-child > button.recent-projects__open");
     await recentProject.waitForClickable({ timeout: 30_000 });
 
     // 小さなProjectではclickのWebDriver応答より先に読み込みが終わる。
