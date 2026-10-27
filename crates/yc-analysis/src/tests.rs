@@ -230,7 +230,7 @@ fn nested_language_entry_with_forged_actual_size_is_rejected() {
     let oversized_contents = format!("{{\"large.key\":\"{}\"}}", "x".repeat(256 * 1024));
     let oversized_path = "assets/nested/lang/en_us.json";
     let mut nested_jar = make_jar(&[(oversized_path, oversized_contents.as_bytes())]);
-    // ZIPが小さいサイズを申告しても実際の展開量が上限に達した時点で止まることを確認する。
+    // ZIPが小さいサイズを申告した不正なエントリを読み込み結果に採用しない。
     patch_uncompressed_size(&mut nested_jar, oversized_path.as_bytes(), 1);
     let metadata = br#"{"id":"root","jars":["META-INF/jars/lib.jar"]}"#;
     let root_language = br#"{"root.key":"Root"}"#;
@@ -256,7 +256,9 @@ fn nested_language_entry_with_forged_actual_size_is_rejected() {
     assert!(data.result.warnings.iter().any(|warning| {
         warning.container_path == "META-INF/jars/lib.jar"
             && warning.path == oversized_path
-            && warning.message.contains("actual size exceeds 64 bytes")
+            && warning
+                .message
+                .contains("言語ファイルを読み取れませんでした")
     }));
 }
 

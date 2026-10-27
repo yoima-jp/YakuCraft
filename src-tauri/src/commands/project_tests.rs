@@ -506,7 +506,10 @@ fn benchmark_large_modpack_flow() {
         let mut entry = archive
             .by_index(index)
             .expect("resource pack entry should open");
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .expect("valid resource pack entry name")
+            .into_owned();
         if name == "pack.mcmeta" {
             let mut bytes = Vec::new();
             entry

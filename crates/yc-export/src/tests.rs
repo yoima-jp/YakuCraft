@@ -112,7 +112,11 @@ fn read_raw_entry(path: &std::path::Path, name: &str) -> (Vec<u8>, CompressionMe
     let file = fs::File::open(path).unwrap();
     let mut archive = ZipArchive::new(file).unwrap();
     let index = (0..archive.len())
-        .find(|index| archive.name_for_index(*index) == Some(name))
+        .find(|index| {
+            archive
+                .name_for_index(*index)
+                .is_some_and(|entry_name| entry_name.is_ok_and(|entry_name| entry_name == name))
+        })
         .unwrap();
     let mut entry = archive.by_index_raw(index).unwrap();
     let compression = entry.compression();
@@ -1089,7 +1093,7 @@ fn merged_resource_pack_exports_translations_when_source_locale_file_is_missing(
     assert!(
         archive
             .file_names()
-            .all(|name| name != "assets/empty/lang/ja_jp.json")
+            .all(|name| name.is_ok_and(|name| name != "assets/empty/lang/ja_jp.json"))
     );
     fs::remove_dir_all(directory).unwrap();
 }

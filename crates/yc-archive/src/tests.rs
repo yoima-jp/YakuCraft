@@ -187,12 +187,13 @@ fn enforces_actual_size_when_header_understates_entry() {
     limits.max_compression_ratio = u32::MAX;
     let mut archive = Archive::open_with_limits(file.path(), limits).unwrap();
 
+    let result = archive.read_entry("forged.txt", EntryKind::Text);
     assert!(matches!(
-        archive.read_entry("forged.txt", EntryKind::Text),
-        Err(ArchiveError::ArchiveRead(ArchiveReadError::EntryExcluded {
-            reason: EntryExclusionReason::ActualSizeExceeded { max_bytes: 64 },
+        result,
+        Err(ArchiveError::ArchiveRead(ArchiveReadError::ReadEntry {
+            source,
             ..
-        }))
+        })) if source.kind() == std::io::ErrorKind::InvalidData
     ));
     assert!(archive.cumulative_read_bytes().unwrap() <= 65);
 }
@@ -446,12 +447,13 @@ fn independent_reads_enforce_size_limits_and_restore_budget_after_errors() {
     let mut archive = Archive::open_with_limits(file.path(), limits).unwrap();
     archive.read_entry("valid.txt", EntryKind::Text).unwrap();
 
+    let result = archive.read_entry_independent("forged.txt", EntryKind::Text);
     assert!(matches!(
-        archive.read_entry_independent("forged.txt", EntryKind::Text),
-        Err(ArchiveError::ArchiveRead(ArchiveReadError::EntryExcluded {
-            reason: EntryExclusionReason::ActualSizeExceeded { max_bytes: 64 },
+        result,
+        Err(ArchiveError::ArchiveRead(ArchiveReadError::ReadEntry {
+            source,
             ..
-        }))
+        })) if source.kind() == std::io::ErrorKind::InvalidData
     ));
     assert_eq!(archive.cumulative_read_bytes().unwrap(), 2);
     assert!(matches!(
