@@ -23,10 +23,11 @@ use yc_project::{
     AnalysisData as ProjectAnalysisData, AssetRecord, DocumentEntryInput, IncludedNamespace,
     LanguageRecord, ModRecord, ModUnitRecord, ModUnitSourceKind, ModpackSource, NamespaceRecord,
     NestedArchiveRecord, OpenedProject, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
-    ProjectReviewSettings, ProjectSummary, RecentProject, RecentProjects, TranslationAssetMatch,
-    TranslationProgress, create_project_with_modpack, delete_project as remove_project,
-    list_projects, load_recent_projects, load_settings, normalize_project_name,
-    open_project as open_project_file, rename_project as rename_project_file, save_recent_projects,
+    ProjectReviewSettings, ProjectSource, ProjectSummary, RecentProject, RecentProjects,
+    TranslationAssetMatch, TranslationProgress, create_project_with_sources,
+    delete_project as remove_project, list_projects, load_recent_projects, load_settings,
+    normalize_project_name, open_project as open_project_file,
+    rename_project as rename_project_file, save_recent_projects,
 };
 use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
@@ -361,20 +362,24 @@ fn load_project_analysis(
         .repository()
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| database_error(error.to_string()))?;
-    let source_kind = opened
+    let unit = opened
         .repository()
         .list_mod_units()
         .map_err(|error| database_error(error.to_string()))?
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
-        .map(|unit| unit.source_kind)
         .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
-    let analysis = Arc::new(match source_kind {
+    let analysis = Arc::new(match unit.source_kind {
         ModUnitSourceKind::Jar => {
             yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), on_progress)
                 .map_err(analysis_error)?
         }
         ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_path)?.0,
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+            &source_path,
+            &shaderpack_namespace(&unit.source_filename),
+        )
+        .map_err(analysis_error)?,
     });
     cache_project_analysis(cache, project_id, mod_unit_id, Arc::clone(&analysis))?;
     Ok(analysis)
@@ -388,6 +393,66 @@ fn first_mod_unit_id(opened: &OpenedProject) -> Result<i64, AppError> {
         .first()
         .map(|unit| unit.id)
         .ok_or_else(|| database_error("プロジェクトにmodがありません".to_owned()))
+}
+
+fn unit_source_kind(
+    opened: &OpenedProject,
+    mod_unit_id: i64,
+) -> Result<ModUnitSourceKind, AppError> {
+    opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .find(|unit| unit.id == mod_unit_id)
+        .map(|unit| unit.source_kind)
+        .ok_or_else(|| database_error("modが見つかりません".to_owned()))
+}
+
+pub(crate) fn shaderpack_namespace(filename: &str) -> String {
+    let stem = Path::new(filename)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("pack");
+    let slug = stem
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_owned();
+    format!(
+        "shaderpack-{}",
+        if slug.is_empty() { "pack" } else { &slug }
+    )
+}
+
+fn source_kind_for_path(path: &Path) -> ModUnitSourceKind {
+    if !path.is_dir()
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+    {
+        // Mod JAR 内に `shaders/` があっても、既存の JAR として扱う。
+        return ModUnitSourceKind::Jar;
+    }
+    let source = if path.is_dir() {
+        yc_shaderpack::ShaderPackSource::Folder(path.to_path_buf())
+    } else {
+        yc_shaderpack::ShaderPackSource::Zip(path.to_path_buf())
+    };
+    if yc_shaderpack::is_shader_pack(&source).unwrap_or(false) {
+        ModUnitSourceKind::Shaderpack
+    } else {
+        ModUnitSourceKind::Jar
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -431,6 +496,7 @@ pub enum ScanModsFolderEvent {
         instance_dir: Option<PathBuf>,
         looks_like_instance_dir: bool,
         modpack_scan: Option<yc_modpack::ModpackScan>,
+        shaderpacks: Vec<yc_analysis::ShaderpackScanResult>,
     },
     Failed {
         job_id: String,
@@ -467,10 +533,57 @@ fn resolve_mods_folder(folder: &Path) -> Result<ResolvedModsFolder, std::io::Err
         });
     }
 
+    if folder.join("shaderpacks").is_dir() {
+        return Ok(ResolvedModsFolder {
+            scanned_folder: folder.to_path_buf(),
+            instance_dir: Some(folder.to_path_buf()),
+        });
+    }
+
     Ok(ResolvedModsFolder {
         scanned_folder: folder.to_path_buf(),
         instance_dir: yc_export::instance_dir_from_mods_dir(folder),
     })
+}
+
+fn scan_shaderpack_candidates(
+    selected_folder: &Path,
+    shaderpacks_folder: &Path,
+) -> Vec<yc_analysis::ShaderpackScanResult> {
+    let mut candidates = Vec::new();
+    if selected_folder.is_dir()
+        && yc_shaderpack::is_shader_pack(&yc_shaderpack::ShaderPackSource::Folder(
+            selected_folder.to_path_buf(),
+        ))
+        .unwrap_or(false)
+    {
+        candidates.push(selected_folder.to_path_buf());
+    }
+    if let Ok(entries) = fs::read_dir(shaderpacks_folder) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let source = if path.is_dir() {
+                yc_shaderpack::ShaderPackSource::Folder(path.clone())
+            } else if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+            {
+                yc_shaderpack::ShaderPackSource::Zip(path.clone())
+            } else {
+                continue;
+            };
+            if yc_shaderpack::is_shader_pack(&source).unwrap_or(false) {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+        .iter()
+        .map(|path| yc_analysis::scan_shaderpack(path))
+        .collect()
 }
 
 #[tauri::command]
@@ -523,6 +636,7 @@ pub fn scan_mods_folder(
                     },
                 )
                 .map(|results| {
+                    let selected_instance_root = resolved.scanned_folder != folder;
                     let candidate = resolved
                         .instance_dir
                         .clone()
@@ -531,19 +645,34 @@ pub fn scan_mods_folder(
                     let modpack_scan = (!scan.files.is_empty()
                         || scan.ftb_quests != yc_modpack::FtbQuestsStatus::None)
                         .then_some(scan);
-                    let instance_dir = resolved
-                        .instance_dir
-                        .or_else(|| modpack_scan.as_ref().map(|_| candidate));
-                    (resolved.scanned_folder, instance_dir, results, modpack_scan)
+                    let shaderpack_root =
+                        yc_modpack::resolve_game_directory(&candidate).join("shaderpacks");
+                    let shaderpacks = scan_shaderpack_candidates(&folder, &shaderpack_root);
+                    let game_directory = yc_modpack::resolve_game_directory(&candidate);
+                    let has_game_directory_marker = ["config", "kubejs", "shaderpacks"]
+                        .iter()
+                        .any(|directory| game_directory.join(directory).is_dir());
+                    let is_instance_dir = selected_instance_root
+                        || resolved
+                            .instance_dir
+                            .as_deref()
+                            .is_some_and(yc_export::looks_like_instance_dir)
+                        || modpack_scan.is_some()
+                        || has_game_directory_marker;
+                    let instance_dir = is_instance_dir.then_some(candidate);
+                    (
+                        resolved.scanned_folder,
+                        instance_dir,
+                        results,
+                        modpack_scan,
+                        shaderpacks,
+                    )
                 })
             });
 
         let event = match result {
-            Ok((scanned_folder, instance_dir, results, modpack_scan)) => {
-                let looks_like_instance_dir = instance_dir
-                    .as_deref()
-                    .is_some_and(yc_export::looks_like_instance_dir)
-                    || modpack_scan.is_some();
+            Ok((scanned_folder, instance_dir, results, modpack_scan, shaderpacks)) => {
+                let looks_like_instance_dir = instance_dir.is_some();
                 ScanModsFolderEvent::Completed {
                     job_id: task_job_id.clone(),
                     results,
@@ -551,6 +680,7 @@ pub fn scan_mods_folder(
                     instance_dir,
                     looks_like_instance_dir,
                     modpack_scan,
+                    shaderpacks,
                 }
             }
             Err(error) => {
@@ -1869,6 +1999,32 @@ pub(crate) fn create_project_from_sources_core(
     instance_path: Option<&Path>,
     include_modpack: bool,
     cancellation: &CancellationToken,
+    on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
+) -> Result<CreatedProject, AppError> {
+    let sources = sources
+        .iter()
+        .cloned()
+        .map(|path| ProjectSource {
+            kind: source_kind_for_path(&path),
+            path,
+        })
+        .collect::<Vec<_>>();
+    create_project_from_source_inputs_core(
+        paths,
+        &sources,
+        instance_path,
+        include_modpack,
+        cancellation,
+        on_progress,
+    )
+}
+
+pub(crate) fn create_project_from_source_inputs_core(
+    paths: &AppPaths,
+    sources: &[ProjectSource],
+    instance_path: Option<&Path>,
+    include_modpack: bool,
+    cancellation: &CancellationToken,
     mut on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
 ) -> Result<CreatedProject, AppError> {
     let modpack_data = if include_modpack {
@@ -1902,7 +2058,7 @@ pub(crate) fn create_project_from_sources_core(
             files,
         });
     let summary =
-        create_project_with_modpack(&paths.projects_dir, sources, instance_path, modpack_source)
+        create_project_with_sources(&paths.projects_dir, sources, instance_path, modpack_source)
             .map_err(|error| database_error(error.to_string()))?;
     let project_id = summary.id.clone();
     let result = (|| {
@@ -1954,6 +2110,49 @@ pub(crate) fn create_project_from_sources_core(
                     .save_asset_index(unit.id, ProjectAssetIndex::default())
                     .map_err(|error| database_error(error.to_string()))?;
                 analyses.insert(unit.id, Arc::new(analysis));
+                continue;
+            }
+            if unit.source_kind == ModUnitSourceKind::Shaderpack {
+                let analysis =
+                    yc_analysis::analyze_shaderpack(&source_path, &shaderpack_namespace(&filename));
+                let analysis = match analysis {
+                    Ok(analysis) if analysis.result.source_sha256 == unit.source_sha256 => {
+                        Arc::new(analysis)
+                    }
+                    Ok(_) => {
+                        failures.push(ModImportFailure {
+                            filename: filename.clone(),
+                            reason: "読み込み中にファイルの内容が変わりました。".to_owned(),
+                        });
+                        remove_failed_mod_unit(&opened, unit.id, &source_path)?;
+                        continue;
+                    }
+                    Err(error) => {
+                        failures.push(ModImportFailure {
+                            filename: filename.clone(),
+                            reason: analysis_error(error).user_message,
+                        });
+                        remove_failed_mod_unit(&opened, unit.id, &source_path)?;
+                        continue;
+                    }
+                };
+                let settings = analysis.default_review_settings();
+                let mut merged = merge_for_review(&analysis, &settings);
+                mark_shader_format_errors(&mut merged.entries);
+                let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+                opened
+                    .writer()
+                    .save_analysis(unit.id, project_analysis)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_review_settings(unit.id, settings, false)
+                    .map_err(|error| database_error(error.to_string()))?;
+                opened
+                    .writer()
+                    .save_asset_index(unit.id, ProjectAssetIndex::default())
+                    .map_err(|error| database_error(error.to_string()))?;
+                analyses.insert(unit.id, analysis);
                 continue;
             }
             let analysis = yc_analysis::analyze_jar(&source_path, cancellation, |progress| {
@@ -2115,8 +2314,25 @@ pub(crate) fn save_review_settings_core(
         .repository()
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| database_error(error.to_string()))?;
-    let analysis = yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), |_| {})
-        .map_err(analysis_error)?;
+    let unit = opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .find(|unit| unit.id == mod_unit_id)
+        .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+    let analysis = match unit.source_kind {
+        ModUnitSourceKind::Jar => {
+            yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), |_| {})
+                .map_err(analysis_error)?
+        }
+        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_path)?.0,
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+            &source_path,
+            &shaderpack_namespace(&unit.source_filename),
+        )
+        .map_err(analysis_error)?,
+    };
     save_review_settings_core_with_cached_asset_index(
         opened,
         mod_unit_id,
@@ -2160,7 +2376,12 @@ fn save_review_settings_core_with_cached_asset_index(
         .map_err(|error| database_error(error.to_string()))?;
     preserve_saved_translations(&mut merged.entries, saved_entries);
     let placeholder_started = Instant::now();
-    mark_existing_placeholder_errors(&mut merged.entries);
+    let source_kind = unit_source_kind(opened, mod_unit_id)?;
+    if source_kind == ModUnitSourceKind::Shaderpack {
+        mark_shader_format_errors(&mut merged.entries);
+    } else {
+        mark_existing_placeholder_errors(&mut merged.entries);
+    }
     tracing::info!(
         stage = "placeholder_validation",
         elapsed_ms = placeholder_started.elapsed().as_millis(),
@@ -2171,6 +2392,28 @@ fn save_review_settings_core_with_cached_asset_index(
         merged.missing_source_keys_count,
     );
     let project_analysis = project_analysis_data(analysis, merged.entries, &settings);
+
+    if source_kind == ModUnitSourceKind::Shaderpack {
+        on_progress(Some(65), "翻訳データを保存しています");
+        opened
+            .writer()
+            .save_analysis(mod_unit_id, project_analysis)
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_document_entries(mod_unit_id, Vec::new())
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_review_settings(mod_unit_id, settings, setup_completed)
+            .map_err(|error| database_error(error.to_string()))?;
+        opened
+            .writer()
+            .save_asset_index(mod_unit_id, ProjectAssetIndex::default())
+            .map_err(|error| database_error(error.to_string()))?;
+        on_progress(Some(90), "翻訳データを保存しました");
+        return Ok(merge_counts);
+    }
 
     on_progress(Some(30), "アセットとの対応を調べています");
     let asset_index_started = Instant::now();
@@ -2301,6 +2544,24 @@ fn review_asset_summary_core_with_index_and_progress(
         entry_count = merged.entries.len(),
         "Review summary phase completed"
     );
+    if unit_source_kind(opened, mod_unit_id)? == ModUnitSourceKind::Shaderpack {
+        on_progress(Some(85), "確認項目を整えています");
+        return Ok((
+            ReviewSetupSummary {
+                existing_japanese_translation_count: merged.existing_japanese_translation_count,
+                missing_source_keys_count: merged.missing_source_keys_count,
+                assets: ProjectAssetSummary {
+                    total: 0,
+                    block_models: 0,
+                    item_models: 0,
+                    entity_textures: 0,
+                    geometry_models: 0,
+                    unresolved_entries: 0,
+                },
+            },
+            ProjectAssetIndex::default(),
+        ));
+    }
     on_progress(Some(30), "アセットとの対応を調べています");
     let asset_index_started = Instant::now();
     let source_path = opened
@@ -2808,7 +3069,15 @@ fn project_details_from_stored_data(
         .iter()
         .filter_map(|mod_info| mod_info.minecraft_version.as_deref())
         .collect();
-    let minecraft_version_detection =
+    let all_shaderpacks = repository
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .iter()
+        .all(|unit| unit.source_kind == ModUnitSourceKind::Shaderpack);
+    // シェーダーパックだけのプロジェクトでは Mod metadata や pack.mcmeta を照合しない。
+    let minecraft_version_detection = if all_shaderpacks {
+        None
+    } else {
         yc_export::detect_minecraft_version(&metadata_ranges, None, &[]).or_else(|| {
             first_mod_unit_id(opened)
                 .ok()
@@ -2816,7 +3085,8 @@ fn project_details_from_stored_data(
                 .and_then(|source_jar| {
                     detect_minecraft_version_for_project(&source_jar, &metadata_ranges)
                 })
-        });
+        })
+    };
     let is_signed = match is_signed {
         Some(is_signed) => is_signed,
         None => {
@@ -3018,6 +3288,21 @@ fn mark_existing_placeholder_errors(entries: &mut [TranslationEntry]) {
         }) && !entry.flags.contains(&EntryFlag::PlaceholderError)
         {
             // 解析時に取り込む既存訳も編集済み訳と同じ基準で警告し、Exportまで不一致を引き継ぐ。
+            entry.flags.push(EntryFlag::PlaceholderError);
+        }
+    }
+}
+
+fn mark_shader_format_errors(entries: &mut [TranslationEntry]) {
+    for entry in entries.iter_mut().filter(|entry| {
+        entry.origin == TranslationOrigin::Existing && !entry.target_text.trim().is_empty()
+    }) {
+        if entry
+            .source_text
+            .as_deref()
+            .is_some_and(|source| yc_validation::shader_format_warning(source, &entry.target_text))
+            && !entry.flags.contains(&EntryFlag::PlaceholderError)
+        {
             entry.flags.push(EntryFlag::PlaceholderError);
         }
     }
@@ -3765,12 +4050,17 @@ fn analysis_error(error: yc_analysis::AnalysisError) -> AppError {
         yc_analysis::AnalysisError::Cancelled => cancelled_error(),
         yc_analysis::AnalysisError::NoLanguageFiles => AppError::new(
             "no_language_files",
-            "このJARから言語ファイルを見つけられませんでした。assets/*/lang を含むJARを選んでください。",
+            "翻訳できる言語ファイルが見つかりませんでした。",
+            Some(error.to_string()),
+        ),
+        yc_analysis::AnalysisError::Shaderpack(_) => AppError::new(
+            "shaderpack_read",
+            "シェーダーパックを読み込めませんでした。ZIP または shaders フォルダを確認してください。",
             Some(error.to_string()),
         ),
         other => AppError::new(
             "archive_read",
-            "JARを読み込めませんでした。ファイルが破損していないか確認してください。",
+            "ファイルを読み込めませんでした。破損していないか確認してください。",
             Some(other.to_string()),
         ),
     }

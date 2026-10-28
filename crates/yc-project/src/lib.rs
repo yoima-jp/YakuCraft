@@ -23,9 +23,9 @@ pub use model::{
     TranslationEntryKind, TranslationProgress, UpdateOrigin,
 };
 pub use project::{
-    ModpackSource, OpenedProject, cleanup_trash_directories, create_project,
-    create_project_with_modpack, delete_project, list_projects, normalize_project_name,
-    open_project, rename_project,
+    ModpackSource, OpenedProject, ProjectSource, cleanup_trash_directories, create_project,
+    create_project_with_modpack, create_project_with_sources, delete_project, list_projects,
+    normalize_project_name, open_project, rename_project,
 };
 pub use repository::Repository;
 pub use writer::ProjectWriter;

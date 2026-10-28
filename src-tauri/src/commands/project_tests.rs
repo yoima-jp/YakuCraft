@@ -17,8 +17,9 @@ use crate::{
     commands::{
         editor::update_entries_batch_core,
         export::{
-            ExportKindInput, export_language_file_core, export_modified_jar_core,
-            export_resource_pack_core, validate_project_core,
+            ExportKindInput, ShaderpackExportOutcome, export_language_file_core,
+            export_modified_jar_core, export_resource_pack_core, export_selected_shaderpacks_core,
+            restore_modpack_file_core, validate_project_core,
         },
     },
     paths::AppPaths,
@@ -1654,6 +1655,211 @@ fn included_namespace(mod_unit_id: i64, namespace: &str) -> IncludedNamespace {
         mod_unit_id,
         namespace: namespace.to_owned(),
     }
+}
+
+fn write_shaderpack_fixture_zip(path: &Path) {
+    let file = fs::File::create(path).expect("fixture shaderpack ZIP should be created");
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (entry_path, contents) in [
+        (
+            "shaders/lang/en_us.lang",
+            "shader.option.existing=Existing\nshader.option.format=§aColor\nshader.option.blank=Blank\n",
+        ),
+        ("shaders/lang/ja_jp.lang", "shader.option.existing=既存訳\n"),
+        ("shaders/shaders.properties", "oldLighting=true\n"),
+    ] {
+        archive
+            .start_file(entry_path, options)
+            .expect("fixture shaderpack entry should start");
+        archive
+            .write_all(contents.as_bytes())
+            .expect("fixture shaderpack entry should be written");
+    }
+    archive
+        .finish()
+        .expect("fixture shaderpack ZIP should be finalized");
+}
+
+fn create_shaderpack_project(
+    path: &Path,
+    instance_path: Option<&Path>,
+) -> crate::commands::project::CreatedProject {
+    let source_path = path.join("fixture-shaders.zip");
+    write_shaderpack_fixture_zip(&source_path);
+    let app_paths = AppPaths::create(path.join("app-data"))
+        .expect("application data directories should be created");
+    super::create_project_from_sources_core(
+        &app_paths,
+        &[source_path],
+        instance_path,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("shaderpack should be imported")
+}
+
+#[test]
+fn shaderpack_import_translation_and_zip_export_use_shader_lang_format() {
+    let temporary = TemporaryDirectory::create();
+    let source_path = temporary.0.join("fixture-shaders.zip");
+    write_shaderpack_fixture_zip(&source_path);
+    assert!(
+        yc_shaderpack::is_shader_pack(&yc_shaderpack::ShaderPackSource::Zip(source_path.clone()))
+            .expect("fixture ZIP should be inspected")
+    );
+    yc_analysis::analyze_shaderpack(&source_path, "shaderpack-fixture-shaders")
+        .expect("fixture ZIP should analyze as a shaderpack");
+    let app_paths = AppPaths::create(temporary.0.join("app-data"))
+        .expect("application data directories should be created");
+    let created = super::create_project_from_sources_core(
+        &app_paths,
+        std::slice::from_ref(&source_path),
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("shaderpack should be imported");
+    let opened = created.opened;
+    let mod_unit_id = first_mod_unit_id(&opened);
+    let mut entries = opened
+        .repository()
+        .list_entries(Some(mod_unit_id))
+        .expect("shaderpack translations should load");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.key == "shader.option.existing")
+            .and_then(|entry| entry.target_text.as_deref()),
+        Some("既存訳")
+    );
+    for entry in &mut entries {
+        let target_text = match entry.key.as_str() {
+            "shader.option.existing" => "既存訳",
+            "shader.option.format" => "§a色",
+            "shader.option.blank" => " \t ",
+            _ => unreachable!("only shaderpack fixture entries should exist"),
+        };
+        entry.target_text = Some(target_text.to_owned());
+    }
+    update_entries_batch_core(
+        &opened,
+        entries
+            .iter()
+            .map(|entry| EntryUpdate {
+                id: entry.id,
+                target_text: entry.target_text.clone().unwrap_or_default(),
+                origin: UpdateOrigin::Manual,
+            })
+            .collect(),
+    )
+    .expect("shaderpack translations should save");
+
+    let original_bytes = fs::read(&source_path).expect("read original shaderpack");
+    let output_directory = temporary.0.join("exports");
+    let outcome = export_selected_shaderpacks_core(
+        &opened,
+        &[mod_unit_id],
+        Some(&output_directory),
+        false,
+        false,
+        &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )
+    .expect("translated shaderpack should export");
+    let output_paths = match outcome {
+        ShaderpackExportOutcome::Completed { output_paths, .. } => output_paths,
+        ShaderpackExportOutcome::OverwriteRequired { .. } => {
+            panic!("fresh export folder should not require overwrite")
+        }
+    };
+    assert_eq!(output_paths.len(), 1);
+    let output_path = PathBuf::from(&output_paths[0]);
+    let japanese_lang = read_zip_entry(&output_path, "shaders/lang/ja_jp.lang")
+        .expect("Japanese shader language should be in the output ZIP");
+    let parsed = yc_shaderpack::parse_lang(&japanese_lang);
+    assert!(
+        parsed
+            .entries
+            .contains(&("shader.option.existing".to_owned(), "既存訳".to_owned()))
+    );
+    assert!(
+        parsed
+            .entries
+            .contains(&("shader.option.format".to_owned(), "§a色".to_owned()))
+    );
+    assert!(
+        !parsed
+            .entries
+            .iter()
+            .any(|(key, _)| key == "shader.option.blank")
+    );
+    assert_eq!(
+        fs::read(&source_path).expect("original shaderpack should remain"),
+        original_bytes
+    );
+}
+
+#[test]
+fn shaderpack_instance_deployment_can_be_restored() {
+    let temporary = TemporaryDirectory::create();
+    let instance = temporary.0.join("instance");
+    let shaderpacks = instance.join("shaderpacks");
+    fs::create_dir_all(&shaderpacks).expect("instance shaderpacks directory should exist");
+    let deployed_name = "fixture-shaders-ja.zip";
+    let target = shaderpacks.join(deployed_name);
+    let original_target = b"existing shaderpack file";
+    fs::write(&target, original_target).expect("write preexisting target");
+
+    let created = create_shaderpack_project(&temporary.0, Some(&instance));
+    let opened = created.opened;
+    let mod_unit_id = first_mod_unit_id(&opened);
+    let exports = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let first =
+        export_selected_shaderpacks_core(&opened, &[mod_unit_id], None, true, false, &exports)
+            .expect("existing target should request overwrite confirmation");
+    assert!(matches!(
+        first,
+        ShaderpackExportOutcome::OverwriteRequired { .. }
+    ));
+    let installed =
+        export_selected_shaderpacks_core(&opened, &[mod_unit_id], None, true, true, &exports)
+            .expect("confirmed shaderpack should deploy");
+    assert!(matches!(
+        installed,
+        ShaderpackExportOutcome::Completed {
+            directly_installed: true,
+            ..
+        }
+    ));
+    assert_ne!(
+        fs::read(&target).expect("read deployed output"),
+        original_target
+    );
+
+    restore_modpack_file_core(
+        &opened,
+        opened
+            .repository()
+            .list_file_deployments(false)
+            .expect("list active deployments")[0]
+            .id,
+        &exports,
+    )
+    .expect("shaderpack deployment should restore");
+    assert_eq!(
+        fs::read(&target).expect("read restored target"),
+        original_target
+    );
+    assert!(
+        opened
+            .repository()
+            .list_file_deployments(false)
+            .expect("list active deployments")
+            .is_empty()
+    );
 }
 
 #[test]

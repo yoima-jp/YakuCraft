@@ -29,8 +29,9 @@ function fileNameFromPath(path: string): string {
   return normalizedPath.slice(normalizedPath.lastIndexOf("/") + 1);
 }
 
-function isJarFilePath(path: string) {
-  return fileNameFromPath(path).toLowerCase().endsWith(".jar");
+function isSupportedArchivePath(path: string) {
+  const name = fileNameFromPath(path).toLowerCase();
+  return name.endsWith(".jar") || name.endsWith(".zip");
 }
 
 function errorMessage(error: unknown) {
@@ -176,10 +177,12 @@ export function HomeScreen() {
       });
   }, [setAnalysisError, setAnalysisJobId, setAnalysisProgress, setModImportFailures, switchProject]);
 
-  const handleJarPaths = useCallback((paths: string[]) => {
-    const jarPaths = paths.filter(isJarFilePath);
+  const handleJarPaths = useCallback((paths: string[], allowShaderpackFolder = false) => {
+    const jarPaths = allowShaderpackFolder && paths.length === 1
+      ? paths
+      : paths.filter(isSupportedArchivePath);
     if (jarPaths.length === 0) {
-      setError("JARファイルを選んでください。");
+      setError("JAR またはシェーダー ZIP を選んでください。");
       return;
     }
 
@@ -230,13 +233,13 @@ export function HomeScreen() {
   }, [cancelActiveAnalysis, goTo, setAnalysisError, setAnalysisJobId, setAnalysisProgress, setModImportFailures, setProjectOpenError, setScanFolderPath]);
 
   const handleDroppedPaths = useCallback((paths: string[]) => {
-    const jarPaths = paths.filter(isJarFilePath);
+    const jarPaths = paths.filter(isSupportedArchivePath);
     if (jarPaths.length > 0) {
       handleJarPaths(jarPaths);
     } else if (paths.length === 1) {
       void handleModsFolder(paths[0]);
     } else {
-      setError("JARファイルかフォルダを選んでください。");
+      setError("JAR、シェーダー ZIP またはフォルダを選んでください。");
     }
   }, [handleJarPaths, handleModsFolder]);
 
@@ -247,7 +250,7 @@ export function HomeScreen() {
       const selectedPath = await openFileDialog({
         multiple: true,
         directory: false,
-        filters: [{ name: "JARファイル", extensions: ["jar"] }],
+        filters: [{ name: "JAR / シェーダー ZIP", extensions: ["jar", "zip"] }],
       });
       if (typeof selectedPath === "string") handleJarPath(selectedPath);
       else if (selectedPath) handleJarPaths(selectedPath);
@@ -256,6 +259,19 @@ export function HomeScreen() {
       setError("ファイルを選べませんでした。もう一度お試しください。");
     }
   }, [handleJarPath, handleJarPaths, setProjectOpenError]);
+
+  const chooseShaderpackFolder = useCallback(async () => {
+    setError(null);
+    setProjectOpenError(null);
+    try {
+      const selectedPath = await openFileDialog({ multiple: false, directory: true });
+      const path = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
+      if (path) handleJarPaths([path], true);
+    } catch (cause: unknown) {
+      void logFrontendError(cause, "shaderpack folder picker");
+      setError("シェーダーパックフォルダを選べませんでした。もう一度お試しください。");
+    }
+  }, [handleJarPaths, setProjectOpenError]);
 
   const chooseModsFolder = useCallback(async () => {
     setError(null);
@@ -370,7 +386,7 @@ export function HomeScreen() {
       .onDragDropEvent((event) => {
         switch (event.payload.type) {
           case "enter": {
-            setDragState(event.payload.paths.some(isJarFilePath) || event.payload.paths.length === 1 ? "valid" : "invalid");
+            setDragState(event.payload.paths.some(isSupportedArchivePath) || event.payload.paths.length === 1 ? "valid" : "invalid");
             break;
           }
           case "over":
@@ -412,12 +428,12 @@ export function HomeScreen() {
       aria-labelledby="home-title"
     >
       <DropArea isDragging={dragState === "valid"}>
-        <h1 className="page-title" id="home-title">JAR またはフォルダをドロップ</h1>
+        <h1 className="page-title" id="home-title">JAR・シェーダーパックをドロップ</h1>
         {dragState === "invalid" && (
-          <output className="home-screen__drop-message" aria-live="polite">JARファイルかフォルダを選んでください。</output>
+          <output className="home-screen__drop-message" aria-live="polite">JAR、シェーダー ZIP またはフォルダを選んでください。</output>
         )}
         <div className="home-screen__actions">
-          <Tooltip content="JARを選ぶ" shortcut="Ctrl+O">
+          <Tooltip content="JAR・シェーダー ZIP を選ぶ" shortcut="Ctrl+O">
             <PrimaryButton
               data-testid="home-open-jar"
               onClick={() => void chooseJar()}
@@ -428,6 +444,9 @@ export function HomeScreen() {
           </Tooltip>
           <SecondaryButton data-testid="home-open-mods-folder" onClick={() => void chooseModsFolder()}>
             フォルダから読み込む
+          </SecondaryButton>
+          <SecondaryButton data-testid="home-open-shaderpack-folder" onClick={() => void chooseShaderpackFolder()}>
+            シェーダーパックフォルダを選ぶ
           </SecondaryButton>
         </div>
       </DropArea>

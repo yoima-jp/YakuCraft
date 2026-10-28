@@ -527,7 +527,9 @@ fn extension_is(path: &str, expected: &str) -> bool {
 }
 
 fn looks_like_game_directory(path: &Path) -> bool {
-    path.join("config").is_dir() || path.join("kubejs").is_dir()
+    path.join("config").is_dir()
+        || path.join("kubejs").is_dir()
+        || path.join("shaderpacks").is_dir()
 }
 
 fn collect_matching_files(

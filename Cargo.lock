@@ -6074,6 +6074,7 @@ dependencies = [
  "yc-metadata",
  "yc-modpack",
  "yc-project",
+ "yc-shaderpack",
  "yc-validation",
  "zip 9.1.2",
 ]
@@ -6107,6 +6108,7 @@ dependencies = [
 name = "yc-analysis"
 version = "1.1.2"
 dependencies = [
+ "indexmap 2.14.2",
  "serde",
  "sha2 0.11.1",
  "thiserror 2.0.21",
@@ -6114,6 +6116,7 @@ dependencies = [
  "yc-archive",
  "yc-language",
  "yc-metadata",
+ "yc-shaderpack",
  "zip 9.1.2",
 ]
 
@@ -6205,6 +6208,7 @@ dependencies = [
  "yc-archive",
  "yc-language",
  "yc-metadata",
+ "yc-shaderpack",
  "yc-validation",
  "zip 9.1.2",
 ]

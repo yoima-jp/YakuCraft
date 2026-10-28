@@ -328,7 +328,7 @@ export function ReviewScreen() {
           <dl className={`review-details${modUnits.length > 1 ? " review-details--mods" : ""}`}>
             {modUnits.length > 1 ? (
               <div>
-                <dt>Mod 合計 {modUnits.length.toLocaleString("ja-JP")} 件・名前空間 {details.namespaces.length.toLocaleString("ja-JP")} 件</dt>
+                <dt>対象合計 {modUnits.length.toLocaleString("ja-JP")} 件・名前空間 {details.namespaces.length.toLocaleString("ja-JP")} 件</dt>
                 <dd>
                   <ul
                     className="review-mod-list"
@@ -348,8 +348,12 @@ export function ReviewScreen() {
                           data-index={virtualRow.index}
                           style={{ transform: `translateY(${virtualRow.start}px)` }}
                         >
-                          <strong>{unit.sourceKind === "modpack" ? MODPACK_UNIT_NAME : unit.name ?? unit.modId ?? "不明"}</strong>
-                          {unit.sourceKind !== "modpack" && (
+                          <strong>{unit.sourceKind === "modpack"
+                            ? MODPACK_UNIT_NAME
+                            : unit.sourceKind === "shaderpack"
+                              ? `シェーダーパック: ${unit.sourceFilename}`
+                              : unit.name ?? unit.modId ?? "不明"}</strong>
+                          {(unit.sourceKind === undefined || unit.sourceKind === "jar") && (
                             <span className="review-mod-list__version">{unit.version ?? "バージョン不明"} · {unit.sourceFilename}</span>
                           )}
                           <div className="review-mod-list__namespaces">
@@ -371,20 +375,24 @@ export function ReviewScreen() {
                     ? MODPACK_UNIT_NAME
                     : modUnits[0]?.sourceFilename ?? details.project.displayName}</dd>
                 </div>
-                <div><dt>Mod名</dt><dd>{details.mods[0]?.name ?? "不明"}</dd></div>
-                <div><dt>バージョン</dt><dd>{details.mods[0]?.version ?? "不明"}</dd></div>
-                <div>
-                  <dt>Minecraft</dt>
-                  <dd>
-                    {details.minecraftVersionDetection
-                      ? details.minecraftVersionDetection.version
-                      : details.mods[0]?.minecraftVersion ?? "不明"}
-                    {details.minecraftVersionDetection && (
-                      <small className="review-details__hint">{minecraftVersionEvidence(details.minecraftVersionDetection)}</small>
-                    )}
-                  </dd>
-                </div>
-                <div><dt>ローダー</dt><dd>{details.mods[0]?.loader ?? "不明"}</dd></div>
+                {modUnits[0]?.sourceKind !== "shaderpack" && (
+                  <>
+                    <div><dt>Mod名</dt><dd>{details.mods[0]?.name ?? "不明"}</dd></div>
+                    <div><dt>バージョン</dt><dd>{details.mods[0]?.version ?? "不明"}</dd></div>
+                    <div>
+                      <dt>Minecraft</dt>
+                      <dd>
+                        {details.minecraftVersionDetection
+                          ? details.minecraftVersionDetection.version
+                          : details.mods[0]?.minecraftVersion ?? "不明"}
+                        {details.minecraftVersionDetection && (
+                          <small className="review-details__hint">{minecraftVersionEvidence(details.minecraftVersionDetection)}</small>
+                        )}
+                      </dd>
+                    </div>
+                    <div><dt>ローダー</dt><dd>{details.mods[0]?.loader ?? "不明"}</dd></div>
+                  </>
+                )}
                 <div>
                   <dt>名前空間</dt>
                   <dd>{details.namespaces.map((item) => item.namespace).join("、") || "不明"}</dd>
@@ -478,7 +486,7 @@ export function ReviewScreen() {
               </TertiaryButton>}
             </div>
             <p className="review-summary__meta">
-              {modUnits.length > 1 && "全Mod合計 · "}
+              {modUnits.length > 1 && "全対象合計 · "}
               {selectedLocaleCount.toLocaleString("ja-JP")} 件
               {details.recommendedSourceLocale?.toLowerCase() === sourceLocale.toLowerCase() && <span>おすすめ</span>}
             </p>
@@ -502,7 +510,7 @@ export function ReviewScreen() {
         <>
           <h1 className="page-title">既存の日本語訳を引き継ぎますか？</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全Mod合計で "}
+            {modUnits.length > 1 && "全対象合計で "}
             {currentReviewSummary?.existingJapaneseTranslationCount.toLocaleString("ja-JP") ?? "0"} 件見つかりました
           </p>
           <RadioGroup
@@ -525,7 +533,7 @@ export function ReviewScreen() {
         <>
           <h1 className="page-title">不足キーを補完しますか？</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全Mod合計で "}
+            {modUnits.length > 1 && "全対象合計で "}
             翻訳元にないキーが {currentReviewSummary?.missingSourceKeysCount.toLocaleString("ja-JP") ?? "0"} 件あります
           </p>
           <RadioGroup
@@ -548,7 +556,7 @@ export function ReviewScreen() {
         <>
           <h1 className="page-title">プレビュー用アセット</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全Mod合計で "}
+            {modUnits.length > 1 && "全対象合計で "}
             プレビューに使えるアセットを {assetSummary.total.toLocaleString("ja-JP")} 件見つけました
           </p>
           <dl className="review-details">

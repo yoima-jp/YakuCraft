@@ -21,3 +21,4 @@ yc-archive = { path = "../yc-archive" }
 yc-language = { path = "../yc-language" }
 yc-metadata = { path = "../yc-metadata" }
 yc-validation = { path = "../yc-validation" }
+yc-shaderpack = { path = "../yc-shaderpack" }

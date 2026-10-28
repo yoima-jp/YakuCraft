@@ -134,7 +134,7 @@ export interface IncludedNamespaceDto {
 
 export interface ModUnitSummaryDto {
   id: number;
-  sourceKind?: "jar" | "modpack";
+  sourceKind?: "jar" | "modpack" | "shaderpack";
   sourceFilename: string;
   modId: string | null;
   name: string | null;

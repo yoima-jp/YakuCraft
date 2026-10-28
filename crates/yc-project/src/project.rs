@@ -43,6 +43,12 @@ pub struct ModpackSource<'a> {
     pub files: &'a BTreeMap<String, Vec<u8>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ProjectSource {
+    pub path: PathBuf,
+    pub kind: crate::ModUnitSourceKind,
+}
+
 impl OpenedProject {
     pub fn directory(&self) -> &Path {
         &self.directory
@@ -121,6 +127,23 @@ pub fn create_project_with_modpack(
     instance_path: Option<&Path>,
     modpack: Option<ModpackSource<'_>>,
 ) -> Result<ProjectSummary> {
+    let sources: Vec<_> = sources
+        .iter()
+        .cloned()
+        .map(|path| ProjectSource {
+            path,
+            kind: crate::ModUnitSourceKind::Jar,
+        })
+        .collect();
+    create_project_with_sources(projects_root, &sources, instance_path, modpack)
+}
+
+pub fn create_project_with_sources(
+    projects_root: impl AsRef<Path>,
+    sources: &[ProjectSource],
+    instance_path: Option<&Path>,
+    modpack: Option<ModpackSource<'_>>,
+) -> Result<ProjectSummary> {
     let projects_root = projects_root.as_ref();
     if sources.is_empty() && modpack.is_none() {
         return Err(std::io::Error::new(
@@ -143,7 +166,7 @@ pub fn create_project_with_modpack(
         let created_at = now_rfc3339()?;
         let transaction = connection.transaction()?;
         let initial_display_name = if modpack.is_none() && sources.len() == 1 {
-            source_filename(&sources[0])?
+            source_filename(&sources[0].path)?
         } else {
             instance_path
                 .and_then(Path::file_name)
@@ -167,20 +190,31 @@ pub fn create_project_with_modpack(
         for (index, source) in sources.iter().enumerate() {
             let unit_id = i64::try_from(index + 1)
                 .map_err(|_| ProjectError::InvalidDatabaseValue("too many mod units".to_owned()))?;
-            let filename = source_filename(source)?;
-            let original_path = fs::canonicalize(source)?;
-            let stored_path = format!("sources/{unit_id}.jar");
+            let filename = source_filename(&source.path)?;
+            let original_path = fs::canonicalize(&source.path)?;
+            let extension = if source.kind == crate::ModUnitSourceKind::Shaderpack {
+                "zip"
+            } else {
+                "jar"
+            };
+            let stored_path = format!("sources/{unit_id}.{extension}");
             let copied_source_path = project_directory.join(&stored_path);
-            // プレビューや再書き出しの基準になるコピーを保持し、選択元JARは変更しない。
-            fs::copy(source, &copied_source_path)?;
+            // 翻訳・再書き出しの基準をプロジェクト内に保持し、選択元ファイルは変更しない。
+            if source.kind == crate::ModUnitSourceKind::Shaderpack && source.path.is_dir() {
+                yc_shaderpack::pack_folder(&source.path, &copied_source_path)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+            } else {
+                fs::copy(&source.path, &copied_source_path)?;
+            }
             let source_sha256 = digest_to_hex(yc_archive::sha256_file(&copied_source_path)?);
             transaction.execute(
                 "INSERT INTO mod_units (
-                    id, sort_index, source_filename, source_sha256, stored_path,
+                    id, source_kind, sort_index, source_filename, source_sha256, stored_path,
                     original_path, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     unit_id,
+                    source.kind.as_db(),
                     i64::try_from(index).map_err(|_| {
                         ProjectError::InvalidDatabaseValue("too many mod units".to_owned())
                     })?,

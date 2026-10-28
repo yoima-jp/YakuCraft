@@ -13,6 +13,7 @@ const FORMAT_LABELS = {
   modifiedJar: "Mod JAR",
   languageFile: "言語ファイル",
   modpackFiles: "Modpack ファイル",
+  shaderpackZip: "日本語化したシェーダーパック",
 } as const;
 
 function errorMessage(error: unknown) {
@@ -78,12 +79,19 @@ export function ExportCompletionScreen() {
         : "元のJARは変更していません";
       break;
     case "languageFile":
-      instruction = `配置先: assets/${completion.namespace}/lang/`;
+      instruction = completion.sourceKind === "shaderpack"
+        ? "配置先: shaders/lang/"
+        : `配置先: assets/${completion.namespace}/lang/`;
       break;
     case "modpackFiles":
       instruction = runDetails?.directInstall
         ? "配置したファイルは書き出し画面から元に戻せます"
         : "ZIP を展開してインスタンスへ配置してください";
+      break;
+    case "shaderpackZip":
+      instruction = runDetails?.directInstall
+        ? "配置した ZIP は書き出し画面から元に戻せます。ゲーム内のシェーダー選択で選び直してください"
+        : "ゲーム内のシェーダー選択で選び直してください";
       break;
   }
 
@@ -133,8 +141,8 @@ export function ExportCompletionScreen() {
         </section>
       )}
       {!!runDetails?.modResults.length && (
-        <section className="export-completion__section" aria-label="modごとの結果">
-          <h2>modごとの結果</h2>
+        <section className="export-completion__section" aria-label="対象ごとの結果">
+          <h2>対象ごとの結果</h2>
           <ul className="export-completion__mod-results">
             {runDetails.modResults.map((result) => (
               <li key={result.modUnitId}>

@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use indexmap::IndexMap;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -24,20 +25,24 @@ use yc_archive::{
 };
 use yc_language::{
     DiscoveredLanguageFile, LanguageArchivePath, LanguageFileFormat, LanguageParseWarning,
-    ParsedLanguageFile, PatchouliArchiveFile, ReviewSettings, TranslationEntry, TranslationOrigin,
-    discover_books, discover_language_files, extract_entries, extract_i18n_keys, merge_languages,
-    normalize_locale,
+    ParsedLanguageFile, ParsedLanguageValue, PatchouliArchiveFile, ReviewSettings,
+    TranslationEntry, TranslationOrigin, discover_books, discover_language_files, extract_entries,
+    extract_i18n_keys, merge_languages, normalize_locale,
 };
 use yc_metadata::{ArchiveLookup, MetadataAnalysis, ModInfo, analyze_metadata};
 
 pub mod scan;
 pub use scan::{
-    ModLanguageStatus, ModScanResult, ScanOptions, ScanProgress, scan_mod_jar, scan_mods_folder,
+    ModLanguageStatus, ModScanResult, ScanOptions, ScanProgress, ShaderpackScanResult,
+    scan_mod_jar, scan_mods_folder, scan_shaderpack,
 };
 
 const HASH_BUFFER_SIZE: usize = 64 * 1024;
 const PROGRESS_ENTRY_INTERVAL: u64 = 128;
 const PROGRESS_TIME_INTERVAL: Duration = Duration::from_millis(100);
+// インスタンス一覧でも解析結果を保持するため、JARの軽量スキャンと同じ読み込み量に抑える。
+const MAX_SHADERPACK_LANG_FILE_SIZE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SHADERPACK_LANG_TOTAL_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 解析を中断するための共有トークン。
 #[derive(Clone, Debug, Default)]
@@ -270,8 +275,192 @@ pub enum AnalysisError {
         #[source]
         source: std::io::Error,
     },
+    #[error("シェーダーパックを解析できません: {0}")]
+    Shaderpack(String),
     #[error("解析はキャンセルされました")]
     Cancelled,
+}
+
+/// シェーダーパックの `shaders/lang/` を通常の翻訳解析結果へ変換する。
+pub fn analyze_shaderpack(
+    path: impl AsRef<Path>,
+    namespace: &str,
+) -> Result<AnalysisData, AnalysisError> {
+    let path = path.as_ref();
+    let source = if path.is_dir() {
+        yc_shaderpack::ShaderPackSource::Folder(path.to_path_buf())
+    } else {
+        yc_shaderpack::ShaderPackSource::Zip(path.to_path_buf())
+    };
+    let pack = yc_shaderpack::analyze_source(&source)
+        .map_err(|error| AnalysisError::Shaderpack(error.to_string()))?;
+    let mut archive = if path.is_file() {
+        let file = std::fs::File::open(path)
+            .map_err(|error| AnalysisError::Shaderpack(error.to_string()))?;
+        Some(
+            zip::ZipArchive::new(file)
+                .map_err(|error| AnalysisError::Shaderpack(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let mut parsed_languages = Vec::with_capacity(pack.files.len());
+    let mut language_files = Vec::with_capacity(pack.files.len());
+    let mut warnings = Vec::new();
+    let mut total_read_bytes = 0_u64;
+    for file in &pack.files {
+        let remaining_bytes = MAX_SHADERPACK_LANG_TOTAL_READ_BYTES.saturating_sub(total_read_bytes);
+        let file_limit = MAX_SHADERPACK_LANG_FILE_SIZE_BYTES.min(remaining_bytes);
+        let bytes = if let Some(archive) = archive.as_mut() {
+            let mut entry = archive
+                .by_name(&file.path)
+                .map_err(|error| AnalysisError::Shaderpack(error.to_string()))?;
+            if entry.size() > file_limit {
+                return Err(shaderpack_lang_limit_error(&file.path, file_limit));
+            }
+            read_shaderpack_lang_file(&mut entry, &file.path, file_limit)?
+        } else {
+            let lang_path = path.join(&file.path);
+            let entry = File::open(&lang_path)
+                .map_err(|error| AnalysisError::Shaderpack(format!("{}: {error}", file.path)))?;
+            read_shaderpack_lang_file(entry, &file.path, file_limit)?
+        };
+        total_read_bytes = total_read_bytes.saturating_add(bytes.len() as u64);
+        let parsed = yc_shaderpack::parse_lang(&bytes);
+        for warning in &parsed.warnings {
+            warnings.push(AnalysisWarning {
+                container_path: String::new(),
+                path: file.path.clone(),
+                message: warning.clone(),
+            });
+        }
+        let mut entries = IndexMap::new();
+        for (key, text) in &parsed.entries {
+            entries.insert(
+                key.clone(),
+                ParsedLanguageValue {
+                    text: Some(text.clone()),
+                    malformed_source: false,
+                },
+            );
+        }
+        let normalized_locale = normalize_locale(&file.locale);
+        let discovered = DiscoveredLanguageFile {
+            namespace: namespace.to_owned(),
+            locale: file.locale.clone(),
+            normalized_locale,
+            format: LanguageFileFormat::LegacyLang,
+            container_path: String::new(),
+            archive_path: file.path.clone(),
+            file_name: file.filename.clone(),
+        };
+        language_files.push(LanguageFileInfo {
+            namespace: namespace.to_owned(),
+            locale: file.locale.clone(),
+            format: LanguageFileFormat::LegacyLang,
+            entry_count: entries.len(),
+            container_path: String::new(),
+            archive_path: file.path.clone(),
+        });
+        parsed_languages.push(ParsedLanguageFile {
+            file: discovered,
+            entries,
+            warnings: parsed
+                .warnings
+                .iter()
+                .filter_map(|warning| {
+                    warning.strip_prefix("duplicate key: ").map(|key| {
+                        LanguageParseWarning::DuplicateKey {
+                            key: key.to_owned(),
+                        }
+                    })
+                })
+                .collect(),
+            legacy_parse_escapes: false,
+        });
+    }
+    if parsed_languages.iter().all(|file| file.entries.is_empty()) {
+        return Err(AnalysisError::NoLanguageFiles);
+    }
+
+    let cancellation = CancellationToken::default();
+    let included_namespaces = vec![namespace.to_owned()];
+    let recommendation = source_language_recommendation_cancellable(
+        &parsed_languages,
+        &included_namespaces,
+        &cancellation,
+    )?;
+    let default_settings = ReviewSettings {
+        source_locale: recommendation.clone().unwrap_or_default(),
+        fallback_priority: Vec::new(),
+        preserve_existing_japanese: true,
+        fill_missing_from_other_languages: true,
+        included_namespaces,
+    };
+    let existing_japanese_translation_count = count_existing_japanese_cancellable(
+        &parsed_languages,
+        &default_settings.included_namespaces,
+        &cancellation,
+    )?;
+    let missing_source_keys_count = count_missing_source_keys_cancellable(
+        &parsed_languages,
+        &default_settings.included_namespaces,
+        &default_settings.source_locale,
+        &cancellation,
+    )?;
+    let source_sha256 = if path.is_file() {
+        yc_archive::sha256_file(path)?
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    } else {
+        String::new()
+    };
+    Ok(AnalysisData {
+        result: AnalysisResult {
+            source_sha256,
+            mods: Vec::new(),
+            namespaces: vec![NamespaceInfo {
+                namespace: namespace.to_owned(),
+                container_path: String::new(),
+                included: true,
+            }],
+            nested_archives: Vec::new(),
+            language_files,
+            patchouli_books: Vec::new(),
+            recommended_source_locale: recommendation,
+            existing_japanese_translation_count,
+            missing_source_keys_count,
+            warnings,
+            is_signed: false,
+        },
+        parsed_languages,
+        patchouli_entries: Vec::new(),
+        patchouli_i18n_keys: Vec::new(),
+        default_settings,
+    })
+}
+
+fn read_shaderpack_lang_file(
+    reader: impl Read,
+    path: &str,
+    limit: u64,
+) -> Result<Vec<u8>, AnalysisError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| AnalysisError::Shaderpack(format!("{path}: {error}")))?;
+    if bytes.len() as u64 > limit {
+        return Err(shaderpack_lang_limit_error(path, limit));
+    }
+    Ok(bytes)
+}
+
+fn shaderpack_lang_limit_error(path: &str, limit: u64) -> AnalysisError {
+    AnalysisError::Shaderpack(format!(
+        "langファイルの読み込み上限（{limit} bytes）を超えています: {path}"
+    ))
 }
 
 /// JARを検証し、メタデータと言語ファイルをメモリ上へ解析する。

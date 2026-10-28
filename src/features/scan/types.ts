@@ -28,6 +28,16 @@ export interface ModScanResultDto {
   status: ModLanguageStatusDto;
 }
 
+export interface ShaderpackScanResultDto {
+  path: string;
+  fileName: string;
+  fileSizeBytes: number | null;
+  sha256: string | null;
+  sourceKeyCount: number;
+  translatedKeyCount: number;
+  status: ModLanguageStatusDto;
+}
+
 export interface ModpackScanDto {
   gameDirectory: string;
   ftbQuests: "none" | "single" | "split" | "legacy_inline";
@@ -60,5 +70,6 @@ export type ScanModsFolderEventDto =
     instanceDir: string | null;
     looksLikeInstanceDir: boolean;
     modpackScan: ModpackScanDto | null;
+    shaderpacks: ShaderpackScanResultDto[];
   }
   | { kind: "failed"; jobId: string; error: AppError };

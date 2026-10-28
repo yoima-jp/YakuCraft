@@ -90,6 +90,52 @@ fn project_creation_copies_source_and_matches_schema_versions() {
 }
 
 #[test]
+fn shaderpack_project_source_is_zipped_and_keeps_its_database_kind() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let shaderpack = temporary.path().join("shaderpack-folder");
+    fs::create_dir_all(shaderpack.join("shaders/lang")).expect("create shaderpack language folder");
+    fs::write(
+        shaderpack.join("shaders/lang/en_us.lang"),
+        "shader.option.quality=Quality\n",
+    )
+    .expect("write source language file");
+
+    let project = crate::create_project_with_sources(
+        &projects_root,
+        &[crate::ProjectSource {
+            path: shaderpack,
+            kind: crate::ModUnitSourceKind::Shaderpack,
+        }],
+        None,
+        None,
+    )
+    .expect("create shaderpack project");
+    let project_directory = projects_root.join(&project.id);
+    let stored_source = project_directory.join("sources/1.zip");
+    let mut archive = zip::ZipArchive::new(fs::File::open(stored_source).expect("open stored ZIP"))
+        .expect("stored shaderpack should be a ZIP");
+    assert!(archive.by_name("shaders/lang/en_us.lang").is_ok());
+
+    let repository = crate::Repository::new(project_directory.join("project.sqlite"));
+    let unit = repository
+        .list_mod_units()
+        .expect("read source kind")
+        .remove(0);
+    assert_eq!(unit.source_kind, crate::ModUnitSourceKind::Shaderpack);
+    let connection = Connection::open(project_directory.join("project.sqlite"))
+        .expect("open shaderpack project database");
+    let stored_kind: String = connection
+        .query_row(
+            "SELECT source_kind FROM mod_units WHERE id = ?1",
+            [unit.id],
+            |row| row.get(0),
+        )
+        .expect("read database source kind");
+    assert_eq!(stored_kind, "shaderpack");
+}
+
+#[test]
 fn glossary_repository_and_writer_cover_crud_and_case_insensitive_upsert() {
     let temporary = TestDirectory::new();
     let projects_root = temporary.path().join("projects");
