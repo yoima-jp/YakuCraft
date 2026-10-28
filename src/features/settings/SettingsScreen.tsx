@@ -40,15 +40,6 @@ const PROVIDERS: Array<[AiProviderId, string]> = [
   ["deepl", "DeepL"],
 ];
 
-const CHATGPT_MODELS = [
-  { value: "gpt-6-sol", label: "GPT-6 Sol" },
-  { value: "gpt-6-luna", label: "GPT-6 Luna" },
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-  { value: "gpt-5.5", label: "GPT-5.5" },
-];
-
 function aiSaveConfig(settings: AiSettingsDto) {
   return {
     provider: settings.provider,
@@ -173,7 +164,7 @@ export function SettingsScreen() {
     const generation = ++modelRequestGeneration.current;
     setModelOptions([]);
     setModelError(null);
-    if (config.provider === "chatgpt" || config.provider === "deepl") {
+    if (config.provider === "deepl") {
       return;
     }
     try {
@@ -198,13 +189,14 @@ export function SettingsScreen() {
   }, [closeSettings]);
 
   useEffect(() => {
-    if (!modelProvider || !modelBaseUrl?.trim()) return;
-    const canListWithoutApiKey = modelProvider === "ollama"
+    if (!modelProvider || (modelProvider !== "chatgpt" && !modelBaseUrl?.trim())) return;
+    const canListWithoutApiKey = modelProvider === "chatgpt"
+      || modelProvider === "ollama"
       || modelProvider === "lm-studio"
       || modelProvider === "openai-compatible";
     if (!apiKey && !modelProviderConfigured && !canListWithoutApiKey) return;
     const timeout = window.setTimeout(() => {
-      void refreshModels({ provider: modelProvider, baseUrl: modelBaseUrl }, apiKey);
+      void refreshModels({ provider: modelProvider, baseUrl: modelBaseUrl ?? "" }, apiKey);
     }, 350);
     return () => window.clearTimeout(timeout);
   }, [apiKey, modelBaseUrl, modelProvider, modelProviderConfigured, refreshModels]);
@@ -255,6 +247,10 @@ export function SettingsScreen() {
 
   const saveProvider = async () => {
     if (!ai) return;
+    if (ai.provider !== "deepl" && !ai.model.trim()) {
+      setModelError("モデルを入力してください。");
+      return;
+    }
     setBusy(true);
     setError(null);
     setMessage(null);
@@ -515,18 +511,6 @@ export function SettingsScreen() {
                 )
               )}
               {ai?.provider !== "deepl" && (
-                ai?.provider === "chatgpt" ? (
-                  <div className="settings-field">
-                    <span>モデル</span>
-                    <Select
-                      aria-label="モデル"
-                      value={ai.model}
-                      disabled={busy || loginPending}
-                      onChange={(model) => setAi((current) => current ? { ...current, model } : current)}
-                      options={CHATGPT_MODELS}
-                    />
-                  </div>
-                ) : (
                   <div className="settings-field">
                     <label htmlFor="ai-model">モデル</label>
                     <input
@@ -548,7 +532,6 @@ export function SettingsScreen() {
                     )}
                     {modelError && <span id="ai-model-error" className="settings-field__hint settings-field__hint--error" role="alert">{modelError}</span>}
                   </div>
-                )
               )}
               {ai?.provider === "openai-compatible" && (
                 <label className="settings-field">

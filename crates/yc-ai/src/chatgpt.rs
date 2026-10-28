@@ -32,6 +32,9 @@ const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_ORIGIN: &str = "https://auth.openai.com";
 const TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
 const RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+// Codex CLI のバージョン。古い値では新モデルが返らない可能性があるため適宜更新する。
+const CODEX_CLIENT_VERSION: &str = "0.162.1";
+const MAX_MODELS_RESPONSE_BYTES: usize = 1024 * 1024;
 const CALLBACK_PORT: u16 = 1455;
 const CALLBACK_URI: &str = "http://localhost:1455/auth/callback";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -144,8 +147,12 @@ pub(crate) fn account_label_from_credential(serialized: &str) -> Option<String> 
         .filter(|email| !email.trim().is_empty())
 }
 
-fn model_is_supported(model: &str) -> bool {
-    CHATGPT_MODELS.iter().any(|candidate| candidate.id == model)
+pub fn valid_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 128
+        && model
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b':'))
 }
 
 /// ブラウザーを開く処理はTauri側に置き、このcrateはURL生成とcallback処理を分離する。
@@ -567,7 +574,7 @@ impl ChatGptProvider {
         responses_endpoint: Url,
         token_endpoint: Url,
     ) -> Result<Self> {
-        if !model_is_supported(&model)
+        if !valid_model_id(&model)
             || responses_endpoint.scheme() != "https"
                 && !responses_endpoint.host_str().is_some_and(is_loopback_host)
             || token_endpoint.scheme() != "https"
@@ -717,6 +724,75 @@ impl ChatGptProvider {
         }
         *credential = current;
         Ok(())
+    }
+
+    pub async fn list_models(&self, cancellation: &CancellationToken) -> Result<Vec<String>> {
+        let mut endpoint = self.responses_endpoint.clone();
+        endpoint.set_path("/backend-api/codex/models");
+        endpoint
+            .query_pairs_mut()
+            .append_pair("client_version", CODEX_CLIENT_VERSION);
+        let send = |credential: RequestCredential| {
+            let endpoint = endpoint.clone();
+            async move {
+                self.http
+                    .send_with_retry(
+                        || {
+                            self.http
+                                .client()
+                                .get(endpoint.clone())
+                                .header(reqwest::header::ACCEPT, "application/json")
+                                .bearer_auth(&credential.access)
+                                .header("ChatGPT-Account-Id", &credential.account_id)
+                                .header("originator", "yakucraft")
+                        },
+                        cancellation,
+                    )
+                    .await
+            }
+        };
+        let current = self.credential_for_request(cancellation).await?;
+        let response = match send(RequestCredential {
+            access: current.access.clone(),
+            account_id: current.account_id,
+        })
+        .await
+        {
+            Err(AiError::ProviderAuth) => {
+                let renewed = self
+                    .refresh_after_unauthorized(&current.access, cancellation)
+                    .await?;
+                send(renewed).await.map_err(|error| match error {
+                    AiError::ProviderAuth => AiError::ChatGptReauthenticationRequired,
+                    other => other,
+                })?
+            }
+            result => result?,
+        };
+        ensure_success(response.status().as_u16())?;
+        let bytes =
+            read_bounded_response(response, MAX_MODELS_RESPONSE_BYTES, cancellation).await?;
+        #[derive(Deserialize)]
+        struct Models {
+            models: Vec<Model>,
+        }
+        #[derive(Deserialize)]
+        struct Model {
+            slug: String,
+            visibility: String,
+            priority: Option<i64>,
+        }
+        let mut models: Vec<Model> = serde_json::from_slice::<Models>(&bytes)
+            .map_err(|_| AiError::InvalidProviderResponse)?
+            .models
+            .into_iter()
+            .filter(|model| model.visibility == "list")
+            .collect();
+        if models.is_empty() || models.iter().any(|model| !valid_model_id(&model.slug)) {
+            return Err(AiError::InvalidProviderResponse);
+        }
+        models.sort_by_key(|model| model.priority.unwrap_or(i64::MAX));
+        Ok(models.into_iter().map(|model| model.slug).collect())
     }
 
     async fn send_responses(

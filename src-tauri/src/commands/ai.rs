@@ -514,6 +514,30 @@ pub async fn list_ai_models(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
     let provider = parse_provider(&provider)?;
+    if provider == ProviderId::ChatGpt {
+        let fallback = || {
+            CHATGPT_MODELS
+                .iter()
+                .map(|model| model.id.to_owned())
+                .collect()
+        };
+        let Some(credentials) = state.credentials.as_deref() else {
+            return Ok(fallback());
+        };
+        let Ok(Some(credential)) = load_provider_credential(Some(credentials), provider).await
+        else {
+            return Ok(fallback());
+        };
+        let Ok(client) =
+            ChatGptProvider::new(&credential, DEFAULT_CHATGPT_MODEL, credentials.clone())
+        else {
+            return Ok(fallback());
+        };
+        return Ok(client
+            .list_models(&CancellationToken::new())
+            .await
+            .unwrap_or_else(|_| fallback()));
+    }
     let credential = match api_key.filter(|key| !key.trim().is_empty()) {
         Some(key) => Some(key),
         None => load_provider_credential(state.credentials.as_deref(), provider).await?,
@@ -1159,7 +1183,7 @@ fn provider_is_configured(
 ) -> bool {
     if provider == ProviderId::ChatGpt {
         let model = setting_string(settings, provider, "model", DEFAULT_CHATGPT_MODEL);
-        return has_credential && CHATGPT_MODELS.iter().any(|candidate| candidate.id == model);
+        return has_credential && yc_ai::chatgpt::valid_model_id(&model);
     }
     if provider == ProviderId::DeepL {
         return has_credential;
@@ -1298,11 +1322,7 @@ fn validate_ai_config(config: &SaveAiProviderInput) -> Result<(), AppError> {
             "Modelを入力してください。",
         ));
     }
-    if provider == ProviderId::ChatGpt
-        && !CHATGPT_MODELS
-            .iter()
-            .any(|candidate| candidate.id == config.model)
-    {
+    if provider == ProviderId::ChatGpt && !yc_ai::chatgpt::valid_model_id(&config.model) {
         return Err(AppError::simple(
             "invalid_ai_settings",
             "ChatGPTのモデルを選び直してください。",
