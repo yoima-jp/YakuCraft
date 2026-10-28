@@ -4,7 +4,7 @@ import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getA
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
-import { Checkbox, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
+import { Checkbox, Combobox, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { SecondaryButton } from "../../components/button/Buttons";
 import { useAppStore } from "../../stores/appStore";
 import { SETTING_DEFAULTS, useSettingsStore } from "../../stores/settingsStore";
@@ -513,23 +513,16 @@ export function SettingsScreen() {
               {ai?.provider !== "deepl" && (
                   <div className="settings-field">
                     <label htmlFor="ai-model">モデル</label>
-                    <input
+                    <Combobox
                       id="ai-model"
-                      list={modelOptions.length > 0 ? "ai-model-options" : undefined}
+                      options={modelOptions}
                       value={ai?.model ?? ""}
                       aria-describedby={modelError ? "ai-model-error" : undefined}
-                      onChange={(event) => {
-                        // Reactが更新関数を後から実行しても、イベントのcurrentTargetに依存しない。
-                        const model = event.currentTarget.value;
+                      onChange={(model) => {
                         setModelError(null);
                         setAi((current) => current ? { ...current, model } : current);
                       }}
                     />
-                    {modelOptions.length > 0 && (
-                      <datalist id="ai-model-options">
-                        {modelOptions.map((model) => <option key={model}>{model}</option>)}
-                      </datalist>
-                    )}
                     {modelError && <span id="ai-model-error" className="settings-field__hint settings-field__hint--error" role="alert">{modelError}</span>}
                   </div>
               )}
