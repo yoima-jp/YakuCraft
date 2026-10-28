@@ -1876,6 +1876,14 @@ pub(crate) fn export_selected_shaderpacks_core(
         fs::canonicalize(output_directory).map_err(export_error)?;
     }
 
+    let original_paths: HashSet<_> = opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| project_error(error.to_string()))?
+        .iter()
+        .map(|unit| normalized_shaderpack_path(Path::new(&unit.original_path)))
+        .collect::<Result<_, _>>()?;
+
     let mut prepared = Vec::with_capacity(units.len());
     let mut used_names = HashSet::new();
     for unit in &units {
@@ -1952,32 +1960,41 @@ pub(crate) fn export_selected_shaderpacks_core(
         } else {
             base_name
         };
-        let mut filename = filename;
-        let mut suffix = 2;
-        while !used_names.insert(filename.to_lowercase()) {
-            let stem = Path::new(&filename)
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .unwrap_or("shaderpack-ja");
-            filename = format!("{stem}-{suffix}.zip");
-            suffix += 1;
-        }
-        let mut target = if let Some(instance_root) = instance_root.as_ref() {
-            instance_root.join("shaderpacks").join(&filename)
+        let stem = Path::new(&filename)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("shaderpack-ja")
+            .to_owned();
+        let directory = if let Some(instance_root) = instance_root.as_ref() {
+            instance_root.join("shaderpacks")
         } else {
             output_directory
                 .expect("selected output directory exists for folder exports")
-                .join(&filename)
+                .to_path_buf()
         };
-        if let Some(parent) = target.parent().filter(|parent| parent.is_dir()) {
-            for entry in fs::read_dir(parent).map_err(export_error)? {
-                let entry = entry.map_err(export_error)?;
-                if entry.file_name().to_string_lossy().to_lowercase() == filename.to_lowercase() {
-                    target = entry.path();
-                    break;
+        let mut filename = filename;
+        let mut suffix = 2;
+        let target = loop {
+            let mut target = directory.join(&filename);
+            if directory.is_dir() {
+                for entry in fs::read_dir(&directory).map_err(export_error)? {
+                    let entry = entry.map_err(export_error)?;
+                    if entry.file_name().to_string_lossy().to_lowercase() == filename.to_lowercase()
+                    {
+                        target = entry.path();
+                        break;
+                    }
                 }
             }
-        }
+            if !used_names.contains(&filename.to_lowercase())
+                && !original_paths.contains(&normalized_shaderpack_path(&target)?)
+            {
+                used_names.insert(filename.to_lowercase());
+                break target;
+            }
+            filename = format!("{stem}-{suffix}.zip");
+            suffix += 1;
+        };
         prepared.push((unit.clone(), source_path, target, bytes));
     }
 
@@ -3726,6 +3743,25 @@ fn ensure_output_is_within_directory(directory: &Path, output: &Path) -> Result<
         ));
     }
     Ok(())
+}
+
+fn normalized_shaderpack_path(path: &Path) -> Result<String, AppError> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    while !existing.exists() {
+        missing.push(existing.file_name().ok_or_else(|| {
+            AppError::simple("invalid_output_path", "保存先ファイル名を選んでください。")
+        })?);
+        existing = existing
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+    }
+    let mut normalized = fs::canonicalize(existing).map_err(export_error)?;
+    for component in missing.into_iter().rev() {
+        normalized.push(component);
+    }
+    Ok(normalized.to_string_lossy().to_lowercase())
 }
 
 fn canonical_path_with_missing_leaf(path: &Path) -> Result<PathBuf, AppError> {
