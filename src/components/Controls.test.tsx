@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Checkbox, Dialog, Menu, MenuItem, RadioGroup, Select, Tooltip } from "./Controls";
+import { Checkbox, Combobox, Dialog, Menu, MenuItem, RadioGroup, Select, Tooltip } from "./Controls";
 import { calculateTooltipPosition } from "./Tooltip";
 import { useDismiss } from "./useDismiss";
 
@@ -53,6 +53,19 @@ describe("Select", () => {
     fireEvent.keyDown(trigger, { key: "Escape" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("Combobox", () => {
+  it("候補を絞らず一致順に並べ、同じ順位では元の順を保つ", () => {
+    const options = ["other", "xABC", "abc-two", "ABC", "zabc", "abc-one", "unrelated"];
+    const { rerender } = render(<Combobox id="model" value="abc" options={options} onChange={() => {}} />);
+    fireEvent.focus(screen.getByRole("combobox"));
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "ABC", "abc-two", "abc-one", "xABC", "zabc", "other", "unrelated",
+    ]);
+    rerender(<Combobox id="model" value="" options={options} onChange={() => {}} />);
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(options);
   });
 });
 

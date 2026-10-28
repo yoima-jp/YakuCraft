@@ -282,6 +282,111 @@ export function Select({
   );
 }
 
+interface ComboboxProps {
+  id: string;
+  value: string;
+  options: readonly string[];
+  disabled?: boolean;
+  "aria-describedby"?: string;
+  onChange: (value: string) => void;
+}
+
+export function Combobox({ id, value, options, disabled = false, "aria-describedby": describedBy, onChange }: ComboboxProps) {
+  const listId = useId();
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [position, setPosition] = useState<PopupPosition>({ top: 8, left: 8, width: 220, maxHeight: 240, placement: "below" });
+  const dismissRefs = useMemo(() => [rootRef, menuRef], []);
+  useDismiss({ open, refs: dismissRefs, onDismiss: () => setOpen(false) });
+
+  // 未取得や独自モデルも入力できるようにし、候補は消さず一致順に並べる。
+  const sortedOptions = useMemo(() => {
+    const query = value.toLocaleLowerCase();
+    const rank = (option: string) => {
+      const text = option.toLocaleLowerCase();
+      if (!query) return 0;
+      if (text === query) return 0;
+      if (text.startsWith(query)) return 1;
+      if (text.includes(query)) return 2;
+      return 3;
+    };
+    return options.map((option, index) => ({ option, index, rank: rank(option) }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(({ option }) => option);
+  }, [options, value]);
+  const visible = open && options.length > 0 && !disabled;
+  const choose = (index: number) => {
+    const option = sortedOptions[index];
+    if (option === undefined) return;
+    onChange(option);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const trigger = rootRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+    const rect = trigger.getBoundingClientRect();
+    const padding = 8;
+    const below = Math.max(0, window.innerHeight - rect.bottom - padding);
+    const above = Math.max(0, rect.top - padding);
+    const placement = below >= Math.min(menu.scrollHeight, 288) || below >= above ? "below" : "above";
+    const maxHeight = Math.max(48, Math.min(288, placement === "below" ? below : above));
+    const width = Math.min(Math.max(rect.width, menu.scrollWidth), Math.max(0, window.innerWidth - padding * 2));
+    const left = Math.min(Math.max(padding, rect.left), Math.max(padding, window.innerWidth - width - padding));
+    const height = Math.min(menu.scrollHeight, maxHeight);
+    const top = placement === "below" ? Math.min(rect.bottom + 4, window.innerHeight - height - padding) : Math.max(padding, rect.top - height - 4);
+    setPosition({ top, left, width, maxHeight, placement });
+  }, [visible, options.length]);
+
+  useEffect(() => {
+    if (visible && activeIndex >= 0) menuRef.current?.querySelectorAll<HTMLElement>("[role=option]")[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [visible, activeIndex]);
+
+  return (
+    <span className="combobox" ref={rootRef}>
+      <input
+        id={id} ref={inputRef} value={value} disabled={disabled} role={options.length ? "combobox" : undefined}
+        aria-expanded={options.length ? visible : undefined} aria-controls={visible ? `${listId}-listbox` : undefined}
+        aria-activedescendant={visible && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined}
+        aria-autocomplete={options.length ? "list" : undefined} aria-describedby={describedBy}
+        onFocus={() => { if (options.length) setOpen(true); }}
+        onClick={() => { if (options.length) setOpen(true); }}
+        onChange={(event) => { setActiveIndex(-1); onChange(event.currentTarget.value); if (options.length) setOpen(true); }}
+        onKeyDown={(event) => {
+          if (isImeCompositionKeyDown(event.nativeEvent)) return;
+          if ((event.key === "ArrowDown" || event.key === "ArrowUp") && options.length) {
+            event.preventDefault();
+            const direction = event.key === "ArrowDown" ? 1 : -1;
+            setActiveIndex((current) => current < 0 ? (direction === 1 ? 0 : sortedOptions.length - 1) : (current + direction + sortedOptions.length) % sortedOptions.length);
+            setOpen(true);
+          } else if (event.key === "Enter" && visible && activeIndex >= 0) {
+            event.preventDefault(); choose(activeIndex);
+          } else if (event.key === "Escape" && visible) {
+            event.preventDefault(); event.stopPropagation(); setOpen(false);
+          } else if (event.key === "Tab") setOpen(false);
+        }}
+      />
+      {options.length > 0 && <button type="button" className="combobox__toggle" aria-label="候補を表示" tabIndex={-1} disabled={disabled}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => { inputRef.current?.focus(); setOpen(!visible); setActiveIndex(-1); }}><span className="menu__icon" aria-hidden="true" /></button>}
+      {visible && typeof document !== "undefined" && createPortal(
+        <div className="select__menu" id={`${listId}-listbox`} ref={menuRef} role="listbox" aria-label="モデル候補"
+          data-placement={position.placement} style={{ top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
+          {sortedOptions.map((option, index) => <div className="select__option" id={`${listId}-option-${index}`} key={option} role="option"
+            aria-selected={option === value} data-active={index === activeIndex || undefined} tabIndex={-1}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); choose(index); } }}
+            onMouseEnter={() => setActiveIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(index)}>{option}</div>)}
+        </div>, document.body)}
+    </span>
+  );
+}
+
 interface CheckboxProps {
   checked: boolean;
   className?: string;

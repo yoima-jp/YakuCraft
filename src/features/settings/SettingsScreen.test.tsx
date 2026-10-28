@@ -202,7 +202,9 @@ describe("SettingsScreen API Key field", () => {
     const user = userEvent.setup();
     render(<SettingsScreen />);
 
-    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("old-model"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "候補を表示" })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "候補を表示" }));
+    expect(screen.getByRole("option", { name: "old-model" })).toBeTruthy();
     const url = screen.getByRole("textbox", { name: /接続先URL/ });
     await user.clear(url);
     await user.type(url, "http://127.0.0.1:43210/v1");
@@ -213,10 +215,12 @@ describe("SettingsScreen API Key field", () => {
       "http://127.0.0.1:43210/v1",
       undefined,
     );
-    expect(document.querySelector("#ai-model-options option")).toBeNull();
+    expect(screen.queryByRole("button", { name: "候補を表示" })).toBeNull();
 
     resolveUpdatedModels(["new-model"]);
-    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("new-model"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "候補を表示" })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "候補を表示" }));
+    expect(screen.getByRole("option", { name: "new-model" })).toBeTruthy();
   }, 10_000);
 
   it("初めてOllamaを選んだとき、未設定でもモデル一覧を取得する", async () => {
@@ -234,7 +238,9 @@ describe("SettingsScreen API Key field", () => {
       "http://localhost:11434/v1",
       undefined,
     ));
-    await waitFor(() => expect(document.querySelector("#ai-model-options option")?.textContent).toBe("llama3.2"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "候補を表示" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "候補を表示" }));
+    expect(screen.getByRole("option", { name: "llama3.2" })).toBeTruthy();
   });
 
   it("モデル一覧の取得に失敗したら短い案内を表示して手入力を残す", async () => {

@@ -215,3 +215,8 @@
     padding-inline-end: 0;
   }
 }
+
+.settings-field .combobox input {
+  padding-inline-end: var(--size-click-target);
+  user-select: text;
+}
