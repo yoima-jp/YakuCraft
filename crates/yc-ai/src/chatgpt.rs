@@ -776,19 +776,25 @@ impl ChatGptProvider {
         struct Models {
             models: Vec<Model>,
         }
+        // このエンドポイントは公式に文書化されておらず、形式は Codex CLI の実装から観測したもの。
+        // 項目の追加や欠落で一覧全体が使えなくならないよう、visibility が無い項目は表示扱いにし、
+        // ID として使えない slug の項目だけを除外する。一件も残らなければ呼び出し側が固定候補に戻す。
         #[derive(Deserialize)]
         struct Model {
             slug: String,
-            visibility: String,
+            #[serde(default)]
+            visibility: Option<String>,
+            #[serde(default)]
             priority: Option<i64>,
         }
         let mut models: Vec<Model> = serde_json::from_slice::<Models>(&bytes)
             .map_err(|_| AiError::InvalidProviderResponse)?
             .models
             .into_iter()
-            .filter(|model| model.visibility == "list")
+            .filter(|model| model.visibility.as_deref().is_none_or(|v| v == "list"))
+            .filter(|model| valid_model_id(&model.slug))
             .collect();
-        if models.is_empty() || models.iter().any(|model| !valid_model_id(&model.slug)) {
+        if models.is_empty() {
             return Err(AiError::InvalidProviderResponse);
         }
         models.sort_by_key(|model| model.priority.unwrap_or(i64::MAX));
