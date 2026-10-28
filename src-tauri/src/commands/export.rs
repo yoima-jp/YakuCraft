@@ -1877,6 +1877,7 @@ pub(crate) fn export_selected_shaderpacks_core(
     }
 
     let mut prepared = Vec::with_capacity(units.len());
+    let mut used_names = HashSet::new();
     for unit in &units {
         let context = export_context(opened, unit.id)?;
         let namespace = context
@@ -1937,7 +1938,9 @@ pub(crate) fn export_selected_shaderpacks_core(
         let base_name = shaderpack_output_filename(unit);
         let filename = if units
             .iter()
-            .filter(|candidate| shaderpack_output_filename(candidate) == base_name)
+            .filter(|candidate| {
+                shaderpack_output_filename(candidate).to_lowercase() == base_name.to_lowercase()
+            })
             .count()
             > 1
         {
@@ -1949,13 +1952,32 @@ pub(crate) fn export_selected_shaderpacks_core(
         } else {
             base_name
         };
-        let target = if let Some(instance_root) = instance_root.as_ref() {
+        let mut filename = filename;
+        let mut suffix = 2;
+        while !used_names.insert(filename.to_lowercase()) {
+            let stem = Path::new(&filename)
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("shaderpack-ja");
+            filename = format!("{stem}-{suffix}.zip");
+            suffix += 1;
+        }
+        let mut target = if let Some(instance_root) = instance_root.as_ref() {
             instance_root.join("shaderpacks").join(&filename)
         } else {
             output_directory
                 .expect("selected output directory exists for folder exports")
                 .join(&filename)
         };
+        if let Some(parent) = target.parent().filter(|parent| parent.is_dir()) {
+            for entry in fs::read_dir(parent).map_err(export_error)? {
+                let entry = entry.map_err(export_error)?;
+                if entry.file_name().to_string_lossy().to_lowercase() == filename.to_lowercase() {
+                    target = entry.path();
+                    break;
+                }
+            }
+        }
         prepared.push((unit.clone(), source_path, target, bytes));
     }
 
@@ -3090,9 +3112,8 @@ pub(crate) fn export_language_file_core(
                 .find(|candidate| candidate.included)
                 .map(|candidate| candidate.namespace.as_str())
                 .expect("a selected namespace exists");
-            let (file_name, bytes) = shaderpack_lang_export(&context, namespace)?;
-            let requested = output_path.with_file_name(file_name);
-            let unit_output = output_path_for_mod(&requested, unit.id, units.len());
+            let (_, bytes) = shaderpack_lang_export(&context, namespace)?;
+            let unit_output = output_path_for_mod(output_path, unit.id, units.len());
             ensure_output_is_safe(&context.source_jar, &unit_output)?;
             ensure_file_extension(&unit_output, "lang")?;
             atomic_write_selected(&unit_output, &bytes).map_err(export_error)?;

@@ -1803,6 +1803,59 @@ fn shaderpack_import_translation_and_zip_export_use_shader_lang_format() {
 }
 
 #[test]
+fn shaderpack_export_disambiguates_case_insensitive_names() {
+    let temporary = TemporaryDirectory::create();
+    let first_dir = temporary.0.join("first");
+    let second_dir = temporary.0.join("second");
+    fs::create_dir_all(&first_dir).unwrap();
+    fs::create_dir_all(&second_dir).unwrap();
+    let sources = [first_dir.join("Pack.zip"), second_dir.join("pack.zip")];
+    for source in &sources {
+        write_shaderpack_fixture_zip(source);
+    }
+    let app_paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let opened = super::create_project_from_sources_core(
+        &app_paths,
+        &sources,
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .unwrap()
+    .opened;
+    let ids: Vec<_> = opened
+        .repository()
+        .list_mod_units()
+        .unwrap()
+        .iter()
+        .map(|unit| unit.id)
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let outcome = export_selected_shaderpacks_core(
+        &opened,
+        &ids,
+        Some(&temporary.0.join("exports")),
+        false,
+        false,
+        &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    let ShaderpackExportOutcome::Completed { output_paths, .. } = outcome else {
+        panic!("fresh export folder should not require overwrite");
+    };
+    assert_eq!(output_paths.len(), 2);
+    assert_ne!(
+        output_paths[0].to_lowercase(),
+        output_paths[1].to_lowercase()
+    );
+    for path in output_paths {
+        assert!(Path::new(&path).is_file());
+        assert!(read_zip_entry(Path::new(&path), "shaders/lang/ja_jp.lang").is_some());
+    }
+}
+
+#[test]
 fn shaderpack_instance_deployment_can_be_restored() {
     let temporary = TemporaryDirectory::create();
     let instance = temporary.0.join("instance");
