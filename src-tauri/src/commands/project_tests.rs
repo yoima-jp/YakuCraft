@@ -2113,6 +2113,54 @@ fn shaderpack_export_disambiguates_case_insensitive_names() {
 }
 
 #[test]
+fn shaderpack_export_preserves_unselected_original_on_overwrite() {
+    let temporary = TemporaryDirectory::create();
+    let sources = [
+        temporary.0.join("Pack.zip"),
+        temporary.0.join("Pack-ja.zip"),
+    ];
+    for source in &sources {
+        write_shaderpack_fixture_zip(source);
+    }
+    let original = fs::read(&sources[1]).unwrap();
+    let app_paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let opened = super::create_project_from_sources_core(
+        &app_paths,
+        &sources,
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .unwrap()
+    .opened;
+    let units = opened.repository().list_mod_units().unwrap();
+    let id = units
+        .iter()
+        .find(|unit| Path::new(&unit.original_path).file_name().unwrap() == "Pack.zip")
+        .unwrap()
+        .id;
+    let outcome = export_selected_shaderpacks_core(
+        &opened,
+        &[id],
+        Some(&temporary.0),
+        false,
+        true,
+        &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    let ShaderpackExportOutcome::Completed { output_paths, .. } = outcome else {
+        panic!("export should complete");
+    };
+    assert_eq!(
+        Path::new(&output_paths[0]).file_name().unwrap(),
+        "Pack-ja-2.zip"
+    );
+    assert_eq!(fs::read(&sources[1]).unwrap(), original);
+    assert!(Path::new(&output_paths[0]).is_file());
+}
+
+#[test]
 fn shaderpack_instance_deployment_can_be_restored() {
     let temporary = TemporaryDirectory::create();
     let instance = temporary.0.join("instance");
