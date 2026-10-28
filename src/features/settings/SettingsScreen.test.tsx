@@ -254,14 +254,14 @@ describe("SettingsScreen API Key field", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("ChatGPTではAPIキー欄の代わりにログインと固定モデルを表示する", async () => {
+  it("ChatGPTではAPIキー欄の代わりにログインとモデル入力を表示する", async () => {
     render(<SettingsScreen />);
     await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
     await selectChatgpt();
 
     expect(screen.getByRole("button", { name: "ChatGPTでログイン" })).toBeTruthy();
     expect(screen.queryByLabelText(/APIキー/)).toBeNull();
-    expect(screen.getByRole("combobox", { name: "モデル" })).toBeTruthy();
+    expect((screen.getByLabelText("モデル") as HTMLInputElement).value).toBe("gpt-6-luna");
   });
 
   it("ログイン中は待機表示とキャンセルを出し、Tauriのログイン処理をキャンセルする", async () => {
