@@ -22,6 +22,7 @@ use yc_export::{
 };
 use yc_language::{
     EntryFlag, ReviewSettings, TranslationEntry, WriterOptions, is_empty_translation,
+    normalize_locale,
 };
 use yc_project::{
     DocumentProjectEntry, FileDeploymentRecord, JarReplacementRecord, ModUnitRecord,
@@ -32,7 +33,7 @@ use yc_validation::{PlaceholderProfile, PlaceholderSeverity, compare_placeholder
 use crate::{
     commands::project::{
         detect_minecraft_version_for_project, discovered_languages, merge_for_review,
-        project_review_settings_for_unit, review_settings_from_record,
+        project_review_settings_for_unit, review_settings_from_record, shaderpack_namespace,
     },
     error::AppError,
     state::AppState,
@@ -45,6 +46,7 @@ pub enum ExportKindInput {
     ResourcePack,
     ModifiedJar,
     ModpackFiles,
+    ShaderpackZip,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,6 +159,23 @@ pub enum ModpackFilesExportOutcome {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+pub enum ShaderpackExportOutcome {
+    OverwriteRequired {
+        target_path: String,
+    },
+    Completed {
+        output_paths: Vec<String>,
+        directly_installed: bool,
+        mod_results: Vec<ModExportResult>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RestoreFileDeploymentOutcome {
     Restored { target_path: String },
 }
@@ -198,6 +217,7 @@ fn ensure_project_id_matches(
 
 struct ExportContext {
     mod_unit_id: i64,
+    source_kind: ModUnitSourceKind,
     mod_name: String,
     source_jar: PathBuf,
     source_jar_filename: String,
@@ -539,6 +559,35 @@ pub async fn export_modpack_files(
 }
 
 #[tauri::command]
+pub async fn export_shaderpacks(
+    project_id: String,
+    mod_unit_ids: Vec<i64>,
+    output_directory: Option<String>,
+    direct_install: bool,
+    overwrite: bool,
+    state: State<'_, AppState>,
+) -> Result<ShaderpackExportOutcome, AppError> {
+    let active_project = Arc::clone(&state.active_project);
+    let exported_paths = Arc::clone(&state.exported_paths);
+    tauri::async_runtime::spawn_blocking(move || {
+        let active = active_project
+            .lock()
+            .map_err(|_| state_error("active Project state"))?;
+        let opened = active_project_for_id(&active, &project_id)?;
+        export_selected_shaderpacks_core(
+            opened,
+            &mod_unit_ids,
+            output_directory.as_deref().map(Path::new),
+            direct_install,
+            overwrite,
+            &exported_paths,
+        )
+    })
+    .await
+    .map_err(|error| task_error(error.to_string()))?
+}
+
+#[tauri::command]
 pub async fn restore_modpack_file(
     project_id: String,
     deployment_id: i64,
@@ -808,11 +857,27 @@ fn validate_project_core_for_units(
         minecraft_version_detection: None,
     };
     let mut matched_selection = false;
+    let selected_shaderpack_only = selected_ids.as_ref().is_some_and(|ids| {
+        !ids.is_empty()
+            && units
+                .iter()
+                .filter(|unit| ids.contains(&unit.id))
+                .all(|unit| unit.source_kind == ModUnitSourceKind::Shaderpack)
+    });
     for unit in units.into_iter().filter(|unit| {
         selected_ids
             .as_ref()
             .is_none_or(|ids| ids.contains(&unit.id))
-            && (kind != ExportKindInput::ModifiedJar || unit.source_kind == ModUnitSourceKind::Jar)
+            && match kind {
+                ExportKindInput::ShaderpackZip => unit.source_kind == ModUnitSourceKind::Shaderpack,
+                ExportKindInput::ModifiedJar | ExportKindInput::ResourcePack => {
+                    unit.source_kind == ModUnitSourceKind::Jar
+                        || (kind == ExportKindInput::ResourcePack
+                            && unit.source_kind == ModUnitSourceKind::Modpack)
+                }
+                ExportKindInput::LanguageFile => unit.source_kind != ModUnitSourceKind::Modpack,
+                ExportKindInput::ModpackFiles => false,
+            }
     }) {
         let context = match export_context(opened, unit.id) {
             Ok(context) => context,
@@ -838,6 +903,10 @@ fn validate_project_core_for_units(
             ExportKindInput::LanguageFile => context.namespaces.iter().any(|candidate| {
                 candidate.included && Some(candidate.namespace.as_str()) == namespace
             }),
+            ExportKindInput::ShaderpackZip => context
+                .namespaces
+                .iter()
+                .any(|candidate| candidate.included),
             ExportKindInput::ResourcePack | ExportKindInput::ModifiedJar => context
                 .namespaces
                 .iter()
@@ -848,8 +917,27 @@ fn validate_project_core_for_units(
             continue;
         }
         matched_selection = true;
-        let result =
-            validate_export_context(&context, kind, minecraft_version, namespace, manual_format)?;
+        let validation_namespace = if kind == ExportKindInput::ShaderpackZip {
+            context
+                .namespaces
+                .iter()
+                .find(|candidate| candidate.included)
+                .map(|candidate| candidate.namespace.as_str())
+        } else {
+            namespace
+        };
+        let validation_kind = if kind == ExportKindInput::ShaderpackZip {
+            ExportKindInput::LanguageFile
+        } else {
+            kind
+        };
+        let result = validate_export_context(
+            &context,
+            validation_kind,
+            minecraft_version,
+            validation_namespace,
+            manual_format,
+        )?;
         combined.issues.extend(result.issues);
         combined.counts.total += result.counts.total;
         combined.counts.translated += result.counts.translated;
@@ -864,7 +952,11 @@ fn validate_project_core_for_units(
         combined.issues.push(ExportIssue {
             severity: "error".to_owned(),
             code: "invalidExportSelection".to_owned(),
-            message: if selected_mod_unit_ids.is_some() {
+            message: if selected_shaderpack_only
+                && matches!(kind, ExportKindInput::ResourcePack | ExportKindInput::ModifiedJar)
+            {
+                "シェーダーパックはリソースパックや Mod JAR には含められません。シェーダーパック形式で書き出してください。".to_owned()
+            } else if selected_mod_unit_ids.is_some() {
                 "書き出すmodを選んでください。".to_owned()
             } else if kind == ExportKindInput::LanguageFile {
                 "書き出すNamespaceを選び直してください。".to_owned()
@@ -933,6 +1025,17 @@ fn export_selected_merged_resource_pack_core(
     let mut contexts = Vec::with_capacity(units.len());
     let mut failed_mod_results = Vec::new();
     for unit in units {
+        if unit.source_kind == ModUnitSourceKind::Shaderpack {
+            failed_mod_results.push(mod_export_result(
+                unit.id,
+                export_unit_label(&unit),
+                "skipped",
+                None,
+                "シェーダーパックはリソースパックに含めません。専用形式から書き出してください。"
+                    .to_owned(),
+            ));
+            continue;
+        }
         match export_context(opened, unit.id) {
             Ok(context) => contexts.push((unit, context)),
             Err(error) => failed_mod_results.push(mod_export_result(
@@ -1423,6 +1526,62 @@ fn export_selected_language_files_core(
             ));
             continue;
         }
+        if unit.source_kind == ModUnitSourceKind::Shaderpack {
+            let (file_name, bytes) = match shaderpack_lang_export(&context, namespace) {
+                Ok(export) => export,
+                Err(error) => {
+                    results.push(mod_export_result(
+                        unit.id,
+                        label,
+                        "failed",
+                        None,
+                        error.user_message,
+                    ));
+                    continue;
+                }
+            };
+            let stem = Path::new(&unit.source_filename)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("shaderpack");
+            let unit_directory =
+                output_directory.join(format!("{}-{}", safe_file_component(stem), unit.id));
+            let output = unit_directory.join(file_name);
+            if output.exists() {
+                results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "skipped",
+                    None,
+                    "同名のファイルが既にあります。既存ファイルは変更していません。".to_owned(),
+                ));
+                continue;
+            }
+            let result = (|| {
+                fs::create_dir_all(&unit_directory).map_err(export_error)?;
+                ensure_output_is_safe(&context.source_jar, &output)?;
+                ensure_output_is_within_directory(output_directory, &output)?;
+                atomic_write_selected_if_absent(&output, &bytes).map_err(export_error)?;
+                record_exported_path(exported_paths, &output)
+            })();
+            match result {
+                Ok(()) => results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "success",
+                    Some(output.to_string_lossy().into_owned()),
+                    "言語ファイルを書き出しました。".to_owned(),
+                )),
+                Err(error) => results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "failed",
+                    None,
+                    error.user_message,
+                )),
+            }
+            continue;
+        }
         let input = ExportInput {
             namespaces: &namespaces,
             ..context.input()
@@ -1678,6 +1837,265 @@ pub(crate) fn export_modpack_files_core(
         directly_installed: false,
         file_count: files.len(),
     })
+}
+
+// 複数パックの `option.*` キーは衝突するため、Resource Pack や JAR に混ぜず各パック内へ書き出す。
+pub(crate) fn export_selected_shaderpacks_core(
+    opened: &OpenedProject,
+    selected_ids: &[i64],
+    output_directory: Option<&Path>,
+    direct_install: bool,
+    overwrite: bool,
+    exported_paths: &Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+) -> Result<ShaderpackExportOutcome, AppError> {
+    let selected = selected_units(opened, selected_ids)?;
+    let units: Vec<_> = selected
+        .into_iter()
+        .filter(|unit| unit.source_kind == ModUnitSourceKind::Shaderpack)
+        .collect();
+    if units.is_empty() {
+        return Err(AppError::simple(
+            "shaderpack_unit_required",
+            "シェーダーパックを選んでください。",
+        ));
+    }
+    let instance_root = if direct_install {
+        Some(shaderpack_instance_root(opened)?)
+    } else {
+        None
+    };
+    let output_directory = if direct_install {
+        None
+    } else {
+        Some(output_directory.ok_or_else(|| {
+            AppError::simple("invalid_output_path", "保存先フォルダを選んでください。")
+        })?)
+    };
+    if let Some(output_directory) = output_directory {
+        fs::create_dir_all(output_directory).map_err(export_error)?;
+        fs::canonicalize(output_directory).map_err(export_error)?;
+    }
+
+    let mut prepared = Vec::with_capacity(units.len());
+    for unit in &units {
+        let context = export_context(opened, unit.id)?;
+        let namespace = context
+            .namespaces
+            .iter()
+            .find(|candidate| candidate.included)
+            .map(|candidate| candidate.namespace.as_str())
+            .ok_or_else(|| {
+                AppError::simple("invalid_export_selection", "翻訳対象を選んでください。")
+            })?;
+        let source_lang = context
+            .language_files
+            .iter()
+            .find(|language| {
+                language.namespace == namespace
+                    && normalize_locale(&language.locale)
+                        == normalize_locale(&context.source_locale)
+            })
+            .ok_or_else(|| {
+                AppError::simple(
+                    "shaderpack_source_language_missing",
+                    "翻訳元の言語ファイルが見つかりません。",
+                )
+            })?;
+        let translations = context
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.namespace == namespace && !is_empty_translation(&entry.target_text)
+            })
+            .map(|entry| (entry.key.clone(), entry.target_text.clone()))
+            .collect::<Vec<_>>();
+        let source_path = opened
+            .repository()
+            .mod_unit_source_path(unit.id)
+            .map_err(|error| project_error(error.to_string()))?;
+        let staging = opened
+            .directory()
+            .join(format!(".shaderpack-export-{}.zip", uuid::Uuid::new_v4()));
+        let write_result = yc_shaderpack::write_translated_zip(
+            &source_path,
+            &staging,
+            &source_lang.file_name,
+            &translations,
+        );
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&staging);
+            return Err(AppError::new(
+                "shaderpack_export",
+                "シェーダーパックを書き出せませんでした。",
+                Some(error.to_string()),
+            ));
+        }
+        let bytes = fs::read(&staging).map_err(export_error);
+        let remove_result = fs::remove_file(&staging).map_err(export_error);
+        let bytes = bytes?;
+        remove_result?;
+        let base_name = shaderpack_output_filename(unit);
+        let filename = if units
+            .iter()
+            .filter(|candidate| shaderpack_output_filename(candidate) == base_name)
+            .count()
+            > 1
+        {
+            let stem = Path::new(&base_name)
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("shaderpack-ja");
+            format!("{stem}-{}.zip", unit.id)
+        } else {
+            base_name
+        };
+        let target = if let Some(instance_root) = instance_root.as_ref() {
+            instance_root.join("shaderpacks").join(&filename)
+        } else {
+            output_directory
+                .expect("selected output directory exists for folder exports")
+                .join(&filename)
+        };
+        prepared.push((unit.clone(), source_path, target, bytes));
+    }
+
+    if direct_install {
+        let instance_root = instance_root
+            .as_ref()
+            .expect("direct installation has an instance root");
+        let mut seen = HashSet::new();
+        for (unit, _, target, _) in &prepared {
+            validate_modpack_target_path(instance_root, target, true)?;
+            if !seen.insert(target.clone()) {
+                return Err(AppError::simple(
+                    "shaderpack_output_conflict",
+                    "選択したシェーダーパックの配置先が重複しています。",
+                ));
+            }
+            let target_string = target.to_string_lossy();
+            let active = opened
+                .repository()
+                .active_file_deployment(unit.id, &target_string)
+                .map_err(|error| project_error(error.to_string()))?;
+            if let Some(record) = active.as_ref() {
+                ensure_modpack_deployment_unchanged(target, &record.deployed_sha256)?;
+            } else if target.exists() && !overwrite {
+                return Ok(ShaderpackExportOutcome::OverwriteRequired {
+                    target_path: target.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    } else {
+        for (_, source, target, _) in &prepared {
+            ensure_output_is_safe(source, target)?;
+            ensure_output_is_within_directory(
+                output_directory.expect("selected output directory exists for folder exports"),
+                target,
+            )?;
+            if target.exists() && !overwrite {
+                return Ok(ShaderpackExportOutcome::OverwriteRequired {
+                    target_path: target.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
+
+    let mut output_paths = Vec::new();
+    let mut mod_results = Vec::with_capacity(prepared.len());
+    for (unit, _, target, bytes) in prepared {
+        let label = export_unit_label(&unit);
+        let result = if direct_install {
+            deploy_modpack_file(
+                opened,
+                &unit,
+                instance_root.as_deref().expect("instance root was checked"),
+                &target,
+                &bytes,
+                exported_paths,
+            )
+        } else {
+            atomic_write_selected(&target, &bytes)
+                .map_err(export_error)
+                .and_then(|()| record_exported_path(exported_paths, &target))
+        };
+        match result {
+            Ok(()) => {
+                let output_path = target.to_string_lossy().into_owned();
+                output_paths.push(output_path.clone());
+                mod_results.push(mod_export_result(
+                    unit.id,
+                    label,
+                    "success",
+                    Some(output_path),
+                    "シェーダーパックを書き出しました。".to_owned(),
+                ));
+            }
+            Err(error) => mod_results.push(mod_export_result(
+                unit.id,
+                label,
+                "failed",
+                None,
+                error.user_message,
+            )),
+        }
+    }
+    Ok(ShaderpackExportOutcome::Completed {
+        output_paths,
+        directly_installed: direct_install,
+        mod_results,
+    })
+}
+
+fn shaderpack_output_filename(unit: &ModUnitRecord) -> String {
+    let stem = Path::new(&unit.source_filename)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&unit.source_filename);
+    format!("{}-ja.zip", safe_file_component(stem))
+}
+
+fn shaderpack_instance_root(opened: &OpenedProject) -> Result<PathBuf, AppError> {
+    let instance_path =
+        opened.summary().instance_path.as_deref().ok_or_else(|| {
+            AppError::simple("instance_required", "インスタンスを検出できません。")
+        })?;
+    let root = yc_modpack::resolve_game_directory(Path::new(instance_path));
+    if !root.is_dir() {
+        return Err(AppError::simple(
+            "instance_required",
+            "インスタンスを検出できません。",
+        ));
+    }
+    Ok(root)
+}
+
+fn shaderpack_lang_export(
+    context: &ExportContext,
+    namespace: &str,
+) -> Result<(String, Vec<u8>), AppError> {
+    let source = context
+        .language_files
+        .iter()
+        .find(|language| {
+            language.namespace == namespace
+                && normalize_locale(&language.locale) == normalize_locale(&context.source_locale)
+        })
+        .ok_or_else(|| {
+            AppError::simple(
+                "shaderpack_source_language_missing",
+                "翻訳元の言語ファイルが見つかりません。",
+            )
+        })?;
+    let entries = context
+        .entries
+        .iter()
+        .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
+        .map(|entry| (entry.key.clone(), entry.target_text.clone()))
+        .collect::<Vec<_>>();
+    Ok((
+        yc_shaderpack::japanese_filename(&source.file_name).to_owned(),
+        yc_shaderpack::write_lang(&entries),
+    ))
 }
 
 fn modpack_export_translations(
@@ -2153,20 +2571,27 @@ pub(crate) fn restore_modpack_file_core(
         .map_err(|error| project_error(error.to_string()))?
         .into_iter()
         .find(|unit| {
-            unit.id == deployment.mod_unit_id && unit.source_kind == ModUnitSourceKind::Modpack
+            unit.id == deployment.mod_unit_id
+                && matches!(
+                    unit.source_kind,
+                    ModUnitSourceKind::Modpack | ModUnitSourceKind::Shaderpack
+                )
         })
         .ok_or_else(|| {
-            AppError::simple(
-                "deployment_not_found",
-                "復元する Modpack が見つかりません。",
-            )
+            AppError::simple("deployment_not_found", "復元するファイルが見つかりません。")
         })?;
     let target = PathBuf::from(&deployment.target_path);
-    let source = repository
-        .mod_unit_source_path(unit.id)
-        .map_err(|error| project_error(error.to_string()))?;
-    let (_, data) = super::modpack::analyze_modpack_archive(&source)?;
-    let instance_root = modpack_instance_root(&unit, &data.scan.game_directory)?;
+    let instance_root = match unit.source_kind {
+        ModUnitSourceKind::Modpack => {
+            let source = repository
+                .mod_unit_source_path(unit.id)
+                .map_err(|error| project_error(error.to_string()))?;
+            let (_, data) = super::modpack::analyze_modpack_archive(&source)?;
+            modpack_instance_root(&unit, &data.scan.game_directory)?
+        }
+        ModUnitSourceKind::Shaderpack => shaderpack_instance_root(opened)?,
+        ModUnitSourceKind::Jar => unreachable!("deployment records belong to file-based units"),
+    };
     validate_modpack_target_path(&instance_root, &target, false)?;
     let canonical_root = fs::canonicalize(&instance_root).map_err(export_error)?;
     let canonical_target = canonical_path_with_missing_leaf(&target)?;
@@ -2288,6 +2713,9 @@ fn restore_modified_jar_core(
 fn export_unit_label(unit: &ModUnitRecord) -> String {
     if unit.source_kind == ModUnitSourceKind::Modpack {
         return "Modpack 固有（クエスト・KubeJS）".to_owned();
+    }
+    if unit.source_kind == ModUnitSourceKind::Shaderpack {
+        return format!("シェーダーパック: {}", unit.source_filename);
     }
 
     let name = unit
@@ -2429,7 +2857,11 @@ fn validate_export_context(
     namespace: Option<&str>,
     manual_format: Option<ManualPackFormatInput>,
 ) -> Result<ExportValidationResult, AppError> {
-    let kind = export_kind(kind)?;
+    let kind = if kind == ExportKindInput::ShaderpackZip {
+        ExportKind::LanguageFile
+    } else {
+        export_kind(kind)?
+    };
     let base_input = context.input();
     let selected_namespaces: Vec<_> = context
         .namespaces
@@ -2493,7 +2925,8 @@ fn validate_export_context(
         let target_text = lang_entry
             .map(|entry| entry.target_text.as_str())
             .or_else(|| document_entry.and_then(|entry| entry.target_text.as_deref()));
-        let placeholder_comparison = (issue.code == ValidationIssueCode::PlaceholderWarning)
+        let placeholder_comparison = (issue.code == ValidationIssueCode::PlaceholderWarning
+            && context.source_kind != ModUnitSourceKind::Shaderpack)
             .then(|| {
                 let source = source_text?;
                 let target = target_text?;
@@ -2651,6 +3084,21 @@ pub(crate) fn export_language_file_core(
         {
             continue;
         }
+        if unit.source_kind == ModUnitSourceKind::Shaderpack {
+            let namespace = selected_namespaces
+                .iter()
+                .find(|candidate| candidate.included)
+                .map(|candidate| candidate.namespace.as_str())
+                .expect("a selected namespace exists");
+            let (file_name, bytes) = shaderpack_lang_export(&context, namespace)?;
+            let requested = output_path.with_file_name(file_name);
+            let unit_output = output_path_for_mod(&requested, unit.id, units.len());
+            ensure_output_is_safe(&context.source_jar, &unit_output)?;
+            ensure_file_extension(&unit_output, "lang")?;
+            atomic_write_selected(&unit_output, &bytes).map_err(export_error)?;
+            first_output.get_or_insert_with(|| unit_output.clone());
+            continue;
+        }
         ensure_output_is_safe(&context.source_jar, output_path)?;
         let input = ExportInput {
             namespaces: &selected_namespaces,
@@ -2742,6 +3190,17 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
             )?
         }
         ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_jar)?.0,
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+            &source_jar,
+            &shaderpack_namespace(&unit.source_filename),
+        )
+        .map_err(|error| {
+            AppError::new(
+                "shaderpack_read",
+                "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                Some(error.to_string()),
+            )
+        })?,
     };
     let saved_settings = project_review_settings_for_unit(opened, mod_unit_id)?;
     let settings: ReviewSettings =
@@ -2769,12 +3228,17 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .filter_map(|entry| {
             let mismatch = !is_empty_translation(&entry.target_text)
                 && entry.source_text.as_deref().is_some_and(|source| {
-                    let profile = if entry.flags.contains(&EntryFlag::PatchouliText) {
-                        PlaceholderProfile::Patchouli
+                    if unit.source_kind == ModUnitSourceKind::Shaderpack {
+                        yc_validation::shader_format_warning(source, &entry.target_text)
                     } else {
-                        PlaceholderProfile::Lang
-                    };
-                    !compare_placeholders_for_profile(source, &entry.target_text, profile).is_valid
+                        let profile = if entry.flags.contains(&EntryFlag::PatchouliText) {
+                            PlaceholderProfile::Patchouli
+                        } else {
+                            PlaceholderProfile::Lang
+                        };
+                        !compare_placeholders_for_profile(source, &entry.target_text, profile)
+                            .is_valid
+                    }
                 });
             // Exportでは保存済みflagではなく、今のsource/targetから警告を再計算する。
             entry
@@ -2838,15 +3302,22 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .iter()
         .filter_map(|mod_info| mod_info.minecraft_version.as_deref())
         .collect();
-    let minecraft_version_detection =
-        detect_minecraft_version_for_project(&source_jar, &metadata_ranges);
+    let minecraft_version_detection = if unit.source_kind == ModUnitSourceKind::Shaderpack {
+        None
+    } else {
+        detect_minecraft_version_for_project(&source_jar, &metadata_ranges)
+    };
     let language_files = discovered_languages(&analysis);
-    let legacy_parse_escapes_namespaces = legacy_parse_escapes_namespaces(
-        &source_jar,
-        &language_files,
-        &source_locale,
-        &settings.included_namespaces,
-    )?;
+    let legacy_parse_escapes_namespaces = if unit.source_kind == ModUnitSourceKind::Shaderpack {
+        Vec::new()
+    } else {
+        legacy_parse_escapes_namespaces(
+            &source_jar,
+            &language_files,
+            &source_locale,
+            &settings.included_namespaces,
+        )?
+    };
     let mut namespaces: Vec<_> = analysis
         .result
         .namespaces
@@ -2867,6 +3338,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
     }
     Ok(ExportContext {
         mod_unit_id,
+        source_kind: unit.source_kind,
         mod_name: export_unit_label(&unit),
         source_jar,
         source_jar_filename: unit.source_filename,
@@ -3106,6 +3578,7 @@ fn export_kind(kind: ExportKindInput) -> Result<ExportKind, AppError> {
         ExportKindInput::LanguageFile => Ok(ExportKind::LanguageFile),
         ExportKindInput::ResourcePack => Ok(ExportKind::ResourcePack),
         ExportKindInput::ModifiedJar => Ok(ExportKind::ModifiedJar),
+        ExportKindInput::ShaderpackZip => Ok(ExportKind::LanguageFile),
         ExportKindInput::ModpackFiles => Err(AppError::simple(
             "invalid_export_kind",
             "Modpack ファイルの検証方法が不正です。",

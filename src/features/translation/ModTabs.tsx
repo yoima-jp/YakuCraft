@@ -86,6 +86,7 @@ export function clearModIconCacheInUi() {
 
 function unitName(unit: ModUnitSummaryDto) {
   if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
+  if (unit.sourceKind === "shaderpack") return `シェーダーパック: ${unit.sourceFilename}`;
   return unit.name?.trim() || unit.sourceFilename;
 }
 

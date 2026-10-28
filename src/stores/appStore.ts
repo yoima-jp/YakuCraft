@@ -6,6 +6,7 @@ import type { ExportKind } from "../types/export";
 
 export interface ExportCompletion {
   kind: ExportKind;
+  sourceKind?: "shaderpack";
   outputPath: string;
   translatedCount: number;
   missingCount: number;

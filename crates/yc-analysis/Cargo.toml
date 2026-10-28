@@ -9,10 +9,13 @@ license.workspace = true
 yc-archive = { path = "../yc-archive" }
 yc-metadata = { path = "../yc-metadata" }
 yc-language = { path = "../yc-language" }
+yc-shaderpack = { path = "../yc-shaderpack" }
+indexmap = "2"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 thiserror = "2"
 tracing = "0.1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

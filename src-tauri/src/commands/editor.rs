@@ -213,6 +213,14 @@ pub(crate) fn update_entries_batch_core(
         .repository()
         .list_document_entries(None)
         .map_err(|error| database_error(error.to_string()))?;
+    let shaderpack_unit_ids: std::collections::HashSet<_> = opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .filter(|unit| unit.source_kind == yc_project::ModUnitSourceKind::Shaderpack)
+        .map(|unit| unit.id)
+        .collect();
     let entries_by_id: std::collections::HashMap<_, _> = before
         .iter()
         .map(|entry| {
@@ -226,6 +234,7 @@ pub(crate) fn update_entries_batch_core(
                     } else {
                         yc_validation::PlaceholderProfile::Lang
                     },
+                    shaderpack_unit_ids.contains(&entry.mod_unit_id),
                 ),
             )
         })
@@ -244,6 +253,7 @@ pub(crate) fn update_entries_batch_core(
                         }
                         TranslationEntryKind::Lang => yc_validation::PlaceholderProfile::Lang,
                     },
+                    false,
                 ),
             )
         }))
@@ -267,15 +277,20 @@ pub(crate) fn update_entries_batch_core(
     let validations: Vec<_> = updates
         .iter()
         .map(|update| {
-            let (source_text, flags, profile) = entries_by_id[&update.id];
+            let (source_text, flags, profile, is_shaderpack) = entries_by_id[&update.id];
             (
                 update.id,
-                yc_validation::validate_manual_edit_with_profile(
-                    source_text,
-                    &update.target_text,
-                    profile,
-                )
-                .placeholder_error,
+                if is_shaderpack {
+                    !update.target_text.trim().is_empty()
+                        && yc_validation::shader_format_warning(source_text, &update.target_text)
+                } else {
+                    yc_validation::validate_manual_edit_with_profile(
+                        source_text,
+                        &update.target_text,
+                        profile,
+                    )
+                    .placeholder_error
+                },
                 flags.contains(&EntryFlag::PlaceholderError),
             )
         })

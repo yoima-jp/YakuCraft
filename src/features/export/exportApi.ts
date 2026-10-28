@@ -17,7 +17,7 @@ export interface JarReplacementDto {
 
 export interface ExportUnitStatusDto {
   id: number;
-  sourceKind?: "jar" | "modpack";
+  sourceKind?: "jar" | "modpack" | "shaderpack";
   sourceFilename: string;
   name: string | null;
   version: string | null;
@@ -75,6 +75,10 @@ export type RestoreJarOutcomeDto =
 export type ModpackFilesExportOutcomeDto =
   | { status: "overwriteRequired"; targetPath: string }
   | { status: "completed"; outputPath: string; directlyInstalled: boolean; fileCount: number };
+
+export type ShaderpackExportOutcomeDto =
+  | { status: "overwriteRequired"; targetPath: string }
+  | { status: "completed"; outputPaths: string[]; directlyInstalled: boolean; modResults: ModExportResultDto[] };
 
 export type RestoreFileDeploymentOutcomeDto = { status: "restored"; targetPath: string };
 
@@ -218,6 +222,22 @@ export function exportModpackFiles(
     projectId,
     modUnitIds,
     outputPath,
+    directInstall,
+    overwrite,
+  });
+}
+
+export function exportShaderpacks(
+  projectId: string,
+  modUnitIds: number[],
+  outputDirectory: string | null,
+  directInstall: boolean,
+  overwrite: boolean,
+) {
+  return invokeExport<ShaderpackExportOutcomeDto>("export_shaderpacks", {
+    projectId,
+    modUnitIds,
+    outputDirectory,
     directInstall,
     overwrite,
   });

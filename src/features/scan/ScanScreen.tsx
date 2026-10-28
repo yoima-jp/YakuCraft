@@ -19,7 +19,7 @@ import { isAnalysisEventForJob } from "./analysisEvents";
 import { defaultSelectedPaths } from "./defaultSelection";
 import { useScanStore } from "./scanStore";
 import { scanModsFolder } from "./tauri";
-import type { ModLanguageStatusDto, ModScanResultDto, ModpackScanDto, ScanModsFolderEventDto } from "./types";
+import type { ModLanguageStatusDto, ModScanResultDto, ModpackScanDto, ScanModsFolderEventDto, ShaderpackScanResultDto } from "./types";
 import "./ScanScreen.css";
 
 const STATUS_LABELS: Record<ModLanguageStatusDto["kind"], string> = {
@@ -72,12 +72,17 @@ function modpackHasImportableFiles(scan: ModpackScanDto): boolean {
   return scan.files.some((file) => file.locale.toLocaleLowerCase() === "en_us");
 }
 
+function shaderpackSelectable(result: ShaderpackScanResultDto): boolean {
+  return result.status.kind !== "no_language_files" && result.status.kind !== "failed";
+}
+
 export function ScanScreen() {
   const folderPath = useScanStore((state) => state.folderPath);
   const scanRevision = useScanStore((state) => state.scanRevision);
   const scanJobId = useScanStore((state) => state.scanJobId);
   const scanProgress = useScanStore((state) => state.scanProgress);
   const results = useScanStore((state) => state.results);
+  const shaderpacks = useScanStore((state) => state.shaderpacks);
   const modpackScan = useScanStore((state) => state.modpackScan);
   const scannedFolder = useScanStore((state) => state.scannedFolder);
   const instanceDir = useScanStore((state) => state.instanceDir);
@@ -134,7 +139,7 @@ export function ScanScreen() {
       scanJobRef.current = null;
       setScanJobId(null);
       if (event.kind === "completed") {
-        setScanResults(event.results, event.scannedFolder, event.instanceDir, event.looksLikeInstanceDir, event.modpackScan);
+        setScanResults(event.results, event.scannedFolder, event.instanceDir, event.looksLikeInstanceDir, event.modpackScan, event.shaderpacks);
       } else {
         setScanError(event.error);
       }
@@ -164,8 +169,17 @@ export function ScanScreen() {
   }, [folderPath, scanRevision, setScanError, setScanJobId, setScanProgress, setScanResults]);
 
   useEffect(() => {
-    if (results) setSelectedPaths(defaultSelectedPaths(results, thresholdPercent));
-  }, [results, thresholdPercent]);
+    if (!results) return;
+    const selected = defaultSelectedPaths(results, thresholdPercent);
+    for (const shaderpack of shaderpacks) {
+      if (shaderpackSelectable(shaderpack)
+        && (shaderpack.status.kind === "untranslated"
+          || (shaderpack.status.kind === "partial" && shaderpack.status.coverage * 100 < thresholdPercent))) {
+        selected.add(shaderpack.path);
+      }
+    }
+    setSelectedPaths(selected);
+  }, [results, shaderpacks, thresholdPercent]);
 
   useEffect(() => {
     setSelectedModpack(Boolean(modpackScan && modpackHasImportableFiles(modpackScan)));
@@ -182,22 +196,37 @@ export function ScanScreen() {
     });
   }, [results, search, statusFilters]);
 
+  const visibleShaderpacks = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    return shaderpacks.filter((result) => statusFilters[result.status.kind]
+      && (!query || result.fileName.toLocaleLowerCase().includes(query)));
+  }, [search, shaderpacks, statusFilters]);
+
   const showModpack = Boolean(modpackScan);
   const modpackSelectable = Boolean(modpackScan && modpackHasImportableFiles(modpackScan));
+  const showShaderpacks = visibleShaderpacks.length > 0;
 
   // TanStack Virtual はスクロール位置に合わせて可視行を差し替えるため、戻り値をReact Compilerでmemo化しない。
   // oxlint-disable-next-line react/incompatible-library
   const virtualizer = useVirtualizer({
-    count: visibleResults.length + Number(showModpack),
+    count: visibleResults.length + visibleShaderpacks.length + Number(showModpack),
     getScrollElement: () => listRef.current,
     estimateSize: (index) => (showModpack && index === 0 ? 104 : 88),
-    getItemKey: (index) => showModpack && index === 0 ? "modpack" : visibleResults[index - Number(showModpack)]?.path ?? index,
+    getItemKey: (index) => {
+      if (showModpack && index === 0) return "modpack";
+      const itemIndex = index - Number(showModpack);
+      return visibleResults[itemIndex]?.path
+        ?? visibleShaderpacks[itemIndex - visibleResults.length]?.path
+        ?? index;
+    },
     overscan: 8,
   });
 
   const visibleSelectable = visibleResults.filter(isSelectable);
-  const allVisibleSelected = (visibleSelectable.length > 0 || (showModpack && modpackSelectable))
+  const visibleSelectableShaderpacks = visibleShaderpacks.filter(shaderpackSelectable);
+  const allVisibleSelected = (visibleSelectable.length > 0 || visibleSelectableShaderpacks.length > 0 || (showModpack && modpackSelectable))
     && visibleSelectable.every((result) => selectedPaths.has(result.path))
+    && visibleSelectableShaderpacks.every((result) => selectedPaths.has(result.path))
     && (!showModpack || !modpackSelectable || selectedModpack);
 
   const updateVisibleSelection = useCallback((selected: boolean) => {
@@ -207,10 +236,14 @@ export function ScanScreen() {
         if (selected) next.add(result.path);
         else next.delete(result.path);
       }
+      for (const result of visibleSelectableShaderpacks) {
+        if (selected) next.add(result.path);
+        else next.delete(result.path);
+      }
       return next;
     });
     if (showModpack && modpackSelectable) setSelectedModpack(selected);
-  }, [modpackSelectable, showModpack, visibleSelectable]);
+  }, [modpackSelectable, showModpack, visibleSelectable, visibleSelectableShaderpacks]);
 
   const handleAnalysisEvent = useCallback((
     event: AnalysisChannelEvent,
@@ -276,7 +309,9 @@ export function ScanScreen() {
 
   const createSelectedProject = async () => {
     if (!results || (selectedPaths.size === 0 && !selectedModpack) || creating) return;
-    const paths = results.filter((result) => selectedPaths.has(result.path)).map((result) => result.path);
+    const selectedMods = results.filter((result) => selectedPaths.has(result.path)).map((result) => result.path);
+    const selectedShaderpacks = shaderpacks.filter((result) => selectedPaths.has(result.path)).map((result) => result.path);
+    const paths = [...selectedMods, ...selectedShaderpacks];
     if (paths.length === 0 && !selectedModpack) return;
 
     const generation = ++createGenerationRef.current;
@@ -286,10 +321,11 @@ export function ScanScreen() {
     setAnalysisProgress(null);
     setAnalysisJobId(null);
     setModImportFailures([]);
-    const selectedCount = paths.length + Number(selectedModpack);
-    const sourceLabel = selectedModpack
-      ? `${selectedCount.toLocaleString("ja-JP")} 件（Modpack 固有を含む）`
-      : `${paths.length.toLocaleString("ja-JP")} 個のMod`;
+    const sourceLabel = [
+      selectedMods.length > 0 ? `${selectedMods.length.toLocaleString("ja-JP")} 個のMod` : "",
+      selectedShaderpacks.length > 0 ? `${selectedShaderpacks.length.toLocaleString("ja-JP")} 個のシェーダーパック` : "",
+      selectedModpack ? "Modpack 固有" : "",
+    ].filter(Boolean).join("・");
     const sourcePath = paths[0] ?? instanceDir ?? scannedFolder ?? folderPath ?? "";
     setSourceJar(sourcePath, sourceLabel);
     await goTo("analyze");
@@ -387,7 +423,7 @@ export function ScanScreen() {
         </div>
         {looksLikeInstanceDir ? null : (
           <p className="scan-screen__instance-note">
-            インスタンスのフォルダが見つからないため、リソースパックの直接配置と jar の上書きは使えません
+            インスタンスのフォルダが見つからないため、インスタンスへの配置は使えません
           </p>
         )}
       </header>
@@ -436,20 +472,20 @@ export function ScanScreen() {
       <div className="scan-screen__selection-bar">
         <output aria-live="polite">{(selectedPaths.size + Number(selectedModpack)).toLocaleString("ja-JP")} 件選択中</output>
         <div>
-          <TertiaryButton disabled={(visibleSelectable.length === 0 && !(showModpack && modpackSelectable)) || allVisibleSelected} onClick={() => updateVisibleSelection(true)}>
+          <TertiaryButton disabled={(visibleSelectable.length === 0 && visibleSelectableShaderpacks.length === 0 && !(showModpack && modpackSelectable)) || allVisibleSelected} onClick={() => updateVisibleSelection(true)}>
             表示中を全選択
           </TertiaryButton>
-          <TertiaryButton disabled={(visibleSelectable.length === 0 && !(showModpack && modpackSelectable)) || (selectedPaths.size === 0 && !selectedModpack)} onClick={() => updateVisibleSelection(false)}>
+          <TertiaryButton disabled={(visibleSelectable.length === 0 && visibleSelectableShaderpacks.length === 0 && !(showModpack && modpackSelectable)) || (selectedPaths.size === 0 && !selectedModpack)} onClick={() => updateVisibleSelection(false)}>
             表示中を全解除
           </TertiaryButton>
         </div>
       </div>
 
-      {visibleResults.length > 0 || showModpack ? (
+      {visibleResults.length > 0 || showModpack || showShaderpacks ? (
         <ul
           className="scan-screen__list"
           ref={listRef}
-          aria-label="スキャンしたModとModpackファイル"
+          aria-label="スキャンしたModとシェーダーパック"
         >
           <li className="scan-screen__list-space" aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
           {virtualizer.getVirtualItems().map((virtualRow) => {
@@ -492,7 +528,42 @@ export function ScanScreen() {
             }
             const resultIndex = virtualRow.index - Number(showModpack);
             const result = visibleResults[resultIndex];
-            if (!result) return null;
+            if (!result) {
+              const shaderpack = visibleShaderpacks[resultIndex - visibleResults.length];
+              if (!shaderpack) return null;
+              const selectable = shaderpackSelectable(shaderpack);
+              const checked = selectedPaths.has(shaderpack.path);
+              return (
+                <li
+                  className="scan-screen__row"
+                  key={shaderpack.path}
+                  data-selected={checked || undefined}
+                  style={{ transform: `translateY(${virtualRow.start}px)`, height: virtualRow.size }}
+                >
+                  <Checkbox
+                    className="scan-screen__row-checkbox"
+                    checked={checked}
+                    disabled={!selectable}
+                    onChange={(nextChecked) => setSelectedPaths((current) => {
+                      const next = new Set(current);
+                      if (nextChecked) next.add(shaderpack.path);
+                      else next.delete(shaderpack.path);
+                      return next;
+                    })}
+                  >
+                    <span className="scan-screen__row-content">
+                      <span className="scan-screen__row-heading">
+                        <strong>シェーダーパック</strong>
+                        <span>{shaderpack.sourceKeyCount.toLocaleString("ja-JP")} 件</span>
+                        <span className="scan-screen__status" data-status={shaderpack.status.kind}>{statusLabel(shaderpack.status)}</span>
+                      </span>
+                      <span className="scan-screen__filename">{shaderpack.fileName}</span>
+                      {shaderpack.status.kind === "failed" && <span className="scan-screen__reason selectable">{shaderpack.status.reason}</span>}
+                    </span>
+                  </Checkbox>
+                </li>
+              );
+            }
             const selectable = isSelectable(result);
             const label = modName(result);
             const version = result.mods[0]?.version ?? "バージョン不明";
@@ -531,7 +602,7 @@ export function ScanScreen() {
         </ul>
       ) : (
         <p className="scan-screen__empty">
-          {results.length === 0 ? "mod が見つかりません。" : "条件に合うModがありません。"}
+          {results.length === 0 && shaderpacks.length === 0 ? "Mod やシェーダーパックが見つかりません。" : "条件に合う項目がありません。"}
         </p>
       )}
 

@@ -49,9 +49,11 @@ function discardModUnitSnapshot(modUnitId: number) {
   useEditorStore.setState({ unitStates });
 }
 
-function modUnitName(unit: { sourceKind?: "jar" | "modpack"; name: string | null; sourceFilename: string }) {
+function modUnitName(unit: { sourceKind?: "jar" | "modpack" | "shaderpack"; name: string | null; sourceFilename: string }) {
   return unit.sourceKind === "modpack"
     ? "Modpack 固有（クエスト・KubeJS）"
+    : unit.sourceKind === "shaderpack"
+      ? `シェーダーパック: ${unit.sourceFilename}`
     : unit.name?.trim() || unit.sourceFilename;
 }
 

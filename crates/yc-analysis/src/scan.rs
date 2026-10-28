@@ -70,6 +70,91 @@ pub struct ModScanResult {
     pub status: ModLanguageStatus,
 }
 
+/// シェーダーパックの翻訳状況。Mod行と同じ状態表示を使いつつ、Modメタデータを持たない。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShaderpackScanResult {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub file_size_bytes: Option<u64>,
+    pub sha256: Option<String>,
+    pub source_key_count: usize,
+    pub translated_key_count: usize,
+    pub status: ModLanguageStatus,
+}
+
+pub fn scan_shaderpack(path: &Path) -> ShaderpackScanResult {
+    let file_size_bytes = fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len());
+    let namespace = format!(
+        "shaderpack-{}",
+        file_name(path)
+            .to_ascii_lowercase()
+            .replace([' ', '.'], "-")
+    );
+    let source = if path.is_dir() {
+        yc_shaderpack::ShaderPackSource::Folder(path.to_path_buf())
+    } else {
+        yc_shaderpack::ShaderPackSource::Zip(path.to_path_buf())
+    };
+    let is_shaderpack = yc_shaderpack::is_shader_pack(&source).unwrap_or(false);
+    let analysis = if is_shaderpack {
+        crate::analyze_shaderpack(path, &namespace)
+    } else {
+        Err(crate::AnalysisError::NoLanguageFiles)
+    };
+    let (sha256, source_key_count, translated_key_count, status) = match analysis {
+        Ok(analysis) => {
+            let settings = analysis.default_review_settings();
+            let merged = analysis.merge_review(&settings);
+            let total = merged.entries.len();
+            let translated = merged
+                .entries
+                .iter()
+                .filter(|entry| !entry.target_text.trim().is_empty())
+                .count();
+            let status = if translated == 0 {
+                ModLanguageStatus::Untranslated
+            } else if translated < total {
+                ModLanguageStatus::Partial {
+                    coverage: translated as f64 / total as f64,
+                }
+            } else {
+                ModLanguageStatus::Complete
+            };
+            (
+                (!analysis.result.source_sha256.is_empty())
+                    .then_some(analysis.result.source_sha256),
+                total,
+                translated,
+                status,
+            )
+        }
+        Err(crate::AnalysisError::NoLanguageFiles) => {
+            (None, 0, 0, ModLanguageStatus::NoLanguageFiles)
+        }
+        Err(error) => (
+            None,
+            0,
+            0,
+            ModLanguageStatus::Failed {
+                reason: error.to_string(),
+            },
+        ),
+    };
+    ShaderpackScanResult {
+        path: path.to_path_buf(),
+        file_name: file_name(path),
+        file_size_bytes,
+        sha256,
+        source_key_count,
+        translated_key_count,
+        status,
+    }
+}
+
 /// 1つのJARが完了するたびに通知する進捗。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

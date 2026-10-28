@@ -70,6 +70,7 @@ pub fn run() {
             commands::export::export_selected_merged_resource_pack,
             commands::export::export_selected_modified_jars,
             commands::export::export_modpack_files,
+            commands::export::export_shaderpacks,
             commands::export::restore_modpack_file,
             commands::export::export_selected_language_files,
             commands::export::restore_modified_jar,

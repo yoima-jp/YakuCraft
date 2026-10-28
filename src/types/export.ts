@@ -1,6 +1,6 @@
 import type { MinecraftVersionDetectionDto } from "./project";
 
-export type ExportKind = "languageFile" | "resourcePack" | "modifiedJar" | "modpackFiles";
+export type ExportKind = "languageFile" | "resourcePack" | "modifiedJar" | "modpackFiles" | "shaderpackZip";
 
 export interface ExportIssueDto {
   severity: "warning" | "error";

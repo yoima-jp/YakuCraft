@@ -37,6 +37,7 @@ yc-language = { path = "../crates/yc-language" }
 yc-metadata = { path = "../crates/yc-metadata" }
 yc-modpack = { path = "../crates/yc-modpack" }
 yc-project = { path = "../crates/yc-project" }
+yc-shaderpack = { path = "../crates/yc-shaderpack" }
 yc-validation = { path = "../crates/yc-validation" }
 tauri-plugin-updater = "2.14"
 tauri-plugin-process = "2"

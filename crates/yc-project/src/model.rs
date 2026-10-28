@@ -12,6 +12,7 @@ pub enum ModUnitSourceKind {
     #[default]
     Jar,
     Modpack,
+    Shaderpack,
 }
 
 impl ModUnitSourceKind {
@@ -19,6 +20,7 @@ impl ModUnitSourceKind {
         match self {
             Self::Jar => "jar",
             Self::Modpack => "modpack",
+            Self::Shaderpack => "shaderpack",
         }
     }
 
@@ -26,6 +28,7 @@ impl ModUnitSourceKind {
         match value {
             "jar" => Ok(Self::Jar),
             "modpack" => Ok(Self::Modpack),
+            "shaderpack" => Ok(Self::Shaderpack),
             _ => Err(crate::ProjectError::InvalidDatabaseValue(format!(
                 "mod_units.source_kind={value}"
             ))),

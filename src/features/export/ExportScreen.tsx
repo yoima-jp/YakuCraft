@@ -21,6 +21,7 @@ import {
   exportSelectedMergedResourcePack,
   exportSelectedModifiedJars,
   exportModpackFiles,
+  exportShaderpacks,
   getExportOverview,
   restoreModpackFile,
   restoreModifiedJar,
@@ -38,6 +39,7 @@ const EXPORT_OPTIONS: Array<{ value: ExportKind; label: string; description: str
   { value: "modifiedJar", label: "Mod JARに埋め込む", description: "日本語ファイルをJARに追加する" },
   { value: "languageFile", label: "言語ファイル", description: "言語ファイルだけを書き出す" },
   { value: "modpackFiles", label: "Modpack ファイル", description: "クエスト・KubeJS の翻訳を書き出す" },
+  { value: "shaderpackZip", label: "日本語化したシェーダーパック", description: "元パックを残して別名 ZIP を作る" },
 ];
 
 function safeFileComponent(value: string) {
@@ -92,10 +94,15 @@ function minecraftVersionEvidence(detection: MinecraftVersionDetectionDto | null
   return `リソース構造から推定${detection.rounded ? "（近いバージョン）" : ""}`;
 }
 
-function unitTitle(unit: { sourceKind?: "jar" | "modpack"; sourceFilename: string; name: string | null; version?: string | null }) {
+function unitTitle(unit: { sourceKind?: "jar" | "modpack" | "shaderpack"; sourceFilename: string; name: string | null; version?: string | null }) {
   if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
+  if (unit.sourceKind === "shaderpack") return `シェーダーパック: ${unit.sourceFilename}`;
   const name = unit.name?.trim() || unit.sourceFilename;
   return unit.version?.trim() ? `${name} ${unit.version}` : name;
+}
+
+function isJarUnit(unit: { sourceKind?: "jar" | "modpack" | "shaderpack" }) {
+  return unit.sourceKind === undefined || unit.sourceKind === "jar";
 }
 
 function ModUnitSelector({
@@ -131,7 +138,7 @@ function ModUnitSelector({
 
   return (
     <fieldset className="export-unit-selector">
-      <legend>対象mod</legend>
+      <legend>対象</legend>
       <div className="export-unit-selector__toolbar">
         <input
           type="search"
@@ -139,8 +146,8 @@ function ModUnitSelector({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          aria-label="modを検索"
-          placeholder="modを検索"
+          aria-label="対象を検索"
+          placeholder="名前で検索"
           value={query}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
@@ -349,7 +356,13 @@ export function ExportScreen() {
       setModUnits(units);
       setOverview(exportOverview);
       setSelectedIds(units.map((unit) => unit.id));
-      setDestination(exportOverview.instancePath ? "instance" : "folder");
+      const shaderpackOnly = units.length > 0 && units.every((unit) => unit.sourceKind === "shaderpack");
+      setDestination(shaderpackOnly ? "folder" : exportOverview.instancePath ? "instance" : "folder");
+      setKind(shaderpackOnly
+        ? "shaderpackZip"
+        : units.every((unit) => !isJarUnit(unit)) && units.some((unit) => unit.sourceKind === "modpack")
+          ? "modpackFiles"
+          : "resourcePack");
       const versionEstimate = units.find((unit) => unit.minecraftVersion?.trim())?.minecraftVersion;
       setMinecraftVersion(versionEstimate || summary.minecraftVersionDetection?.version || "");
       setNamespace(summary.includedNamespaces[0]?.namespace ?? summary.namespaces[0]?.namespace ?? "");
@@ -374,13 +387,21 @@ export function ExportScreen() {
       : undefined
   ), [manualFormatMajor, manualFormatMinor, manualMinecraftVersion]);
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const hasJarUnit = modUnits.some((unit) => unit.sourceKind !== "modpack");
+  const hasJarUnit = modUnits.some(isJarUnit);
   const hasModpackUnit = modUnits.some((unit) => unit.sourceKind === "modpack");
+  const hasShaderpackUnit = modUnits.some((unit) => unit.sourceKind === "shaderpack");
   const selectableUnits = kind === "modifiedJar"
-    ? modUnits.filter((unit) => unit.sourceKind !== "modpack")
-    : modUnits;
+    ? modUnits.filter(isJarUnit)
+    : kind === "shaderpackZip"
+      ? modUnits.filter((unit) => unit.sourceKind === "shaderpack")
+      : kind === "modpackFiles"
+        ? modUnits.filter((unit) => unit.sourceKind === "modpack")
+        : modUnits.filter((unit) => unit.sourceKind !== "modpack");
   const selectedJarIds = modUnits
-    .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind !== "modpack")
+    .filter((unit) => selectedIdSet.has(unit.id) && isJarUnit(unit))
+    .map((unit) => unit.id);
+  const selectedShaderpackIds = modUnits
+    .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack")
     .map((unit) => unit.id);
   const selectedFtbQuestEntries = modUnits
     .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "modpack")
@@ -397,7 +418,7 @@ export function ExportScreen() {
   ])], [details?.supportedMinecraftVersions, modUnits]);
   const eligibleForInPlace = Boolean(overview?.instancePath)
     && overview?.units.some((unit) => selectedIdSet.has(unit.id)
-      && unit.sourceKind !== "modpack" && unit.originalExists);
+      && isJarUnit(unit) && unit.originalExists);
 
   const validate = useCallback(async (
     nextKind = kind,
@@ -567,7 +588,11 @@ export function ExportScreen() {
         )
         : kind === "modifiedJar"
           ? "改変済みmod"
-          : kind === "modpackFiles" ? "Modpack 翻訳" : "言語ファイル";
+          : kind === "modpackFiles"
+            ? "Modpack 翻訳"
+            : kind === "shaderpackZip"
+              ? `${safeFileComponent(modUnits.find((unit) => selectedShaderpackIds.includes(unit.id))?.sourceFilename ?? "shaderpack")}-ja.zip`
+              : "言語ファイル";
       const defaultPath = defaultExportDirectory
         ? await joinPath(defaultExportDirectory, defaultName)
         : defaultName;
@@ -608,6 +633,46 @@ export function ExportScreen() {
         if (outcome.status !== "completed") return;
         outputPaths = outcome.outputPath ? [outcome.outputPath] : [];
         directlyInstalled = outcome.directlyInstalled;
+        if (directlyInstalled) {
+          await refreshOverview(startingProjectId);
+          if (!isCurrentProject(startingProjectId)) return;
+        }
+      } else if (kind === "shaderpackZip") {
+        const outputDirectory = destination === "folder"
+          ? await chooseDirectory(defaultExportDirectory)
+          : null;
+        if (!isCurrentProject(startingProjectId)) return;
+        if (destination === "folder" && !outputDirectory) return;
+        if (destination === "instance" && !window.confirm(
+          "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+        )) return;
+        let outcome = await exportShaderpacks(
+          startingProjectId,
+          selectedShaderpackIds,
+          outputDirectory ?? null,
+          destination === "instance",
+          false,
+        );
+        if (!isCurrentProject(startingProjectId)) return;
+        if (outcome.status === "overwriteRequired") {
+          const confirmed = window.confirm(
+            `同じ名前のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
+          );
+          if (!confirmed) return;
+          if (!isCurrentProject(startingProjectId)) return;
+          outcome = await exportShaderpacks(
+            startingProjectId,
+            selectedShaderpackIds,
+            outputDirectory ?? null,
+            destination === "instance",
+            true,
+          );
+          if (!isCurrentProject(startingProjectId)) return;
+        }
+        if (outcome.status !== "completed") return;
+        outputPaths = outcome.outputPaths;
+        directlyInstalled = outcome.directlyInstalled;
+        modResults = outcome.modResults;
         if (directlyInstalled) {
           await refreshOverview(startingProjectId);
           if (!isCurrentProject(startingProjectId)) return;
@@ -691,12 +756,17 @@ export function ExportScreen() {
       }
 
       setExportRunDetails({ kind, directInstall: directlyInstalled, inPlaceReplacement, outputPaths, modResults, conflicts });
+      const isShaderpackLanguage = kind === "languageFile" && modUnits.some((unit) => (
+        unit.sourceKind === "shaderpack"
+        && details.includedNamespaces.some((item) => item.modUnitId === unit.id && item.namespace === selectedNamespace)
+      ));
       setExportCompletion({
         kind,
         outputPath: outputPaths[0] ?? (kind === "resourcePack" ? "" : defaultExportDirectory),
         translatedCount,
         missingCount,
         namespace: selectedNamespace,
+        sourceKind: isShaderpackLanguage ? "shaderpack" : undefined,
         autoOpenOutputFolder: autoOpenOutputFolder && outputPaths.length > 0,
       });
       await goTo("exportComplete");
@@ -800,16 +870,24 @@ export function ExportScreen() {
         legend="書き出し形式"
         name="export-kind"
         value={kind}
-        onChange={(value) => setKind(value as ExportKind)}
+        onChange={(value) => {
+          const nextKind = value as ExportKind;
+          setKind(nextKind);
+          if (nextKind === "shaderpackZip") setDestination("folder");
+        }}
         options={EXPORT_OPTIONS
           .filter((option) => option.value !== "modifiedJar" || hasJarUnit)
+          .filter((option) => option.value !== "resourcePack" || hasJarUnit)
           .filter((option) => option.value !== "modpackFiles" || hasModpackUnit)
+          .filter((option) => option.value !== "shaderpackZip" || hasShaderpackUnit)
           .map((option) => ({
           ...option,
           description: option.value === "languageFile"
             ? `${languageFileNameForNamespace(details, selectedNamespace)}を書き出す`
             : option.value === "modifiedJar"
               ? replaceInPlace ? "mods フォルダのJARを直接上書きする" : "元のJARを変更せずコピーを書き出す"
+              : option.value === "shaderpackZip"
+                ? "元のシェーダーパックを残して別名 ZIP を書き出す"
               : option.description,
           id: `export-option-${option.value}`,
           testId: option.value === "languageFile" ? "export-language-file" : undefined,
@@ -919,6 +997,12 @@ export function ExportScreen() {
         </p>
       )}
 
+      {kind === "resourcePack" && modUnits.some((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack") && (
+        <p className="export-screen__hint">
+          シェーダーパックはリソースパックに含まれません。「日本語化したシェーダーパック」から書き出してください。
+        </p>
+      )}
+
       {kind === "modpackFiles" && (
         <fieldset className="export-destination">
           <legend>保存先</legend>
@@ -942,6 +1026,34 @@ export function ExportScreen() {
                 onChange={() => setDestination("instance")}
               />
               インスタンスに直接配置
+            </label>
+          )}
+        </fieldset>
+      )}
+
+      {kind === "shaderpackZip" && (
+        <fieldset className="export-destination">
+          <legend>保存先</legend>
+          <label>
+            <input
+              type="radio"
+              name="shaderpack-destination"
+              value="folder"
+              checked={destination === "folder"}
+              onChange={() => setDestination("folder")}
+            />
+            ZIP に書き出す
+          </label>
+          {overview?.instancePath && (
+            <label>
+              <input
+                type="radio"
+                name="shaderpack-destination"
+                value="instance"
+                checked={destination === "instance"}
+                onChange={() => setDestination("instance")}
+              />
+              インスタンスの shaderpacks に配置
             </label>
           )}
         </fieldset>
@@ -1010,7 +1122,8 @@ export function ExportScreen() {
           data-testid="export-start"
           disabled={busy || loadedProjectId !== projectId || selectedIds.length === 0
             || (kind === "languageFile" && !selectedNamespace)
-            || (kind === "modifiedJar" && selectedJarIds.length === 0)}
+            || (kind === "modifiedJar" && selectedJarIds.length === 0)
+            || (kind === "shaderpackZip" && selectedShaderpackIds.length === 0)}
           onClick={() => void beginExport()}
         >
           {busy ? "書き出し中…" : "書き出す"}
@@ -1044,7 +1157,7 @@ export function ExportScreen() {
       )}
       {!!overview?.activeFileDeployments?.length && (
         <section className="export-replacements" aria-labelledby="export-file-deployments-title">
-          <h2 id="export-file-deployments-title">配置した Modpack ファイル</h2>
+          <h2 id="export-file-deployments-title">配置したファイル</h2>
           <ul>
             {overview.activeFileDeployments.map((deployment: FileDeploymentDto) => (
               <li key={deployment.id}>

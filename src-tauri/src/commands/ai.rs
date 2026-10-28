@@ -198,6 +198,7 @@ struct AiJobEntry {
     mod_name: String,
     before_target: String,
     before_origin: TranslationOrigin,
+    shader_format: bool,
 }
 
 struct AiSourceEntry {
@@ -208,6 +209,7 @@ struct AiSourceEntry {
     source_text: Option<String>,
     source_locale: Option<String>,
     format_profile: PlaceholderProfile,
+    shader_format: bool,
 }
 
 struct AiJobRunContext<'a> {
@@ -738,6 +740,13 @@ fn prepare_ai_job_entries(
     }
     // 翻訳元とnamespaceはProject DBから読み、Mod名は解析済み情報をIPCで受け取ってJAR再解析を省く。
     let repository = opened.repository();
+    let shaderpack_unit_ids: HashSet<_> = repository
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?
+        .into_iter()
+        .filter(|unit| unit.source_kind == yc_project::ModUnitSourceKind::Shaderpack)
+        .map(|unit| unit.id)
+        .collect();
     let mut stored_entries: Vec<_> = repository
         .list_entries(None)
         .map_err(|error| database_error(error.to_string()))?
@@ -756,6 +765,7 @@ fn prepare_ai_job_entries(
                 source_text: entry.source_text,
                 source_locale: entry.source_locale,
                 format_profile,
+                shader_format: shaderpack_unit_ids.contains(&entry.mod_unit_id),
             }
         })
         .collect();
@@ -778,6 +788,7 @@ fn prepare_ai_job_entries(
                     source_text: entry.source_text,
                     source_locale: entry.source_locale,
                     format_profile,
+                    shader_format: false,
                 }
             }),
     );
@@ -831,6 +842,7 @@ fn prepare_ai_job_entries(
                 .unwrap_or_else(|| entry.namespace.clone()),
             before_target: expected.target_text.clone(),
             before_origin: expected.origin.clone(),
+            shader_format: entry.shader_format,
         });
     }
     Ok((opened.summary().id.clone(), entries))
@@ -1037,6 +1049,18 @@ fn apply_outcome_to_project(
             origin: UpdateOrigin::Ai,
         })
         .collect();
+    let shader_format_error_ids: HashSet<_> = updates
+        .iter()
+        .filter_map(|update| {
+            let entry = requested_by_id.get(&update.id)?;
+            (entry.shader_format
+                && yc_validation::shader_format_warning(
+                    &entry.translation.source,
+                    &update.target_text,
+                ))
+            .then_some(update.id)
+        })
+        .collect();
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
@@ -1048,10 +1072,17 @@ fn apply_outcome_to_project(
     }
 
     for update in &updates {
-        opened
-            .writer()
-            .remove_flag(update.id, EntryFlag::PlaceholderError)
-            .map_err(|error| database_error(error.to_string()))?;
+        if shader_format_error_ids.contains(&update.id) {
+            opened
+                .writer()
+                .add_flag(update.id, EntryFlag::PlaceholderError)
+                .map_err(|error| database_error(error.to_string()))?;
+        } else {
+            opened
+                .writer()
+                .remove_flag(update.id, EntryFlag::PlaceholderError)
+                .map_err(|error| database_error(error.to_string()))?;
+        }
         opened
             .writer()
             .remove_flag(update.id, EntryFlag::NeedsReview)
@@ -1098,6 +1129,9 @@ fn apply_outcome_to_project(
             stored.flags.retain(|flag| {
                 !matches!(flag, EntryFlag::PlaceholderError | EntryFlag::NeedsReview)
             });
+            if shader_format_error_ids.contains(&update.id) {
+                stored.flags.push(EntryFlag::PlaceholderError);
+            }
             Some(stored.clone())
         })
         .collect();
@@ -1980,6 +2014,7 @@ mod tests {
             mod_name: "Test".into(),
             before_target: entry.target_text.clone().unwrap_or_default(),
             before_origin: entry.origin.clone(),
+            shader_format: false,
         }];
         let outcome = TranslationOutcome {
             accepted: vec![ValidatedTranslation {
@@ -2014,6 +2049,7 @@ mod tests {
             mod_name: "Test".into(),
             before_target: entry.target_text.clone().unwrap_or_default(),
             before_origin: entry.origin.clone(),
+            shader_format: false,
         }];
         let outcome = TranslationOutcome {
             accepted: vec![ValidatedTranslation {
@@ -2051,6 +2087,7 @@ mod tests {
             mod_name: "Test".into(),
             before_target: entry.target_text.unwrap_or_default(),
             before_origin: entry.origin,
+            shader_format: false,
         }];
         let outcome = TranslationOutcome {
             accepted: validation.accepted,
@@ -2108,6 +2145,7 @@ mod tests {
             mod_name: "Test".into(),
             before_target: String::new(),
             before_origin: TranslationOrigin::Missing,
+            shader_format: false,
         }];
         opened
             .writer()
