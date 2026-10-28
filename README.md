@@ -19,7 +19,9 @@ Windows x64 / ARM64 と Linux x86_64 向けの Minecraft Mod 翻訳アプリで�
 
 - **Windows x64**: 通常は `YakuCraft_*_x64-setup.exe` を使います。MSI も配布します。
 - **Windows ARM64**: `YakuCraft_*_arm64-setup.exe` を使います。MSI も配布します。
-- **Linux x86_64 (Ubuntu 22.04 以降)**: AppImage または `.deb` を使います。AppImage は実行権限を付けて起動します。
+- **Linux x86_64 (Ubuntu 22.04 以降)**: `YakuCraft_*_amd64.AppImage` または `YakuCraft_*_amd64.deb` を使います。AppImage は実行権限を付けて起動します。
+
+ファイル名のアーキテクチャ表記は、各 OS の慣習に合わせています。Windows の `x64` と Linux の `amd64` は、どちらも Intel / AMD の 64 ビット CPU（x86_64）向けです。Snapdragon などの ARM 搭載 Windows PC では `arm64` を使ってください。
 
 ```bash
 chmod +x ./*.AppImage
