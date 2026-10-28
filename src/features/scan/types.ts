@@ -73,3 +73,8 @@ export type ScanModsFolderEventDto =
     shaderpacks: ShaderpackScanResultDto[];
   }
   | { kind: "failed"; jobId: string; error: AppError };
+
+export type AddInstanceScanEventDto =
+  | { kind: "progress"; progress: ScanProgressDto }
+  | { kind: "completed"; jobId: string; results: ModScanResultDto[]; shaderpacks: ShaderpackScanResultDto[] }
+  | { kind: "failed"; jobId: string; error: AppError };

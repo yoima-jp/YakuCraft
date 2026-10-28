@@ -13,13 +13,15 @@ use crate::{
 };
 
 enum WriterCommand {
-    SaveAnalysis(i64, AnalysisData, SyncSender<Result<()>>),
+    SaveAnalysis(i64, AnalysisData, bool, SyncSender<Result<()>>),
     SaveDocumentEntries(i64, Vec<DocumentEntryInput>, SyncSender<Result<()>>),
     SaveAssetIndex(i64, ProjectAssetIndex, SyncSender<Result<()>>),
     SetModUnitSourceKind(i64, ModUnitSourceKind, SyncSender<Result<()>>),
     UpdateModpackSource(i64, String, String, SyncSender<Result<()>>),
     SaveReviewSettings(i64, ReviewSettings, bool, SyncSender<Result<()>>),
-    RemoveModUnit(i64, SyncSender<Result<()>>),
+    AddModUnitSource(repository::NewModUnitSource, SyncSender<Result<()>>),
+    SaveAddedUnitReviewSettings(i64, ReviewSettings, SyncSender<Result<()>>),
+    RemoveModUnit(i64, bool, SyncSender<Result<()>>),
     UpdateEntries(Vec<EntryUpdate>, SyncSender<Result<()>>),
     AddFlag(i64, EntryFlag, SyncSender<Result<()>>),
     RemoveFlag(i64, EntryFlag, SyncSender<Result<()>>),
@@ -64,7 +66,27 @@ impl ProjectWriter {
     }
 
     pub fn save_analysis(&self, mod_unit_id: i64, analysis: AnalysisData) -> Result<()> {
-        self.send_and_wait(|response| WriterCommand::SaveAnalysis(mod_unit_id, analysis, response))
+        self.save_analysis_inner(mod_unit_id, analysis, false)
+    }
+
+    // 追加時は解析結果から既存プロジェクト名を自動更新しない。
+    pub fn save_analysis_preserving_project_name(
+        &self,
+        mod_unit_id: i64,
+        analysis: AnalysisData,
+    ) -> Result<()> {
+        self.save_analysis_inner(mod_unit_id, analysis, true)
+    }
+
+    fn save_analysis_inner(
+        &self,
+        mod_unit_id: i64,
+        analysis: AnalysisData,
+        preserve_project_name: bool,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::SaveAnalysis(mod_unit_id, analysis, preserve_project_name, response)
+        })
     }
 
     pub fn save_document_entries(
@@ -113,8 +135,32 @@ impl ProjectWriter {
         })
     }
 
+    pub fn save_added_unit_review_settings(
+        &self,
+        mod_unit_id: i64,
+        settings: ReviewSettings,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::SaveAddedUnitReviewSettings(mod_unit_id, settings, response)
+        })
+    }
+
+    pub(crate) fn add_mod_unit_source(&self, source: repository::NewModUnitSource) -> Result<()> {
+        self.send_and_wait(|response| WriterCommand::AddModUnitSource(source, response))
+    }
+
     pub fn remove_mod_unit(&self, mod_unit_id: i64) -> Result<()> {
-        self.send_and_wait(|response| WriterCommand::RemoveModUnit(mod_unit_id, response))
+        self.remove_mod_unit_inner(mod_unit_id, false)
+    }
+
+    pub fn remove_mod_unit_preserving_project_name(&self, mod_unit_id: i64) -> Result<()> {
+        self.remove_mod_unit_inner(mod_unit_id, true)
+    }
+
+    fn remove_mod_unit_inner(&self, mod_unit_id: i64, preserve_project_name: bool) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::RemoveModUnit(mod_unit_id, preserve_project_name, response)
+        })
     }
 
     pub fn update_entry(&self, update: EntryUpdate) -> Result<()> {
@@ -212,11 +258,12 @@ fn writer_loop(
 
     while let Ok(command) = commands.recv() {
         match command {
-            WriterCommand::SaveAnalysis(mod_unit_id, analysis, response) => {
+            WriterCommand::SaveAnalysis(mod_unit_id, analysis, preserve_project_name, response) => {
                 let _ = response.send(repository::save_analysis(
                     &mut connection,
                     mod_unit_id,
                     analysis,
+                    preserve_project_name,
                 ));
             }
             WriterCommand::SaveDocumentEntries(mod_unit_id, entries, response) => {
@@ -261,11 +308,21 @@ fn writer_loop(
                     setup_completed,
                 ));
             }
-            WriterCommand::RemoveModUnit(mod_unit_id, response) => {
+            WriterCommand::AddModUnitSource(source, response) => {
+                let _ = response.send(repository::insert_mod_unit_source(&mut connection, source));
+            }
+            WriterCommand::SaveAddedUnitReviewSettings(mod_unit_id, settings, response) => {
+                let _ = response.send(repository::save_added_unit_review_settings(
+                    &mut connection,
+                    mod_unit_id,
+                    settings,
+                ));
+            }
+            WriterCommand::RemoveModUnit(mod_unit_id, preserve_project_name, response) => {
                 let _ = response.send(repository::remove_mod_unit(
                     &mut connection,
                     mod_unit_id,
-                    false,
+                    preserve_project_name,
                 ));
             }
             WriterCommand::UpdateEntries(updates, response) => {

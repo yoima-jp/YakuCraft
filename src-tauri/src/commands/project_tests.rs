@@ -6,7 +6,8 @@ use std::{
 };
 
 use super::{
-    ReviewSettingsInput, create_project_core, merge_for_review, modpack_document_entries,
+    ReviewSettingsInput, add_project_sources_core, create_project_core,
+    create_project_from_sources_core, merge_for_review, modpack_document_entries,
     preserve_saved_translations, project_analysis_data, project_delete_error, project_details_core,
     project_details_core_with_analysis, project_details_from_stored_data,
     refresh_modpack_unit_core, review_asset_summary_core,
@@ -25,10 +26,11 @@ use crate::{
     paths::AppPaths,
 };
 use yc_analysis::{AnalysisStage, CancellationToken};
+use yc_language::ReviewSettings;
 use yc_project::{
-    AppSettings, EntryUpdate, IncludedNamespace, NamespaceRecord, OpenedProject, ProjectError,
-    ProjectReviewSettings, RecentProject, RecentProjects, TranslationProgress, UpdateOrigin,
-    load_recent_projects, open_project as open_project_file, save_recent_projects,
+    AppSettings, EntryUpdate, GlossaryTermInput, IncludedNamespace, NamespaceRecord, OpenedProject,
+    ProjectError, ProjectReviewSettings, RecentProject, RecentProjects, TranslationProgress,
+    UpdateOrigin, load_recent_projects, open_project as open_project_file, save_recent_projects,
     save_settings as save_app_settings,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -64,6 +66,261 @@ fn first_mod_unit_id(opened: &OpenedProject) -> i64 {
         .first()
         .expect("single-mod fixture should have a unit")
         .id
+}
+
+fn create_addition_fixture() -> (TemporaryDirectory, OpenedProject) {
+    let temporary = TemporaryDirectory::create();
+    let first = temporary.0.join("first.jar");
+    let second = temporary.0.join("second.jar");
+    let third = temporary.0.join("third.jar");
+    write_fixture_jar(&first);
+    write_mod_identity_fixture_jar(&second, "second_fixture", "1.0.0", "Second");
+    write_mod_identity_fixture_jar(&third, "third_fixture", "1.0.0", "Third");
+    let paths =
+        AppPaths::create(temporary.0.join("app-data")).expect("app directories should be created");
+    let created = create_project_from_sources_core(
+        &paths,
+        &[first, second, third],
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("initial project should be created");
+    let mut opened = created.opened;
+    opened
+        .writer()
+        .save_review_settings(
+            1,
+            ReviewSettings {
+                source_locale: "en_us".to_owned(),
+                fallback_priority: vec!["en_us".to_owned()],
+                preserve_existing_japanese: true,
+                fill_missing_from_other_languages: false,
+                included_namespaces: vec!["fixture".to_owned()],
+            },
+            true,
+        )
+        .expect("review settings should be completed");
+    opened
+        .writer()
+        .upsert_glossary_term(GlossaryTermInput {
+            source_term: "Gear".to_owned(),
+            target_term: "歯車".to_owned(),
+            note: Some("existing term".to_owned()),
+            case_sensitive: false,
+        })
+        .expect("glossary term should be saved");
+    let existing_entry = opened
+        .repository()
+        .list_entries(Some(1))
+        .expect("existing translation entries should load")
+        .into_iter()
+        .find(|entry| entry.key == "message.hello")
+        .expect("fixture translation should exist");
+    opened
+        .writer()
+        .update_entry(EntryUpdate {
+            id: existing_entry.id,
+            target_text: "保持する既存訳".to_owned(),
+            origin: UpdateOrigin::Manual,
+        })
+        .expect("existing translation should be saved");
+    opened
+        .remove_mod_unit(2)
+        .expect("middle unit should be removed to leave ID and sort gaps");
+    (temporary, opened)
+}
+
+#[test]
+fn adding_jar_and_shaderpack_preserves_existing_project_state_and_uses_max_ids() {
+    let (temporary, mut opened) = create_addition_fixture();
+    let project_name = opened.summary().display_name.clone();
+    let jar_path = temporary.0.join("added.jar");
+    let shaderpack_path = temporary.0.join("added-shaders.zip");
+    write_mod_identity_fixture_jar(&jar_path, "new_fixture", "1.0.0", "New source");
+    write_shaderpack_fixture_zip(&shaderpack_path);
+    let existing_entries = opened
+        .repository()
+        .list_entries(Some(1))
+        .expect("existing translations should load");
+    let existing_entry_id = existing_entries
+        .iter()
+        .find(|entry| entry.key == "message.hello")
+        .expect("existing key should be present")
+        .id;
+
+    let added = add_project_sources_core(
+        &mut opened,
+        &[jar_path, shaderpack_path],
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("JAR and shaderpack should be added");
+
+    assert_eq!(added.added_unit_ids, vec![4, 5]);
+    let units = opened
+        .repository()
+        .list_mod_units()
+        .expect("all mod units should remain readable");
+    assert_eq!(
+        units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+        vec![1, 3, 4, 5]
+    );
+    assert_eq!(
+        units.iter().map(|unit| unit.sort_index).collect::<Vec<_>>(),
+        vec![0, 2, 3, 4]
+    );
+    assert_eq!(units[2].source_kind, yc_project::ModUnitSourceKind::Jar);
+    assert_eq!(
+        units[3].source_kind,
+        yc_project::ModUnitSourceKind::Shaderpack
+    );
+    assert_eq!(opened.summary().display_name, project_name);
+    assert!(
+        opened
+            .repository()
+            .review_settings()
+            .expect("review state should load")
+            .setup_completed
+    );
+    assert_eq!(
+        opened
+            .repository()
+            .review_settings_for_unit(1)
+            .expect("existing unit settings should load")
+            .source_locale,
+        "en_us"
+    );
+    let existing_entry = opened
+        .repository()
+        .list_entries(Some(1))
+        .expect("existing translations should remain readable")
+        .into_iter()
+        .find(|entry| entry.id == existing_entry_id)
+        .expect("existing translation should remain");
+    assert_eq!(
+        existing_entry.target_text.as_deref(),
+        Some("保持する既存訳")
+    );
+    assert_eq!(
+        opened
+            .repository()
+            .list_glossary_terms()
+            .expect("glossary should remain")[0]
+            .target_term,
+        "歯車"
+    );
+    assert!(
+        opened
+            .repository()
+            .asset_type_counts(Some(4))
+            .expect("new JAR asset counts should load")
+            .values()
+            .sum::<usize>()
+            > 0
+    );
+}
+
+#[test]
+fn identical_hash_is_skipped_and_known_mod_id_with_new_hash_is_rejected() {
+    let (temporary, mut opened) = create_addition_fixture();
+    let source = temporary.0.join("candidate.jar");
+    write_mod_identity_fixture_jar(&source, "new_fixture", "1.0.0", "First version");
+    let first = add_project_sources_core(
+        &mut opened,
+        std::slice::from_ref(&source),
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("first version should be added");
+    assert_eq!(first.added_unit_ids, vec![4]);
+
+    let duplicate = add_project_sources_core(
+        &mut opened,
+        std::slice::from_ref(&source),
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("identical source should be skipped");
+    assert!(duplicate.added_unit_ids.is_empty());
+    assert_eq!(duplicate.duplicate_filenames, vec!["candidate.jar"]);
+
+    let update = temporary.0.join("candidate-update.jar");
+    write_mod_identity_fixture_jar(&update, "new_fixture", "2.0.0", "Updated version");
+    let error = match add_project_sources_core(
+        &mut opened,
+        std::slice::from_ref(&update),
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("same Mod ID with a different hash should be rejected"),
+    };
+    assert_eq!(error.code, "mod_id_already_exists");
+    assert_eq!(
+        opened
+            .repository()
+            .list_mod_units()
+            .expect("project should remain open")
+            .iter()
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 4]
+    );
+    assert!(
+        opened
+            .repository()
+            .review_settings()
+            .expect("review state should remain")
+            .setup_completed
+    );
+}
+
+#[test]
+fn failed_addition_rolls_back_only_new_units_and_keeps_project_open() {
+    let (temporary, mut opened) = create_addition_fixture();
+    let valid = temporary.0.join("temporary.jar");
+    let invalid = temporary.0.join("invalid.jar");
+    write_mod_identity_fixture_jar(&valid, "temporary_fixture", "1.0.0", "Temporary");
+    fs::write(&invalid, b"not a JAR archive").expect("invalid source should be created");
+
+    let result = add_project_sources_core(
+        &mut opened,
+        &[valid, invalid],
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        opened
+            .repository()
+            .list_mod_units()
+            .expect("existing project should stay open")
+            .iter()
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert!(
+        opened
+            .repository()
+            .review_settings()
+            .expect("review state should remain")
+            .setup_completed
+    );
+    assert_eq!(
+        opened
+            .repository()
+            .list_entries(Some(1))
+            .expect("existing translations should remain readable")
+            .iter()
+            .find(|entry| entry.key == "message.hello")
+            .and_then(|entry| entry.target_text.as_deref()),
+        Some("保持する既存訳")
+    );
+    assert!(!opened.directory().join("sources/4.jar").exists());
+    assert!(!opened.directory().join("sources/5.jar").exists());
 }
 
 #[test]
@@ -2155,6 +2412,29 @@ fn write_fixture_jar(path: &std::path::Path) {
             .expect("fixture ZIP entry should start");
         jar.write_all(contents.as_bytes())
             .expect("fixture ZIP entry should be written");
+    }
+    jar.finish().expect("fixture JAR should be finalized");
+}
+
+fn write_mod_identity_fixture_jar(path: &Path, mod_id: &str, version: &str, text: &str) {
+    let file = fs::File::create(path).expect("fixture JAR should be created");
+    let mut jar = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let metadata =
+        format!(r#"{{"schemaVersion":1,"id":"{mod_id}","name":"{mod_id}","version":"{version}"}}"#);
+    let language = format!(r#"{{"{mod_id}.message":"{text}"}}"#);
+    for (entry_path, contents) in [
+        ("fabric.mod.json".to_owned(), metadata),
+        (format!("assets/{mod_id}/lang/en_us.json"), language),
+        (
+            format!("assets/{mod_id}/models/item/sample.json"),
+            "{}".to_owned(),
+        ),
+    ] {
+        jar.start_file(entry_path, options)
+            .expect("fixture JAR entry should start");
+        jar.write_all(contents.as_bytes())
+            .expect("fixture JAR entry should be written");
     }
     jar.finish().expect("fixture JAR should be finalized");
 }

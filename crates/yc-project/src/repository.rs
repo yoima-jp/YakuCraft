@@ -141,6 +141,17 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    pub fn has_source_hash(&self, source_sha256: &str) -> Result<bool> {
+        let connection = open_read_connection(&self.database_path)?;
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM mod_units WHERE source_sha256 = ?1)",
+                [source_sha256],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn list_file_deployments(
         &self,
         include_restored: bool,
@@ -1024,6 +1035,7 @@ pub(crate) fn save_analysis(
     connection: &mut Connection,
     mod_unit_id: i64,
     analysis: AnalysisData,
+    preserve_project_name: bool,
 ) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute(
@@ -1229,7 +1241,7 @@ pub(crate) fn save_analysis(
     )?;
     // 既存スキーマでは自動名と手動名を分けて記録しないため、保存前の自動名と
     // 現在名が一致するときだけ追解析後のMod名へ更新し、ユーザーの改名を保護する。
-    if current_display_name == previous_automatic_name {
+    if !preserve_project_name && current_display_name == previous_automatic_name {
         transaction.execute(
             "UPDATE project_meta SET display_name = ?1 WHERE id = (SELECT id FROM project_meta LIMIT 1)",
             [&next_automatic_name],
@@ -1386,14 +1398,36 @@ pub(crate) fn save_review_settings(
     settings: ReviewSettings,
     setup_completed: bool,
 ) -> Result<()> {
+    save_unit_review_settings(connection, mod_unit_id, settings, Some(setup_completed))
+}
+
+pub(crate) fn save_added_unit_review_settings(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    settings: ReviewSettings,
+) -> Result<()> {
+    save_unit_review_settings(connection, mod_unit_id, settings, None)
+}
+
+fn save_unit_review_settings(
+    connection: &mut Connection,
+    mod_unit_id: i64,
+    settings: ReviewSettings,
+    setup_completed: Option<bool>,
+) -> Result<()> {
     let transaction = connection.transaction()?;
     let settings_json = serde_json::to_string(&settings)?;
     let now = now_rfc3339()?;
-    transaction.execute(
-        "UPDATE project_meta
-         SET setup_completed = ?1, updated_at = ?2",
-        params![setup_completed, now],
-    )?;
+    if let Some(setup_completed) = setup_completed {
+        transaction.execute(
+            "UPDATE project_meta
+             SET setup_completed = ?1, updated_at = ?2",
+            params![setup_completed, now],
+        )?;
+    } else {
+        // 追加したunitの初期設定だけを保存し、既存Projectのセットアップ完了状態を保つ。
+        transaction.execute("UPDATE project_meta SET updated_at = ?1", [&now])?;
+    }
     transaction.execute(
         "UPDATE mod_units SET review_settings_json = ?1 WHERE id = ?2",
         params![settings_json, mod_unit_id],
@@ -1410,6 +1444,43 @@ pub(crate) fn save_review_settings(
     }
     transaction.commit()?;
     tracing::debug!(setup_completed, "Project review settings saved");
+    Ok(())
+}
+
+pub(crate) struct NewModUnitSource {
+    pub id: i64,
+    pub source_kind: ModUnitSourceKind,
+    pub sort_index: i64,
+    pub source_filename: String,
+    pub source_sha256: String,
+    pub stored_path: String,
+    pub original_path: String,
+    pub created_at: String,
+}
+
+pub(crate) fn insert_mod_unit_source(
+    connection: &mut Connection,
+    source: NewModUnitSource,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT INTO mod_units (
+            id, source_kind, sort_index, source_filename, source_sha256, stored_path,
+            original_path, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            source.id,
+            source.source_kind.as_db(),
+            source.sort_index,
+            source.source_filename,
+            source.source_sha256,
+            source.stored_path,
+            source.original_path,
+            source.created_at,
+        ],
+    )?;
+    update_project_timestamp(&transaction, &source.created_at)?;
+    transaction.commit()?;
     Ok(())
 }
 

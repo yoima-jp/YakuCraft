@@ -42,6 +42,8 @@ pub fn run() {
             commands::project::refresh_modpack_unit,
             commands::project::cancel_analysis,
             commands::project::scan_mods_folder,
+            commands::project::scan_project_instance_sources,
+            commands::project::add_mod_units,
             commands::project::get_project_summary,
             commands::project::get_review_asset_summary,
             commands::project::save_review_settings,

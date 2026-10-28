@@ -22,6 +22,8 @@ interface EditorToolbarProps {
   saveStatus: SaveStatus;
   requestConfirmation: RequestConfirmation;
   onOpenGlossary: () => void;
+  onAddMod?: () => void;
+  addDisabled?: boolean;
   editingDisabled?: boolean;
 }
 
@@ -36,6 +38,8 @@ export function EditorToolbar({
   saveStatus,
   requestConfirmation,
   onOpenGlossary,
+  onAddMod = () => undefined,
+  addDisabled = false,
   editingDisabled = false,
 }: EditorToolbarProps) {
   const initialQuery = useEditorStore((state) => state.searchQuery);
@@ -174,6 +178,9 @@ export function EditorToolbar({
         </Menu>
         <TertiaryButton data-testid="editor-toggle-inspector" onClick={onToggleInspector} aria-expanded={inspectorOpen}>
           詳細
+        </TertiaryButton>
+        <TertiaryButton data-testid="editor-add-mod" disabled={addDisabled} onClick={onAddMod}>
+          Mod を追加
         </TertiaryButton>
         <TertiaryButton onClick={onOpenGlossary}>用語集</TertiaryButton>
         <Tooltip content="書き出し" shortcut="Ctrl+E">

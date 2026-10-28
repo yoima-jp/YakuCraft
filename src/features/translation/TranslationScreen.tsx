@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
+import { SecondaryButton } from "../../components/button/Buttons";
 import { useAppStore } from "../../stores/appStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
-import { AppCommandError, getModUnitRemovalInfo, getProjectSummary, listEntries, listGlossaryTerms, listModUnits, refreshModpackUnit, removeModUnit } from "../../lib/tauri";
+import { AppCommandError, cancelAnalysis, getModUnitRemovalInfo, getProjectSummary, listEntries, listGlossaryTerms, listModUnits, refreshModpackUnit, removeModUnit } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
+import type { AddUnitsChannelEventDto, AnalysisProgressDto } from "../../types/commands";
 import { useProjectStore } from "../../stores/projectStore";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -23,6 +27,7 @@ import {
 } from "./modTabState";
 import type { ModTabPreferences } from "./modTabState";
 import { EditorSelectionToolbar, EditorToolbar } from "./EditorToolbar";
+import { AddUnitsDialog } from "./AddUnitsDialog";
 import { Inspector } from "./Inspector";
 import { GlossaryPanel } from "./GlossaryPanel";
 import type { GlossaryDraft } from "./GlossaryPanel";
@@ -35,6 +40,8 @@ import {
 } from "./tableLayout";
 import { useAutosave } from "./useAutosave";
 import { parseTranslationClipboard, serializeTranslationClipboard } from "./clipboard";
+import { addModUnits } from "../scan/tauri";
+import { ProgressBar } from "../../components/progress/ProgressBar";
 import "./TranslationScreen.css";
 
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- 幅変更操作を持つseparatorはhrでは表せない。 */
@@ -62,6 +69,10 @@ export function TranslationScreen() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const tabSwitchRequestRef = useRef(0);
   const refreshingModpackIdRef = useRef<number | null>(null);
+  const addGenerationRef = useRef(0);
+  const addJobRef = useRef<string | null>(null);
+  const terminalAddJobsRef = useRef(new Set<string>());
+  const addingRef = useRef(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
@@ -72,13 +83,22 @@ export function TranslationScreen() {
   const [wideEditorLayout, setWideEditorLayout] = useState(() => isWideEditorLayout());
   const [loadError, setLoadError] = useState<{ projectId: string; message: string } | null>(null);
   const [modActionError, setModActionError] = useState<string | null>(null);
+  const [addNotice, setAddNotice] = useState<string | null>(null);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [addProgress, setAddProgress] = useState<{ progress: AnalysisProgressDto; modIndex: number; modCount: number; modFilename: string } | null>(null);
+  const [addJobId, setAddJobId] = useState<string | null>(null);
+  const [addCancelRequested, setAddCancelRequested] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
   const [refreshingModpackId, setRefreshingModpackId] = useState<number | null>(null);
   const [tabOrderAnnouncement, setTabOrderAnnouncement] = useState("");
   const [tabPreferences, setTabPreferences] = useState<ModTabPreferences>({ openIds: [], pinnedIds: [], activeId: 0 });
   const [tabsInitializedProjectId, setTabsInitializedProjectId] = useState<string | null>(null);
   const { requestConfirmation, dialog: confirmationDialog } = useDialogConfirmation();
   const goTo = useAppStore((state) => state.goTo);
+  const route = useAppStore((state) => state.route);
   const projectId = useProjectStore((state) => state.details?.project.id ?? null);
+  const instancePath = useProjectStore((state) => state.details?.project.instancePath ?? null);
   const modUnits = useProjectStore((state) => state.modUnits);
   const activeAiJob = useAiJobStore((state) => state.activeJob);
   const loadedProjectId = useEditorStore((state) => state.loadedProjectId);
@@ -260,9 +280,9 @@ export function TranslationScreen() {
     return true;
   }, [commitTabPreferences, modUnits, tabPreferences]);
 
-  const selectModUnit = useCallback(async (modUnitId: number) => {
-    if (isUnitScopedAiJobActive() || refreshingModpackIdRef.current !== null) return;
-    if (!projectId || !modUnits.some((unit) => unit.id === modUnitId)) return;
+  const selectModUnit = useCallback(async (modUnitId: number, duringAdd = false) => {
+    if (isUnitScopedAiJobActive() || refreshingModpackIdRef.current !== null || (addingRef.current && !duringAdd)) return;
+    if (!projectId || !useProjectStore.getState().modUnits.some((unit) => unit.id === modUnitId)) return;
     const requestId = ++tabSwitchRequestRef.current;
     const before = useEditorStore.getState();
     try {
@@ -309,7 +329,179 @@ export function TranslationScreen() {
         message: error instanceof AppCommandError ? error.message : "翻訳データを読み込めませんでした。",
       });
     }
-  }, [commitTabPreferences, modUnits, projectId, tabPreferences]);
+  }, [commitTabPreferences, projectId, tabPreferences]);
+
+  const completeUnitAddition = useCallback(async (event: Extract<AddUnitsChannelEventDto, { kind: "completed" }>, generation: number) => {
+    try {
+      if (event.addedUnitIds.length > 0) {
+        const [details, units] = await Promise.all([getProjectSummary(), listModUnits()]);
+        if (
+          generation !== addGenerationRef.current ||
+          useProjectStore.getState().details?.project.id !== projectId
+        ) return;
+        useProjectStore.getState().setProjectDetails(details);
+        useProjectStore.getState().setModUnits(units);
+        clearModIconCacheInUi();
+
+        const lastAddedId = event.addedUnitIds[event.addedUnitIds.length - 1];
+        if (lastAddedId !== undefined) await selectModUnit(lastAddedId, true);
+        if (generation !== addGenerationRef.current) return;
+        const activeId = useEditorStore.getState().activeModUnitId ?? tabPreferences.activeId;
+        const openIds = [...new Set([...tabPreferences.openIds, ...event.addedUnitIds])];
+        commitTabPreferences({ openIds, pinnedIds: tabPreferences.pinnedIds, activeId });
+      }
+
+      const messages: string[] = [];
+      if (event.added > 0) messages.push(`${event.added.toLocaleString("ja-JP")} 件追加しました`);
+      if (event.duplicateFilenames.length > 0) {
+        messages.push(event.added === 0 ? "同じファイルは追加済みです" : "同じファイルをスキップしました");
+      }
+      if (event.ignoredFilenames.length > 0) messages.push("対象外の項目を除外しました");
+      setAddNotice(messages.join("。"));
+      setModActionError(null);
+    } catch (error: unknown) {
+      void logFrontendError(error, "refresh project after adding mods");
+      setModActionError(error instanceof AppCommandError ? error.message : "追加したModを表示できませんでした。");
+    } finally {
+      if (generation === addGenerationRef.current) {
+        addingRef.current = false;
+        setIsAdding(false);
+        setAddProgress(null);
+        setAddJobId(null);
+        setAddCancelRequested(false);
+      }
+    }
+  }, [commitTabPreferences, projectId, selectModUnit, tabPreferences]);
+
+  const handleAddUnitsEvent = useCallback((event: AddUnitsChannelEventDto, generation: number) => {
+    if (generation !== addGenerationRef.current) return;
+    if (event.kind === "progress") {
+      setAddProgress({
+        progress: event.progress,
+        modIndex: event.modIndex,
+        modCount: event.modCount,
+        modFilename: event.modFilename,
+      });
+      return;
+    }
+    terminalAddJobsRef.current.add(event.jobId);
+    addJobRef.current = null;
+    setAddJobId(null);
+    if (event.kind === "failed") {
+      addingRef.current = false;
+      setIsAdding(false);
+      setAddProgress(null);
+      setAddCancelRequested(false);
+      if (event.error.code === "cancelled") setAddNotice("追加をキャンセルしました。");
+      else setModActionError(event.error.userMessage);
+      return;
+    }
+    void completeUnitAddition(event, generation);
+  }, [completeUnitAddition]);
+
+  const addSourcesToProject = useCallback(async (paths: string[]) => {
+    if (!projectId) return;
+    if (addingRef.current) {
+      setAddNotice("追加処理中です。");
+      return;
+    }
+    addingRef.current = true;
+    const generation = ++addGenerationRef.current;
+    tabSwitchRequestRef.current += 1;
+    setIsAdding(true);
+    setAddDialogOpen(false);
+    setAddNotice(null);
+    setModActionError(null);
+    setAddProgress(null);
+    setAddJobId(null);
+    setAddCancelRequested(false);
+    try {
+      if (!(await flushBeforeLeavingEditor()) || generation !== addGenerationRef.current) {
+        addingRef.current = false;
+        setIsAdding(false);
+        return;
+      }
+      const earlyEvents: AddUnitsChannelEventDto[] = [];
+      let jobId: string | null = null;
+      const returnedJobId = await addModUnits(projectId, paths, (event) => {
+        if (jobId === null) earlyEvents.push(event);
+        else handleAddUnitsEvent(event, generation);
+      });
+      jobId = returnedJobId;
+      if (generation !== addGenerationRef.current) {
+        if (!terminalAddJobsRef.current.has(returnedJobId)) void cancelAnalysis(returnedJobId).catch(() => {});
+        return;
+      }
+      if (!terminalAddJobsRef.current.has(returnedJobId)) {
+        addJobRef.current = returnedJobId;
+        setAddJobId(returnedJobId);
+      }
+      for (const event of earlyEvents) handleAddUnitsEvent(event, generation);
+    } catch (error: unknown) {
+      if (generation !== addGenerationRef.current) return;
+      void logFrontendError(error, "add mods to project");
+      addingRef.current = false;
+      setIsAdding(false);
+      setAddProgress(null);
+      setAddJobId(null);
+      setModActionError(error instanceof AppCommandError ? error.message : "Mod を追加できませんでした。");
+    }
+  }, [handleAddUnitsEvent, projectId]);
+
+  const cancelUnitAddition = useCallback(async () => {
+    if (!addJobId) return;
+    setAddCancelRequested(true);
+    try {
+      await cancelAnalysis(addJobId);
+    } catch (error: unknown) {
+      setAddCancelRequested(false);
+      void logFrontendError(error, "cancel mod addition");
+      setModActionError(error instanceof AppCommandError ? error.message : "追加を中止できませんでした。");
+    }
+  }, [addJobId]);
+
+  useEffect(() => () => {
+    addGenerationRef.current += 1;
+    const jobId = addJobRef.current;
+    addJobRef.current = null;
+    if (jobId && !terminalAddJobsRef.current.has(jobId)) void cancelAnalysis(jobId).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri() || route !== "editor" || !loaded || !projectId) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        switch (event.payload.type) {
+          case "enter":
+            setDropActive(true);
+            break;
+          case "over":
+            break;
+          case "leave":
+            setDropActive(false);
+            break;
+          case "drop":
+            setDropActive(false);
+            if (event.payload.paths.length > 0) void addSourcesToProject(event.payload.paths);
+            else setModActionError("JAR、シェーダーパック ZIP またはシェーダーパックフォルダをドロップしてください。");
+            break;
+        }
+      })
+      .then((stopListening) => {
+        if (active) unlisten = stopListening;
+        else stopListening();
+      })
+      .catch((error: unknown) => {
+        void logFrontendError(error, "translation drag and drop setup");
+      });
+    return () => {
+      active = false;
+      unlisten?.();
+      setDropActive(false);
+    };
+  }, [addSourcesToProject, loaded, projectId, route]);
 
   const closeModUnit = useCallback(async (modUnitId: number) => {
     const visibleIds = new Set([...tabPreferences.openIds, ...tabPreferences.pinnedIds]);
@@ -673,8 +865,8 @@ export function TranslationScreen() {
     pinnedIds: tabPreferences.pinnedIds,
     activeUnitId: activeModUnitId!,
     selectionDisabled:
-      refreshingModpackId !== null || (Boolean(activeAiJob) && isUnitScopedAiJobActive()),
-    actionsDisabled: Boolean(activeAiJob) || refreshingModpackId !== null,
+      isAdding || refreshingModpackId !== null || (Boolean(activeAiJob) && isUnitScopedAiJobActive()),
+    actionsDisabled: isAdding || Boolean(activeAiJob) || refreshingModpackId !== null,
     progressById,
     onSelect: (modUnitId: number) => void selectModUnit(modUnitId),
     onClose: (modUnitId: number) => void closeModUnit(modUnitId),
@@ -713,6 +905,8 @@ export function TranslationScreen() {
         onRetrySave={retry}
         saveStatus={saveStatus}
         editingDisabled={refreshingModpackId !== null}
+        onAddMod={() => setAddDialogOpen(true)}
+        addDisabled={isAdding}
         requestConfirmation={requestConfirmation}
         onOpenGlossary={() => {
           setGlossaryDraft(null);
@@ -721,6 +915,25 @@ export function TranslationScreen() {
       />
       <span className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{tabOrderAnnouncement}</span>
       {modActionError && <p className="status-message" role="alert">{modActionError}</p>}
+      {addNotice && <p className="status-message" role="status">{addNotice}</p>}
+      {isAdding && (
+        <div className="editor-add-progress" role="status" aria-live="polite">
+          <ProgressBar
+            value={addProgress?.progress.total
+              ? Math.round(addProgress.progress.current / addProgress.progress.total * 100)
+              : 0}
+            label="Mod の追加進行状況"
+          />
+          <span>
+            {addProgress
+              ? `${addProgress.modIndex} / ${addProgress.modCount} · ${addProgress.modFilename} · ${addProgress.progress.message}`
+              : "追加を準備しています…"}
+          </span>
+          <SecondaryButton disabled={addCancelRequested || !addJobId} onClick={() => void cancelUnitAddition()}>
+            {addCancelRequested ? "中止中…" : "キャンセル"}
+          </SecondaryButton>
+        </div>
+      )}
       {refreshingModpackId !== null && (
         <p className="status-message" role="status">Modpack を再取り込み中…</p>
       )}
@@ -808,6 +1021,19 @@ export function TranslationScreen() {
           setGlossaryDraft(null);
         }}
       />
+      <AddUnitsDialog
+        open={addDialogOpen}
+        projectId={projectId}
+        instancePath={instancePath}
+        busy={isAdding}
+        onClose={() => setAddDialogOpen(false)}
+        onAdd={(paths) => void addSourcesToProject(paths)}
+      />
+      {dropActive && (
+        <div className="editor-drop-overlay" role="status" aria-live="polite">
+          <span>ドロップしてプロジェクトに追加</span>
+        </div>
+      )}
       {confirmationDialog}
     </section>
   );
