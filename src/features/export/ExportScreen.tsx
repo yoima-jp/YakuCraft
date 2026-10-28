@@ -997,9 +997,10 @@ export function ExportScreen() {
         </p>
       )}
 
-      {kind === "resourcePack" && modUnits.some((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack") && (
+      {(kind === "resourcePack" || kind === "modifiedJar")
+        && modUnits.some((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack") && (
         <p className="export-screen__hint">
-          シェーダーパックはリソースパックに含まれません。「日本語化したシェーダーパック」から書き出してください。
+          シェーダーパックは{kind === "resourcePack" ? "リソースパック" : "Mod JAR"}に含まれません。「日本語化したシェーダーパック」から書き出してください。
         </p>
       )}
 
