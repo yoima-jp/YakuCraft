@@ -394,9 +394,9 @@ export function ExportScreen() {
     ? modUnits.filter(isJarUnit)
     : kind === "shaderpackZip"
       ? modUnits.filter((unit) => unit.sourceKind === "shaderpack")
-      : kind === "modpackFiles"
-        ? modUnits.filter((unit) => unit.sourceKind === "modpack")
-        : modUnits.filter((unit) => unit.sourceKind !== "modpack");
+      // シェーダーの lang はパック自体に書き込む方式なので、それ以外の形式の対象からは外す。
+      // Modpack ユニットは KubeJS の翻訳をリソースパック・言語ファイルにも含められるため、従来どおり残す。
+      : modUnits.filter((unit) => unit.sourceKind !== "shaderpack");
   const selectedJarIds = modUnits
     .filter((unit) => selectedIdSet.has(unit.id) && isJarUnit(unit))
     .map((unit) => unit.id);
@@ -877,7 +877,7 @@ export function ExportScreen() {
         }}
         options={EXPORT_OPTIONS
           .filter((option) => option.value !== "modifiedJar" || hasJarUnit)
-          .filter((option) => option.value !== "resourcePack" || hasJarUnit)
+          .filter((option) => option.value !== "resourcePack" || hasJarUnit || hasModpackUnit)
           .filter((option) => option.value !== "modpackFiles" || hasModpackUnit)
           .filter((option) => option.value !== "shaderpackZip" || hasShaderpackUnit)
           .map((option) => ({
