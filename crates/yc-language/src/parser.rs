@@ -200,7 +200,7 @@ fn parse_vanilla_legacy_lines(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn parse_java_properties(text: &str) -> Vec<(String, String)> {
+pub fn parse_java_properties(text: &str) -> Vec<(String, String)> {
     // Forgeが使う文字ストリーム版Properties.loadに合わせ、Unicode、区切り文字のescape、
     // 複数行の継続を扱う。
     // https://docs.oracle.com/javase/8/docs/api/java/util/Properties.html#load-java.io.Reader-
@@ -252,6 +252,24 @@ fn parse_java_properties(text: &str) -> Vec<(String, String)> {
             Some((key, value))
         })
         .collect()
+}
+
+/// Properties の有効な行に不正な Unicode エスケープがあるかを返す。
+pub fn java_properties_has_invalid_unicode(text: &str) -> bool {
+    java_properties_logical_lines(text).iter().any(|line| {
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\'
+                && let Some('u') = chars.next()
+            {
+                let digits: String = chars.by_ref().take(4).collect();
+                if digits.len() != 4 || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }
 
 fn java_properties_logical_lines(text: &str) -> Vec<String> {
@@ -336,7 +354,10 @@ fn unescape_java_properties(value: &str) -> String {
                     decoded.extend(digits.encode_utf16());
                 }
             }
-            other => decoded.push(other as u16),
+            other => {
+                let mut units = [0; 2];
+                decoded.extend_from_slice(other.encode_utf16(&mut units));
+            }
         }
     }
 

@@ -1,0 +1,11 @@
+[package]
+name = "yc-shaderpack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+yc-language = { path = "../yc-language" }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tempfile = "3"
