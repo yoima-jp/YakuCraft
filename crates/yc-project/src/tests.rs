@@ -583,6 +583,57 @@ fn v010_database_migrates_and_keeps_legacy_entries_readable_and_writable() {
 }
 
 #[test]
+fn pre_shader_project_keeps_jar_and_modpack_source_kinds_when_opened() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let project_id = Uuid::new_v4();
+    let project_directory = projects_root.join(project_id.to_string());
+    fs::create_dir_all(project_directory.join("sources")).expect("create legacy project folder");
+    fs::write(project_directory.join("sources/7.jar"), b"legacy jar")
+        .expect("write legacy JAR source");
+    fs::write(project_directory.join("sources/11.zip"), b"legacy modpack")
+        .expect("write legacy Modpack source");
+
+    let database_path = project_directory.join("project.sqlite");
+    let old_database = Connection::open(&database_path).expect("create pre-shader database");
+    for migration in [
+        include_str!("../migrations/20261004122242_init.sql"),
+        include_str!("../migrations/20261004141408_jar_replacements.sql"),
+        include_str!("../migrations/20261005124747_glossary.sql"),
+        include_str!("../migrations/20261005232035_asset_type_counts.sql"),
+        include_str!("../migrations/20261024144433_document_entries_and_modpack_deployments.sql"),
+    ] {
+        old_database
+            .execute_batch(migration)
+            .expect("apply pre-shader migration");
+    }
+    old_database
+        .execute_batch(&format!(
+            "INSERT INTO project_meta (
+                id, schema_version, created_at, updated_at, display_name, setup_completed
+             ) VALUES ('{project_id}', 5, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 'Legacy', 1);
+             INSERT INTO mod_units (
+                id, source_kind, sort_index, source_filename, source_sha256, stored_path,
+                original_path, created_at
+             ) VALUES
+                (7, 'jar', 0, 'legacy.jar', 'jar-hash', 'sources/7.jar', 'legacy.jar', '2026-10-01T00:00:00Z'),
+                (11, 'modpack', 1, 'legacy-modpack.zip', 'modpack-hash', 'sources/11.zip', 'instance', '2026-10-01T00:00:00Z');
+             PRAGMA user_version = 5;"
+        ))
+        .expect("insert pre-shader units");
+    drop(old_database);
+
+    let opened = open_project(&projects_root, project_id).expect("open pre-shader project");
+    let units = opened
+        .repository()
+        .list_mod_units()
+        .expect("read migrated source kinds");
+    assert_eq!(units.len(), 2);
+    assert_eq!(units[0].source_kind, crate::ModUnitSourceKind::Jar);
+    assert_eq!(units[1].source_kind, crate::ModUnitSourceKind::Modpack);
+}
+
+#[test]
 fn failed_migration_rolls_back_and_keeps_the_backup() {
     let temporary = TestDirectory::new();
     let database_path = temporary.path().join("project.sqlite");

@@ -17,6 +17,7 @@ use yc_language::{PatchouliArchiveFile, discover_books, extract_i18n_keys};
 use crate::{
     ProjectError, ProjectLock, ProjectSummary, Repository, Result,
     database::{open_database, open_read_connection},
+    repository,
     writer::ProjectWriter,
 };
 
@@ -81,6 +82,104 @@ impl OpenedProject {
         self.repository().remove_mod_unit(mod_unit_id)?;
         self.summary = read_project_summary(&self.directory.join(DATABASE_FILE_NAME))?;
         Ok(self.summary.clone())
+    }
+
+    pub fn add_mod_unit_source(
+        &mut self,
+        source: &ProjectSource,
+    ) -> Result<Option<crate::ModUnitRecord>> {
+        let repository = self.repository();
+        let units = repository.list_mod_units()?;
+        let filename = source_filename(&source.path)?;
+        let original_path = fs::canonicalize(&source.path)?;
+        let extension = source_extension(source.kind);
+        let sources_directory = self.directory.join("sources");
+        let pending_path =
+            sources_directory.join(format!(".pending-{}.{}", Uuid::new_v4(), extension));
+        copy_project_source(&source.path, source.kind, &pending_path)?;
+
+        let result = (|| -> Result<Option<crate::ModUnitRecord>> {
+            let source_sha256 = digest_to_hex(yc_archive::sha256_file(&pending_path)?);
+            if repository.has_source_hash(&source_sha256)? {
+                return Ok(None);
+            }
+
+            // 削除後にIDやsort_indexの欠番が残るため、件数ではなく最大値の次を使う。
+            let id = units
+                .iter()
+                .map(|unit| unit.id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    ProjectError::InvalidDatabaseValue("mod unit id overflow".to_owned())
+                })?;
+            let sort_index = match units.iter().map(|unit| unit.sort_index).max() {
+                Some(maximum) => i64::try_from(maximum)
+                    .ok()
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| {
+                        ProjectError::InvalidDatabaseValue(
+                            "mod unit sort index overflow".to_owned(),
+                        )
+                    })?,
+                None => 0,
+            };
+            let stored_path = format!("sources/{id}.{extension}");
+            let destination = self.directory.join(&stored_path);
+            if destination.exists() {
+                return Err(ProjectError::InvalidDatabaseValue(format!(
+                    "stored source path already exists: {}",
+                    destination.display()
+                )));
+            }
+            fs::rename(&pending_path, &destination)?;
+            let created_at = now_rfc3339()?;
+            if let Err(error) = self
+                .writer
+                .add_mod_unit_source(repository::NewModUnitSource {
+                    id,
+                    source_kind: source.kind,
+                    sort_index,
+                    source_filename: filename,
+                    source_sha256,
+                    stored_path,
+                    original_path: original_path.to_string_lossy().into_owned(),
+                    created_at,
+                })
+            {
+                let _ = fs::remove_file(&destination);
+                return Err(error);
+            }
+
+            let unit = match repository
+                .list_mod_units()?
+                .into_iter()
+                .find(|unit| unit.id == id)
+            {
+                Some(unit) => unit,
+                None => {
+                    let _ = self.writer.remove_mod_unit_preserving_project_name(id);
+                    let _ = fs::remove_file(&destination);
+                    return Err(ProjectError::InvalidDatabaseValue(format!(
+                        "mod unit {id} was not registered"
+                    )));
+                }
+            };
+            if let Err(error) = self.refresh_summary() {
+                let _ = self.writer.remove_mod_unit_preserving_project_name(id);
+                let _ = fs::remove_file(&destination);
+                return Err(error);
+            }
+            Ok(Some(unit))
+        })();
+
+        if pending_path.exists()
+            && let Err(error) = fs::remove_file(&pending_path)
+        {
+            tracing::warn!(path = %pending_path.display(), %error, "pending source copy could not be removed");
+        }
+        result
     }
 }
 
@@ -192,20 +291,11 @@ pub fn create_project_with_sources(
                 .map_err(|_| ProjectError::InvalidDatabaseValue("too many mod units".to_owned()))?;
             let filename = source_filename(&source.path)?;
             let original_path = fs::canonicalize(&source.path)?;
-            let extension = if source.kind == crate::ModUnitSourceKind::Shaderpack {
-                "zip"
-            } else {
-                "jar"
-            };
+            let extension = source_extension(source.kind);
             let stored_path = format!("sources/{unit_id}.{extension}");
             let copied_source_path = project_directory.join(&stored_path);
             // 翻訳・再書き出しの基準をプロジェクト内に保持し、選択元ファイルは変更しない。
-            if source.kind == crate::ModUnitSourceKind::Shaderpack && source.path.is_dir() {
-                yc_shaderpack::pack_folder(&source.path, &copied_source_path)
-                    .map_err(|error| std::io::Error::other(error.to_string()))?;
-            } else {
-                fs::copy(&source.path, &copied_source_path)?;
-            }
+            copy_project_source(&source.path, source.kind, &copied_source_path)?;
             let source_sha256 = digest_to_hex(yc_archive::sha256_file(&copied_source_path)?);
             transaction.execute(
                 "INSERT INTO mod_units (
@@ -569,6 +659,28 @@ fn source_filename(source: &Path) -> Result<String> {
             )
             .into()
         })
+}
+
+fn source_extension(kind: crate::ModUnitSourceKind) -> &'static str {
+    if kind == crate::ModUnitSourceKind::Shaderpack {
+        "zip"
+    } else {
+        "jar"
+    }
+}
+
+fn copy_project_source(
+    source_path: &Path,
+    kind: crate::ModUnitSourceKind,
+    destination: &Path,
+) -> Result<()> {
+    if kind == crate::ModUnitSourceKind::Shaderpack && source_path.is_dir() {
+        yc_shaderpack::pack_folder(source_path, destination)
+            .map_err(|error| std::io::Error::other(error.to_string()).into())
+    } else {
+        fs::copy(source_path, destination)?;
+        Ok(())
+    }
 }
 
 fn digest_to_hex(digest: [u8; 32]) -> String {

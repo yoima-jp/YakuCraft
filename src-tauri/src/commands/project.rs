@@ -196,6 +196,14 @@ pub(crate) struct CreatedProject {
     pub failed_mods: Vec<ModImportFailure>,
 }
 
+pub(crate) struct AddedProjectUnits {
+    pub summary: ProjectSummary,
+    pub added_unit_ids: Vec<i64>,
+    pub duplicate_filenames: Vec<String>,
+    pub ignored_filenames: Vec<String>,
+    pub analyses: HashMap<i64, Arc<AnalysisData>>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationProgress {
@@ -482,6 +490,54 @@ pub enum AnalysisChannelEvent {
 #[derive(Clone, Debug, Serialize)]
 #[serde(
     tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AddUnitsChannelEvent {
+    Progress {
+        job_id: String,
+        progress: AnalysisProgress,
+        mod_index: usize,
+        mod_count: usize,
+        mod_filename: String,
+    },
+    Completed {
+        job_id: String,
+        added: usize,
+        added_unit_ids: Vec<i64>,
+        duplicate_filenames: Vec<String>,
+        ignored_filenames: Vec<String>,
+    },
+    Failed {
+        job_id: String,
+        error: AppError,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AddInstanceScanEvent {
+    Progress {
+        progress: ScanProgress,
+    },
+    Completed {
+        job_id: String,
+        results: Vec<ModScanResult>,
+        shaderpacks: Vec<yc_analysis::ShaderpackScanResult>,
+    },
+    Failed {
+        job_id: String,
+        error: AppError,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "kind",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
@@ -709,6 +765,295 @@ pub fn scan_mods_folder(
         }
     });
 
+    Ok(job_id)
+}
+
+#[tauri::command]
+pub fn scan_project_instance_sources(
+    project_id: String,
+    channel: Channel<AddInstanceScanEvent>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let project_io_lock = Arc::clone(&state.project_io_lock);
+    let active_project = Arc::clone(&state.active_project);
+    let (instance_root, existing_hashes, existing_paths) = {
+        let _project_io = project_io_lock
+            .lock()
+            .map_err(|_| internal_state_error("Project file operations"))?;
+        let active = active_project
+            .lock()
+            .map_err(|_| internal_state_error("active Project state"))?;
+        let opened = active
+            .as_ref()
+            .filter(|opened| opened.summary().id == project_id)
+            .ok_or_else(|| {
+                AppError::simple("project_not_open", "プロジェクトを開けませんでした。")
+            })?;
+        let instance_path = opened
+            .summary()
+            .instance_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                AppError::simple(
+                    "instance_path_missing",
+                    "このプロジェクトにはインスタンスが設定されていません。",
+                )
+            })?;
+        let units = opened
+            .repository()
+            .list_mod_units()
+            .map_err(|error| database_error(error.to_string()))?;
+        let hashes = units
+            .iter()
+            .map(|unit| unit.source_sha256.clone())
+            .collect::<HashSet<_>>();
+        let paths = units
+            .iter()
+            .map(|unit| path_key(Path::new(&unit.original_path)))
+            .collect::<HashSet<_>>();
+        (instance_path, hashes, paths)
+    };
+
+    let job_id = Uuid::new_v4().to_string();
+    let cancellation = CancellationToken::default();
+    state
+        .analysis_jobs
+        .lock()
+        .map_err(|_| internal_state_error("analysis job state"))?
+        .insert(job_id.clone(), cancellation.clone());
+    let analysis_jobs = Arc::clone(&state.analysis_jobs);
+    let task_job_id = job_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let game_directory = resolve_instance_game_directory_for_addition(&instance_root);
+        let mods_directory = game_directory.join("mods");
+        let scan_result = if mods_directory.is_dir() {
+            scan_mods_folder_core(
+                &mods_directory,
+                &ScanOptions::default(),
+                &cancellation,
+                |progress| {
+                    if let Err(error) = channel.send(AddInstanceScanEvent::Progress { progress }) {
+                        tracing::debug!(%error, "instance scan progress channel closed");
+                    }
+                },
+            )
+        } else if cancellation.is_cancelled() {
+            Err(yc_analysis::AnalysisError::Cancelled)
+        } else {
+            Ok(Vec::new())
+        };
+        let event = match scan_result {
+            Ok(results) => {
+                let results = results
+                    .into_iter()
+                    .filter(|result| {
+                        !result
+                            .sha256
+                            .as_ref()
+                            .is_some_and(|hash| existing_hashes.contains(hash))
+                            && !existing_paths.contains(&path_key(&result.path))
+                    })
+                    .collect();
+                let shaderpack_root = game_directory.join("shaderpacks");
+                let shaderpacks = scan_shaderpack_candidates(&game_directory, &shaderpack_root)
+                    .into_iter()
+                    .filter(|result| {
+                        !result
+                            .sha256
+                            .as_ref()
+                            .is_some_and(|hash| existing_hashes.contains(hash))
+                            && !existing_paths.contains(&path_key(&result.path))
+                    })
+                    .collect();
+                if cancellation.is_cancelled() {
+                    AddInstanceScanEvent::Failed {
+                        job_id: task_job_id.clone(),
+                        error: cancelled_error(),
+                    }
+                } else {
+                    AddInstanceScanEvent::Completed {
+                        job_id: task_job_id.clone(),
+                        results,
+                        shaderpacks,
+                    }
+                }
+            }
+            Err(yc_analysis::AnalysisError::Cancelled) => AddInstanceScanEvent::Failed {
+                job_id: task_job_id.clone(),
+                error: cancelled_error(),
+            },
+            Err(error) => AddInstanceScanEvent::Failed {
+                job_id: task_job_id.clone(),
+                error: AppError::new(
+                    "mods_folder_read",
+                    "インスタンスの mods フォルダを読み込めませんでした。",
+                    Some(error.to_string()),
+                ),
+            },
+        };
+        if let Err(error) = channel.send(event) {
+            tracing::debug!(%error, "instance scan result channel closed");
+        }
+        if let Ok(mut jobs) = analysis_jobs.lock() {
+            jobs.remove(&task_job_id);
+        }
+    });
+    Ok(job_id)
+}
+
+fn resolve_instance_game_directory_for_addition(root: &Path) -> PathBuf {
+    if root.join("mods").is_dir() {
+        return root.to_path_buf();
+    }
+
+    let resolved = yc_modpack::resolve_game_directory(root);
+    if resolved != root {
+        return resolved;
+    }
+
+    for child in ["minecraft", ".minecraft"] {
+        let candidate = root.join(child);
+        if candidate.join("mods").is_dir() {
+            return candidate;
+        }
+    }
+
+    resolved
+}
+
+fn path_key(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[tauri::command]
+pub fn add_mod_units(
+    project_id: String,
+    paths: Vec<String>,
+    channel: Channel<AddUnitsChannelEvent>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    if paths.is_empty() {
+        return Err(AppError::simple(
+            "no_mod_source_selected",
+            "追加する JAR またはシェーダーパックを選んでください。",
+        ));
+    }
+    let job_id = Uuid::new_v4().to_string();
+    let cancellation = CancellationToken::default();
+    state
+        .analysis_jobs
+        .lock()
+        .map_err(|_| internal_state_error("analysis job state"))?
+        .insert(job_id.clone(), cancellation.clone());
+    let paths_state = state.paths.clone();
+    let project_io_lock = Arc::clone(&state.project_io_lock);
+    let active_project = Arc::clone(&state.active_project);
+    let deleting_projects = Arc::clone(&state.deleting_projects);
+    let project_analysis_cache = Arc::clone(&state.project_analysis_cache);
+    let analysis_jobs = Arc::clone(&state.analysis_jobs);
+    let recent_lock = Arc::clone(&state.recent_lock);
+    let task_job_id = job_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> Result<AddedProjectUnits, AppError> {
+            let deleting = deleting_projects
+                .lock()
+                .map_err(|_| internal_state_error("Project deletion state"))?;
+            let _project_io = project_io_lock
+                .lock()
+                .map_err(|_| internal_state_error("Project file operations"))?;
+            let mut active = active_project
+                .lock()
+                .map_err(|_| internal_state_error("active Project state"))?;
+            let opened = active
+                .as_mut()
+                .filter(|opened| opened.summary().id == project_id)
+                .ok_or_else(|| {
+                    AppError::simple("project_not_open", "プロジェクトを開けませんでした。")
+                })?;
+            if deleting.contains(&project_id) {
+                return Err(AppError::simple(
+                    "project_delete_in_progress",
+                    "このプロジェクトは削除中です。",
+                ));
+            }
+            let added = add_project_sources_core(
+                opened,
+                &paths.iter().map(PathBuf::from).collect::<Vec<_>>(),
+                &cancellation,
+                |progress, mod_index, mod_count, mod_filename| {
+                    if let Err(error) = channel.send(AddUnitsChannelEvent::Progress {
+                        job_id: task_job_id.clone(),
+                        progress,
+                        mod_index,
+                        mod_count,
+                        mod_filename,
+                    }) {
+                        tracing::debug!(%error, "add mod progress channel closed");
+                    }
+                },
+            )?;
+            if cancellation.is_cancelled() {
+                rollback_added_project_units(opened, &added.added_unit_ids)?;
+                return Err(cancelled_error());
+            }
+            if !added.added_unit_ids.is_empty() {
+                match project_analysis_cache.lock() {
+                    Ok(mut cache) => {
+                        if cache
+                            .as_ref()
+                            .is_none_or(|cache| cache.project_id != project_id)
+                        {
+                            *cache = Some(CachedProjectAnalysis {
+                                project_id: project_id.clone(),
+                                analyses: HashMap::new(),
+                            });
+                        }
+                        if let Some(cache) = cache.as_mut() {
+                            cache.analyses.extend(added.analyses.clone());
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "new mod analyses could not be cached"),
+                }
+                match recent_lock.lock() {
+                    Ok(_recent) => {
+                        if let Err(error) =
+                            refresh_recent_project_progress(&paths_state, &added.summary)
+                        {
+                            tracing::warn!(%error.user_message, "recent project progress could not be updated after mod addition");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "recent projects lock was poisoned after mod addition")
+                    }
+                }
+            }
+            Ok(added)
+        })();
+
+        let event = match result {
+            Ok(added) => AddUnitsChannelEvent::Completed {
+                job_id: task_job_id.clone(),
+                added: added.added_unit_ids.len(),
+                added_unit_ids: added.added_unit_ids,
+                duplicate_filenames: added.duplicate_filenames,
+                ignored_filenames: added.ignored_filenames,
+            },
+            Err(error) => AddUnitsChannelEvent::Failed {
+                job_id: task_job_id.clone(),
+                error,
+            },
+        };
+        if let Err(error) = channel.send(event) {
+            tracing::debug!(%error, "add mod result channel closed");
+        }
+        if let Ok(mut jobs) = analysis_jobs.lock() {
+            jobs.remove(&task_job_id);
+        }
+    });
     Ok(job_id)
 }
 
@@ -1993,6 +2338,319 @@ fn project_delete_error(error: yc_project::ProjectError) -> AppError {
     }
 }
 
+fn analyze_and_save_project_unit(
+    opened: &OpenedProject,
+    unit: &ModUnitRecord,
+    cancellation: &CancellationToken,
+    preserve_project_state: bool,
+    mut on_progress: impl FnMut(AnalysisProgress),
+    validate_analysis: impl FnOnce(&AnalysisData) -> Result<(), AppError>,
+) -> Result<Arc<AnalysisData>, AppError> {
+    let source_path = opened
+        .repository()
+        .mod_unit_source_path(unit.id)
+        .map_err(|error| database_error(error.to_string()))?;
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error());
+    }
+
+    let analysis = match unit.source_kind {
+        ModUnitSourceKind::Modpack => {
+            let (analysis, data) = super::modpack::analyze_modpack_archive(&source_path)?;
+            validate_analysis(&analysis)?;
+            let analysis = Arc::new(analysis);
+            let mut settings = analysis.default_review_settings();
+            settings.included_namespaces = data.scan.kubejs_namespaces.clone();
+            let mut merged = merge_for_review(&analysis, &settings);
+            exclude_empty_modpack_entries(&mut merged.entries);
+            mark_existing_placeholder_errors(&mut merged.entries);
+            let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+            save_unit_analysis(opened, unit.id, project_analysis, preserve_project_state)?;
+            opened
+                .writer()
+                .save_document_entries(unit.id, modpack_document_entries(&data, &settings))
+                .map_err(|error| database_error(error.to_string()))?;
+            save_unit_review_settings(opened, unit.id, settings, preserve_project_state)?;
+            opened
+                .writer()
+                .save_asset_index(unit.id, ProjectAssetIndex::default())
+                .map_err(|error| database_error(error.to_string()))?;
+            analysis
+        }
+        ModUnitSourceKind::Shaderpack => {
+            let analysis = yc_analysis::analyze_shaderpack(
+                &source_path,
+                &shaderpack_namespace(&unit.source_filename),
+            )
+            .map_err(analysis_error)?;
+            if analysis.result.source_sha256 != unit.source_sha256 {
+                return Err(AppError::simple(
+                    "source_changed",
+                    "読み込み中にファイルの内容が変わりました。",
+                ));
+            }
+            validate_analysis(&analysis)?;
+            let analysis = Arc::new(analysis);
+            let settings = analysis.default_review_settings();
+            let mut merged = merge_for_review(&analysis, &settings);
+            mark_shader_format_errors(&mut merged.entries);
+            let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+            save_unit_analysis(opened, unit.id, project_analysis, preserve_project_state)?;
+            save_unit_review_settings(opened, unit.id, settings, preserve_project_state)?;
+            opened
+                .writer()
+                .save_asset_index(unit.id, ProjectAssetIndex::default())
+                .map_err(|error| database_error(error.to_string()))?;
+            analysis
+        }
+        ModUnitSourceKind::Jar => {
+            let analysis = yc_analysis::analyze_jar(&source_path, cancellation, |progress| {
+                on_progress(progress);
+            })
+            .map_err(analysis_error)?;
+            if analysis.result.source_sha256 != unit.source_sha256 {
+                return Err(AppError::simple(
+                    "source_changed",
+                    "読み込み中にファイルの内容が変わりました。",
+                ));
+            }
+            validate_analysis(&analysis)?;
+            let analysis = Arc::new(analysis);
+            let settings = analysis.default_review_settings();
+            let mut merged = merge_for_review(&analysis, &settings);
+            mark_existing_placeholder_errors(&mut merged.entries);
+            let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
+            let asset_index = asset_index_or_warn(
+                &source_path,
+                &project_analysis.entries,
+                &opened.summary().id,
+            );
+            save_unit_analysis(opened, unit.id, project_analysis, preserve_project_state)?;
+            opened
+                .writer()
+                .save_document_entries(unit.id, document_entries_for_analysis(&analysis, &settings))
+                .map_err(|error| database_error(error.to_string()))?;
+            save_unit_review_settings(opened, unit.id, settings, preserve_project_state)?;
+            if preserve_project_state {
+                if let Some(asset_index) = asset_index {
+                    opened
+                        .writer()
+                        .save_asset_index(unit.id, asset_index)
+                        .map_err(|error| database_error(error.to_string()))?;
+                }
+            } else {
+                save_asset_index_or_warn(opened, unit.id, asset_index, &opened.summary().id);
+            }
+            analysis
+        }
+    };
+
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error());
+    }
+    Ok(analysis)
+}
+
+fn save_unit_analysis(
+    opened: &OpenedProject,
+    mod_unit_id: i64,
+    analysis: ProjectAnalysisData,
+    preserve_project_state: bool,
+) -> Result<(), AppError> {
+    let result = if preserve_project_state {
+        opened
+            .writer()
+            .save_analysis_preserving_project_name(mod_unit_id, analysis)
+    } else {
+        opened.writer().save_analysis(mod_unit_id, analysis)
+    };
+    result.map_err(|error| database_error(error.to_string()))
+}
+
+fn save_unit_review_settings(
+    opened: &OpenedProject,
+    mod_unit_id: i64,
+    settings: yc_language::ReviewSettings,
+    preserve_project_state: bool,
+) -> Result<(), AppError> {
+    let result = if preserve_project_state {
+        opened
+            .writer()
+            .save_added_unit_review_settings(mod_unit_id, settings)
+    } else {
+        opened
+            .writer()
+            .save_review_settings(mod_unit_id, settings, false)
+    };
+    result.map_err(|error| database_error(error.to_string()))
+}
+
+fn source_kind_for_addition(path: &Path) -> Option<ModUnitSourceKind> {
+    if path.is_dir() {
+        let source = yc_shaderpack::ShaderPackSource::Folder(path.to_path_buf());
+        return yc_shaderpack::is_shader_pack(&source)
+            .unwrap_or(false)
+            .then_some(ModUnitSourceKind::Shaderpack);
+    }
+    if !path.is_file() {
+        return None;
+    }
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    if extension.is_some_and(|extension| extension.eq_ignore_ascii_case("jar")) {
+        return Some(ModUnitSourceKind::Jar);
+    }
+    if extension.is_some_and(|extension| extension.eq_ignore_ascii_case("zip")) {
+        let source = yc_shaderpack::ShaderPackSource::Zip(path.to_path_buf());
+        return yc_shaderpack::is_shader_pack(&source)
+            .unwrap_or(false)
+            .then_some(ModUnitSourceKind::Shaderpack);
+    }
+    None
+}
+
+fn source_display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+pub(crate) fn add_project_sources_core(
+    opened: &mut OpenedProject,
+    paths: &[PathBuf],
+    cancellation: &CancellationToken,
+    mut on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
+) -> Result<AddedProjectUnits, AppError> {
+    let mut sources = Vec::new();
+    let mut ignored_filenames = Vec::new();
+    for path in paths {
+        match source_kind_for_addition(path) {
+            Some(kind) => sources.push(ProjectSource {
+                path: path.clone(),
+                kind,
+            }),
+            None => ignored_filenames.push(source_display_name(path)),
+        }
+    }
+    if sources.is_empty() {
+        return Err(AppError::simple(
+            "unsupported_mod_source",
+            "JAR、シェーダーパック ZIP またはシェーダーパックフォルダを選んでください。",
+        ));
+    }
+
+    let mut known_mod_ids = opened
+        .repository()
+        .project_metadata()
+        .map_err(|error| database_error(error.to_string()))?
+        .mods
+        .into_iter()
+        .filter_map(|record| record.mod_id)
+        .collect::<HashSet<_>>();
+    let mut added_unit_ids = Vec::new();
+    let mut analyses = HashMap::new();
+    let mut duplicate_filenames = Vec::new();
+
+    let add_result = (|| -> Result<(), AppError> {
+        for (index, source) in sources.iter().enumerate() {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_error());
+            }
+            let filename = source_display_name(&source.path);
+            let Some(unit) = opened
+                .add_mod_unit_source(source)
+                .map_err(|error| database_error(error.to_string()))?
+            else {
+                duplicate_filenames.push(filename);
+                continue;
+            };
+            added_unit_ids.push(unit.id);
+
+            let analysis = analyze_and_save_project_unit(
+                opened,
+                &unit,
+                cancellation,
+                true,
+                |progress| on_progress(progress, index + 1, sources.len(), filename.clone()),
+                |analysis| {
+                    if let Some(duplicate_id) = analysis
+                        .result
+                        .mods
+                        .iter()
+                        .filter_map(|record| record.mod_id.as_ref())
+                        .find(|mod_id| known_mod_ids.contains(*mod_id))
+                    {
+                        return Err(AppError::new(
+                            "mod_id_already_exists",
+                            "同じ Mod が既にあります。更新版への置き換えは現在未対応です。",
+                            Some(format!("Mod ID: {duplicate_id}")),
+                        ));
+                    }
+                    Ok(())
+                },
+            )?;
+            known_mod_ids.extend(
+                analysis
+                    .result
+                    .mods
+                    .iter()
+                    .filter_map(|record| record.mod_id.clone()),
+            );
+            analyses.insert(unit.id, analysis);
+        }
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        opened
+            .refresh_summary()
+            .map_err(|error| database_error(error.to_string()))?;
+        Ok(())
+    })();
+
+    if let Err(error) = add_result {
+        if let Err(cleanup_error) = rollback_added_project_units(opened, &added_unit_ids) {
+            tracing::error!(error = %cleanup_error.user_message, "newly added mod units could not be fully rolled back");
+        }
+        return Err(error);
+    }
+
+    Ok(AddedProjectUnits {
+        summary: opened.summary().clone(),
+        added_unit_ids,
+        duplicate_filenames,
+        ignored_filenames,
+        analyses,
+    })
+}
+
+fn rollback_added_project_units(
+    opened: &mut OpenedProject,
+    mod_unit_ids: &[i64],
+) -> Result<(), AppError> {
+    let units = opened
+        .repository()
+        .list_mod_units()
+        .map_err(|error| database_error(error.to_string()))?;
+    for mod_unit_id in mod_unit_ids.iter().rev() {
+        let source_path = units
+            .iter()
+            .find(|unit| unit.id == *mod_unit_id)
+            .map(|unit| opened.directory().join(&unit.stored_path));
+        opened
+            .writer()
+            .remove_mod_unit_preserving_project_name(*mod_unit_id)
+            .map_err(|error| database_error(error.to_string()))?;
+        if let Some(source_path) = source_path
+            && let Err(error) = fs::remove_file(&source_path)
+        {
+            tracing::warn!(mod_unit_id, path = %source_path.display(), %error, "added source file could not be removed during rollback");
+        }
+    }
+    opened
+        .refresh_summary()
+        .map_err(|error| database_error(error.to_string()))?;
+    Ok(())
+}
+
 pub(crate) fn create_project_from_sources_core(
     paths: &AppPaths,
     sources: &[PathBuf],
@@ -2080,134 +2738,42 @@ pub(crate) fn create_project_from_source_inputs_core(
             if cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let source_path = opened
-                .repository()
-                .mod_unit_source_path(unit.id)
-                .map_err(|error| database_error(error.to_string()))?;
             let filename = unit.source_filename.clone();
-            if unit.source_kind == ModUnitSourceKind::Modpack {
-                let (analysis, data) = super::modpack::analyze_modpack_archive(&source_path)?;
-                let mut settings = analysis.default_review_settings();
-                settings.included_namespaces = data.scan.kubejs_namespaces.clone();
-                let mut merged = merge_for_review(&analysis, &settings);
-                exclude_empty_modpack_entries(&mut merged.entries);
-                mark_existing_placeholder_errors(&mut merged.entries);
-                let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
-                opened
-                    .writer()
-                    .save_analysis(unit.id, project_analysis)
-                    .map_err(|error| database_error(error.to_string()))?;
-                opened
-                    .writer()
-                    .save_document_entries(unit.id, modpack_document_entries(&data, &settings))
-                    .map_err(|error| database_error(error.to_string()))?;
-                opened
-                    .writer()
-                    .save_review_settings(unit.id, settings, false)
-                    .map_err(|error| database_error(error.to_string()))?;
-                opened
-                    .writer()
-                    .save_asset_index(unit.id, ProjectAssetIndex::default())
-                    .map_err(|error| database_error(error.to_string()))?;
-                analyses.insert(unit.id, Arc::new(analysis));
-                continue;
-            }
-            if unit.source_kind == ModUnitSourceKind::Shaderpack {
-                let analysis =
-                    yc_analysis::analyze_shaderpack(&source_path, &shaderpack_namespace(&filename));
-                let analysis = match analysis {
-                    Ok(analysis) if analysis.result.source_sha256 == unit.source_sha256 => {
-                        Arc::new(analysis)
+            let result = analyze_and_save_project_unit(
+                &opened,
+                &unit,
+                cancellation,
+                false,
+                |progress| on_progress(progress, index + 1, mod_count, filename.clone()),
+                |_| Ok(()),
+            );
+            match result {
+                Ok(analysis) => {
+                    if unit.source_kind == ModUnitSourceKind::Jar && mod_version.is_none() {
+                        mod_version = analysis
+                            .result
+                            .mods
+                            .first()
+                            .and_then(|mod_info| mod_info.version.clone());
                     }
-                    Ok(_) => {
-                        failures.push(ModImportFailure {
-                            filename: filename.clone(),
-                            reason: "読み込み中にファイルの内容が変わりました。".to_owned(),
-                        });
-                        remove_failed_mod_unit(&opened, unit.id, &source_path)?;
-                        continue;
-                    }
-                    Err(error) => {
-                        failures.push(ModImportFailure {
-                            filename: filename.clone(),
-                            reason: analysis_error(error).user_message,
-                        });
-                        remove_failed_mod_unit(&opened, unit.id, &source_path)?;
-                        continue;
-                    }
-                };
-                let settings = analysis.default_review_settings();
-                let mut merged = merge_for_review(&analysis, &settings);
-                mark_shader_format_errors(&mut merged.entries);
-                let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
-                opened
-                    .writer()
-                    .save_analysis(unit.id, project_analysis)
-                    .map_err(|error| database_error(error.to_string()))?;
-                opened
-                    .writer()
-                    .save_review_settings(unit.id, settings, false)
-                    .map_err(|error| database_error(error.to_string()))?;
-                opened
-                    .writer()
-                    .save_asset_index(unit.id, ProjectAssetIndex::default())
-                    .map_err(|error| database_error(error.to_string()))?;
-                analyses.insert(unit.id, analysis);
-                continue;
-            }
-            let analysis = yc_analysis::analyze_jar(&source_path, cancellation, |progress| {
-                on_progress(progress, index + 1, mod_count, filename.clone());
-            });
-            let analysis = match analysis {
-                Ok(analysis) if analysis.result.source_sha256 == unit.source_sha256 => {
-                    Arc::new(analysis)
+                    analyses.insert(unit.id, analysis);
                 }
-                Ok(_) => {
-                    failures.push(ModImportFailure {
-                        filename: filename.clone(),
-                        reason: "読み込み中にファイルの内容が変わりました。".to_owned(),
-                    });
-                    remove_failed_mod_unit(&opened, unit.id, &source_path)?;
-                    continue;
-                }
+                Err(error) if unit.source_kind == ModUnitSourceKind::Modpack => return Err(error),
                 Err(_error) if cancellation.is_cancelled() => return Err(cancelled_error()),
                 Err(error) => {
-                    failures.push(ModImportFailure {
-                        filename: filename.clone(),
-                        reason: analysis_error(error).user_message,
-                    });
+                    let source_path = opened
+                        .repository()
+                        .mod_unit_source_path(unit.id)
+                        .map_err(|source| database_error(source.to_string()))?;
+                    let reason = if error.code == "source_changed" {
+                        "読み込み中にファイルの内容が変わりました。".to_owned()
+                    } else {
+                        error.user_message
+                    };
+                    failures.push(ModImportFailure { filename, reason });
                     remove_failed_mod_unit(&opened, unit.id, &source_path)?;
-                    continue;
                 }
-            };
-
-            let settings = analysis.default_review_settings();
-            if mod_version.is_none() {
-                mod_version = analysis
-                    .result
-                    .mods
-                    .first()
-                    .and_then(|mod_info| mod_info.version.clone());
             }
-            let mut merged = merge_for_review(&analysis, &settings);
-            mark_existing_placeholder_errors(&mut merged.entries);
-            let project_analysis = project_analysis_data(&analysis, merged.entries, &settings);
-            let asset_index =
-                asset_index_or_warn(&source_path, &project_analysis.entries, &project_id);
-            opened
-                .writer()
-                .save_analysis(unit.id, project_analysis)
-                .map_err(|error| database_error(error.to_string()))?;
-            opened
-                .writer()
-                .save_document_entries(unit.id, document_entries_for_analysis(&analysis, &settings))
-                .map_err(|error| database_error(error.to_string()))?;
-            opened
-                .writer()
-                .save_review_settings(unit.id, settings, false)
-                .map_err(|error| database_error(error.to_string()))?;
-            save_asset_index_or_warn(&opened, unit.id, asset_index, &project_id);
-            analyses.insert(unit.id, analysis);
         }
 
         if cancellation.is_cancelled() {
