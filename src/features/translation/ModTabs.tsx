@@ -136,8 +136,9 @@ function ModIcon({ projectId, unit, className = "" }: {
   if (unit.sourceKind === "shaderpack") return (
     <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} role="img" aria-label="シェーダーパック">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-        <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-        <circle cx="12" cy="12" r="2.5" />
+        {/* 光と陰影を扱うパックであることを太陽で表す。目のアイコンは詳細欄のプレビュー切り替えと紛らわしいので使わない。 */}
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" strokeLinecap="round" />
       </svg>
     </span>
   );
