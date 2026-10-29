@@ -14,6 +14,7 @@ import {
 import type { ModUnitSummaryDto } from "../../types/project";
 import { getModIcon } from "./modTabCommands";
 import { visibleModTabUnits } from "./modTabState";
+import { unitName } from "./unitName";
 import "./ModTabs.css";
 
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- 幅変更操作を持つseparatorはhrで表せない。 */
@@ -84,12 +85,6 @@ export function clearModIconCacheInUi() {
   iconRequests.clear();
 }
 
-function unitName(unit: ModUnitSummaryDto) {
-  if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
-  if (unit.sourceKind === "shaderpack") return `シェーダーパック: ${unit.sourceFilename}`;
-  return unit.name?.trim() || unit.sourceFilename;
-}
-
 function useIconUrl(projectId: string, modUnitId: number) {
   const [loadedIcon, setLoadedIcon] = useState<{ projectId: string; url: string | null }>(() => ({
     projectId,
@@ -138,6 +133,14 @@ function ModIcon({ projectId, unit, className = "" }: {
   className?: string;
 }) {
   const url = useIconUrl(projectId, unit.id);
+  if (unit.sourceKind === "shaderpack") return (
+    <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} role="img" aria-label="シェーダーパック">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+        <circle cx="12" cy="12" r="2.5" />
+      </svg>
+    </span>
+  );
   if (url) return <img className={`mod-tabs__icon${className ? ` ${className}` : ""}`} src={url} alt="" />;
   return (
     <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} aria-hidden="true">
@@ -709,7 +712,7 @@ export function ModTabs({
                           type="button"
                           role="tab"
                           disabled={selectionDisabled}
-                          aria-label={`${name}、${NUMBER_FORMAT.format(progress.translated)} / ${NUMBER_FORMAT.format(progress.total)} 翻訳済み`}
+                          aria-label={`${unit.sourceKind === "shaderpack" ? "シェーダーパック、" : ""}${name}、${NUMBER_FORMAT.format(progress.translated)} / ${NUMBER_FORMAT.format(progress.total)} 翻訳済み`}
                           aria-selected={selected}
                           aria-controls="translation-table-panel"
                           title={sidebarCollapsed ? name : undefined}

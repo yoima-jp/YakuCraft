@@ -1040,7 +1040,7 @@ async function captureShaderpackScreens(theme, fixtures) {
   await $(".review-screen h1").waitForDisplayed({ timeout: 60_000 });
   await capture(theme, "review-shaderpack");
   await advanceReviewToEditor();
-  await selectScreenshotModTab("Aurora.zip");
+  await selectScreenshotModTab("Aurora");
   await $('[data-testid="translation-target-option.BLOOM"]').waitForDisplayed({ timeout: 30_000 });
   await capture(theme, "editor-shaderpack");
   // Tauri のネイティブイベントを WebDriver から再現する。

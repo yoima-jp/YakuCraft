@@ -4,6 +4,7 @@ import { localeDisplayName } from "../../lib/locale";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useProjectStore } from "../../stores/projectStore";
 import type { EntryFlag, TranslationEntry } from "../../types/translation";
 import { EntryPreview } from "./EntryPreview";
 
@@ -33,6 +34,7 @@ interface InspectorProps {
 
 export function Inspector({ entryId, open, onClose, onTranslate }: InspectorProps) {
   const entry = useEditorStore((state) => (entryId === null ? undefined : state.entries.get(entryId)));
+  const isShaderpack = useProjectStore((state) => state.modUnits.some((unit) => unit.id === entry?.modUnitId && unit.sourceKind === "shaderpack"));
   const hidePreview = Boolean(useSettingsStore((state) => state.settings["editor.hideInspectorPreview"] ?? false));
   const saveSettings = useSettingsStore((state) => state.save);
   const className = `editor-inspector${open ? " editor-inspector--open" : ""}`;
@@ -42,7 +44,7 @@ export function Inspector({ entryId, open, onClose, onTranslate }: InspectorProp
       <div className="editor-inspector__heading">
         <h2>詳細</h2>
         <div className="editor-inspector__heading-actions">
-          <Tooltip content={hidePreview ? "プレビューを表示" : "プレビューを非表示"}>
+          {!isShaderpack && <Tooltip content={hidePreview ? "プレビューを表示" : "プレビューを非表示"}>
             <button
               className="editor-inspector__preview-toggle"
               type="button"
@@ -56,7 +58,7 @@ export function Inspector({ entryId, open, onClose, onTranslate }: InspectorProp
                 {hidePreview && <path d="m3 3 18 18" />}
               </svg>
             </button>
-          </Tooltip>
+          </Tooltip>}
           <Tooltip content="閉じる">
             <button className="editor-inspector__close" type="button" onClick={onClose} aria-label="詳細を閉じる">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -70,17 +72,18 @@ export function Inspector({ entryId, open, onClose, onTranslate }: InspectorProp
         {!open ? null : !entry ? (
           <p className="editor-inspector__empty">項目がありません</p>
         ) : (
-          <InspectorContent entry={entry} onTranslate={onTranslate} hidePreview={hidePreview} />
+          <InspectorContent entry={entry} onTranslate={onTranslate} hidePreview={hidePreview} isShaderpack={isShaderpack} />
         )}
       </div>
     </aside>
   );
 }
 
-function InspectorContent({ entry, onTranslate, hidePreview }: {
+function InspectorContent({ entry, onTranslate, hidePreview, isShaderpack }: {
   entry: TranslationEntry;
   onTranslate: (entryId: number) => void;
   hidePreview: boolean;
+  isShaderpack: boolean;
 }) {
   const sourceLocale = languageLabel(entry.sourceLocale);
   const aiWarning = useAiJobStore((state) => state.warnings.get(entry.id));
@@ -101,12 +104,12 @@ function InspectorContent({ entry, onTranslate, hidePreview }: {
 
   return (
     <>
-      {!hidePreview && <div className="editor-inspector__preview-area"><EntryPreview entry={entry} /></div>}
+      {!hidePreview && !isShaderpack && <div className="editor-inspector__preview-area"><EntryPreview entry={entry} /></div>}
       <div className="editor-inspector__details">
         <section className="editor-inspector__section">
           <h3>名前 / キー</h3>
           <p className="editor-inspector__key">{entry.key}</p>
-          <p className="editor-inspector__namespace">{entry.namespace}</p>
+          {!isShaderpack && <p className="editor-inspector__namespace">{entry.namespace}</p>}
         </section>
         <section className="editor-inspector__section">
           <h3>日本語訳</h3>
