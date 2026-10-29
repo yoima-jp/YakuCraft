@@ -868,16 +868,13 @@ export function ExportScreen() {
     0,
   );
   const placeholderWarningCount = placeholderCount - placeholderErrorCount;
-  useEffect(() => {
-    if (forceCount === null) return;
-    const hasOtherErrors = displayIssues.some((issue) =>
+  // 「このまま書き出す」は、警告を出した時点と同じ書式エラーの件数に対してだけ許可する。
+  // 訳を直して件数が変わったり、書式エラー以外のエラーが出たりしたら、もう一度「書き出す」から確認し直させる。
+  const canForceExport = forceCount !== null
+    && forceCount === placeholderErrorCount
+    && !displayIssues.some((issue) =>
       issue.severity === "error" && issue.code !== "placeholderError" && issue.code !== "modUnavailable",
     );
-    if (forceCount !== placeholderErrorCount || hasOtherErrors) {
-      setForceCount(null);
-      setError(null);
-    }
-  }, [displayIssues, forceCount, placeholderErrorCount]);
   const otherIssues = displayIssues.filter((issue) => (
     issue.code !== "untranslatedEntries"
       && issue.code !== "placeholderWarning"
@@ -892,9 +889,6 @@ export function ExportScreen() {
       <section className="focus-page export-screen">
         <output aria-live="polite">プロジェクトを読み込んでいます…</output>
         {error && <p className="status-message" role="alert">{error}</p>}
-      {forceCount !== null && forceCount === placeholderErrorCount && (
-        <SecondaryButton disabled={busy} onClick={() => void beginExport(forceCount)}>このまま書き出す</SecondaryButton>
-      )}
       </section>
     );
   }
@@ -1161,7 +1155,7 @@ export function ExportScreen() {
         )}
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
-      {forceCount !== null && forceCount === placeholderErrorCount && (
+      {canForceExport && (
         <SecondaryButton disabled={busy} onClick={() => void beginExport(forceCount)}>このまま書き出す</SecondaryButton>
       )}
       <footer className="export-screen__actions">
