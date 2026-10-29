@@ -1071,8 +1071,7 @@ async function captureShaderpackScreens(theme, fixtures) {
   await capture(theme, "export-shaderpack");
   await $('[for="export-option-resourcePack"]').click();
   await $('[data-testid="export-start"]').click();
-  await $("button=このまま書き出す").waitForDisplayed({ timeout: 30_000 });
-  await browser.execute(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await $('[role="dialog"]').waitForDisplayed({ timeout: 30_000 });
   await capture(theme, "export-format-error-blocked");
   await $("button=このまま書き出す").click();
   await waitForScreenshotExportCompletion();

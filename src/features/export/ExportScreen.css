@@ -251,8 +251,6 @@
 
 .export-validation__details {
   min-inline-size: 0;
-  border-inline-start: 3px solid var(--color-yellow);
-  padding-inline-start: var(--spacing-md);
 }
 
 .export-validation__details > summary {
@@ -325,12 +323,11 @@
   block-size: 112px;
   grid-template-rows: 24px 36px 36px;
   gap: var(--spacing-xs);
-  border-inline-start: 3px solid var(--color-yellow);
   padding: var(--spacing-xs) var(--spacing-md);
 }
 
-.export-validation__row--placeholder-error {
-  border-inline-start-color: var(--color-red);
+.export-validation__error-label {
+  color: var(--color-red);
 }
 
 .export-validation__row--placeholder > code {
@@ -359,14 +356,12 @@
 }
 
 .export-issue {
-  border-inline-start: 3px solid var(--color-yellow);
   padding: var(--spacing-xs) var(--spacing-md);
   color: var(--color-text-secondary);
   font-size: 0.875rem;
 }
 
 .export-issue--error {
-  border-inline-start-color: var(--color-red);
   color: var(--color-red);
 }
 

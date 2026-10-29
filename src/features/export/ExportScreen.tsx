@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { join as joinPath } from "@tauri-apps/api/path";
 
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
-import { Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
+import { Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
@@ -265,7 +265,7 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
               style={style}
             >
               <code className="selectable" title={row.label}>
-                {row.severity === "error" ? "エラー" : "注意"} · {row.label}
+                <span className={row.severity === "error" ? "export-validation__error-label" : undefined}>{row.severity === "error" ? "エラー" : "注意"}</span> · {row.label}
               </code>
               <p><strong>原文</strong><span className="selectable" title={row.sourceText}>{row.sourceText}</span></p>
               <p><strong>訳文</strong><span className="selectable" title={row.targetText}>{row.targetText}</span></p>
@@ -603,11 +603,12 @@ export function ExportScreen() {
       if (blockingErrors.length > 0 && kind !== "modifiedJar") {
         const onlyFormatErrors = formatErrorCount === blockingErrors.length;
         if (!onlyFormatErrors || allowedCount !== formatErrorCount) {
-          setError(onlyFormatErrors
-            ? `書式エラーが ${formatErrorCount.toLocaleString("ja-JP")} 件あります。該当の訳はゲーム内で正しく表示されないことがあります`
-            : "確認事項を直すと書き出せます");
-          if (onlyFormatErrors) setForcePermit({ target: exportTarget, count: formatErrorCount });
-          focusIssue.current = onlyFormatErrors ? "placeholder" : "blocking";
+          if (onlyFormatErrors) {
+            setForcePermit({ target: exportTarget, count: formatErrorCount });
+          } else {
+            setError("確認事項を直すと書き出せます");
+            focusIssue.current = "blocking";
+          }
           return;
         }
       }
@@ -870,14 +871,6 @@ export function ExportScreen() {
     0,
   );
   const placeholderWarningCount = placeholderCount - placeholderErrorCount;
-  // 「このまま書き出す」は、警告を出した時点と同じ書式エラーの件数に対してだけ許可する。
-  // 訳を直して件数が変わったり、書式エラー以外のエラーが出たりしたら、もう一度「書き出す」から確認し直させる。
-  const canForceExport = forcePermit !== null
-    && forcePermit.target === exportTarget
-    && forcePermit.count === placeholderErrorCount
-    && !displayIssues.some((issue) =>
-      issue.severity === "error" && issue.code !== "placeholderError" && issue.code !== "modUnavailable",
-    );
   const otherIssues = displayIssues.filter((issue) => (
     issue.code !== "untranslatedEntries"
       && issue.code !== "placeholderWarning"
@@ -1158,9 +1151,19 @@ export function ExportScreen() {
         )}
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
-      {canForceExport && (
-        <SecondaryButton disabled={busy} onClick={() => void beginExport(forcePermit?.count ?? null)}>このまま書き出す</SecondaryButton>
-      )}
+      <Dialog open={forcePermit !== null && forcePermit.target === exportTarget} title="書式エラーがあります" onClose={() => {
+        setForcePermit(null);
+        if (placeholderDetailsRef.current) placeholderDetailsRef.current.open = true;
+      }}>
+        <p>{forcePermit?.count.toLocaleString("ja-JP")} 件の訳はゲーム内で正しく表示されないことがあります。</p>
+        <div className="dialog-confirmation__actions">
+          <SecondaryButton onClick={() => {
+            setForcePermit(null);
+            if (placeholderDetailsRef.current) placeholderDetailsRef.current.open = true;
+          }}>戻る</SecondaryButton>
+          <SecondaryButton disabled={busy} onClick={() => void beginExport(forcePermit?.count ?? null)}>このまま書き出す</SecondaryButton>
+        </div>
+      </Dialog>
       <footer className="export-screen__actions">
         <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>戻る</SecondaryButton>
         <PrimaryButton

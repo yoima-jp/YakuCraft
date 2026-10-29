@@ -294,9 +294,6 @@ body:has(.app-main__screen:not([hidden]) > .editor-screen) {
 .status-message {
   inline-size: fit-content;
   max-inline-size: 100%;
-  margin-inline: auto;
-  border-inline-start: 2px solid var(--color-red);
-  padding-inline-start: var(--spacing-md);
   color: var(--color-red);
   font-size: 0.875rem;
   font-weight: 700;
