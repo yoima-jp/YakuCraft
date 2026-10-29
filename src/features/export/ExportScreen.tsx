@@ -306,7 +306,8 @@ export function ExportScreen() {
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [forceCount, setForceCount] = useState<number | null>(null);
+  // 強制書き出しの許可は、警告を出したときのプロジェクト・形式・対象と書式エラー件数に紐付ける。
+  const [forcePermit, setForcePermit] = useState<{ target: string; count: number } | null>(null);
   const placeholderDetailsRef = useRef<HTMLDetailsElement>(null);
   const blockingIssuesRef = useRef<HTMLUListElement>(null);
   const focusIssue = useRef<"placeholder" | "blocking" | null>(null);
@@ -579,6 +580,7 @@ export function ExportScreen() {
     }
   };
 
+  const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}`;
   const beginExport = async (allowedCount: number | null = null) => {
     const startingProjectId = projectId;
     if (
@@ -590,7 +592,7 @@ export function ExportScreen() {
     ) return;
     setBusy(true);
     setError(null);
-    setForceCount(null);
+    setForcePermit(null);
     try {
       const result = await validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat, selectedIds);
       if (!result || !isCurrentProject(startingProjectId)) return;
@@ -604,7 +606,7 @@ export function ExportScreen() {
           setError(onlyFormatErrors
             ? `書式エラーが ${formatErrorCount.toLocaleString("ja-JP")} 件あります。該当の訳はゲーム内で正しく表示されないことがあります`
             : "確認事項を直すと書き出せます");
-          if (onlyFormatErrors) setForceCount(formatErrorCount);
+          if (onlyFormatErrors) setForcePermit({ target: exportTarget, count: formatErrorCount });
           focusIssue.current = onlyFormatErrors ? "placeholder" : "blocking";
           return;
         }
@@ -870,8 +872,9 @@ export function ExportScreen() {
   const placeholderWarningCount = placeholderCount - placeholderErrorCount;
   // 「このまま書き出す」は、警告を出した時点と同じ書式エラーの件数に対してだけ許可する。
   // 訳を直して件数が変わったり、書式エラー以外のエラーが出たりしたら、もう一度「書き出す」から確認し直させる。
-  const canForceExport = forceCount !== null
-    && forceCount === placeholderErrorCount
+  const canForceExport = forcePermit !== null
+    && forcePermit.target === exportTarget
+    && forcePermit.count === placeholderErrorCount
     && !displayIssues.some((issue) =>
       issue.severity === "error" && issue.code !== "placeholderError" && issue.code !== "modUnavailable",
     );
@@ -1156,7 +1159,7 @@ export function ExportScreen() {
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
       {canForceExport && (
-        <SecondaryButton disabled={busy} onClick={() => void beginExport(forceCount)}>このまま書き出す</SecondaryButton>
+        <SecondaryButton disabled={busy} onClick={() => void beginExport(forcePermit?.count ?? null)}>このまま書き出す</SecondaryButton>
       )}
       <footer className="export-screen__actions">
         <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>戻る</SecondaryButton>
