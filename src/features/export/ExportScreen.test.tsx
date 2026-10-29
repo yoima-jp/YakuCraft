@@ -222,7 +222,9 @@ describe("Export format and validation", () => {
     render(<ExportScreen />);
     const summary = await screen.findByText("書式エラー 1 件・注意 0 件");
     fireEvent.click(screen.getByTestId("export-start"));
-    expect((await screen.findByRole("alert")).textContent).toBe("書式エラーが 1 件あります。該当の訳はゲーム内で正しく表示されないことがあります");
+    const dialog = await screen.findByRole("dialog", { name: "書式エラーがあります" });
+    expect(dialog.textContent).toContain("1 件の訳はゲーム内で正しく表示されないことがあります。");
+    fireEvent.click(dialog.querySelector("button")!);
     expect(summary.closest("details")?.open).toBe(true);
   });
 
