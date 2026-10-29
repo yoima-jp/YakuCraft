@@ -3327,11 +3327,19 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         })
         .map(|warning| warning.path.clone())
         .collect();
+    let language_files = discovered_languages(&analysis);
     let duplicate_key_warnings = analysis
         .result
         .warnings
         .iter()
-        .filter(|warning| warning.message.starts_with("重複キー"))
+        .filter(|warning| {
+            warning.message.starts_with("重複キー")
+                && language_files.iter().any(|file| {
+                    file.archive_path == warning.path
+                        && (file.normalized_locale == normalize_locale(&source_locale)
+                            || file.normalized_locale == "ja_jp")
+                })
+        })
         .map(|warning| (warning.path.clone(), warning.message.clone()))
         .collect();
     let metadata_ranges: Vec<_> = analysis
@@ -3345,7 +3353,6 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
     } else {
         detect_minecraft_version_for_project(&source_jar, &metadata_ranges)
     };
-    let language_files = discovered_languages(&analysis);
     let legacy_parse_escapes_namespaces = if unit.source_kind == ModUnitSourceKind::Shaderpack {
         Vec::new()
     } else {
@@ -4050,7 +4057,7 @@ mod export_path_regression_tests {
 
     use super::{
         MergedPackExportOutcome, MergedPackExportRequest, RestoreJarOutcome, active_project_for_id,
-        export_language_file_and_record, export_selected_language_files_core,
+        export_context, export_language_file_and_record, export_selected_language_files_core,
         export_selected_merged_resource_pack_core, legacy_parse_escapes_namespaces,
         restore_modified_jar_core, sha256_file_hex,
     };
@@ -4154,6 +4161,37 @@ mod export_path_regression_tests {
             })
             .expect("fixture translation should be saved");
         (temporary, opened, mod_unit_id)
+    }
+
+    #[test]
+    fn duplicate_warnings_exclude_other_locales() {
+        let (_temporary, opened, mod_unit_id) = export_project_fixture();
+        let source = opened
+            .repository()
+            .mod_unit_source_path(mod_unit_id)
+            .unwrap();
+        let file = fs::File::create(source).unwrap();
+        let mut jar = ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        for path in [
+            "assets/fixture/lang/en_us.json",
+            "assets/fixture/lang/ja_jp.json",
+            "assets/fixture/lang/de_de.json",
+        ] {
+            jar.start_file(path, options).unwrap();
+            jar.write_all(br#"{"key":"first","key":"last"}"#).unwrap();
+        }
+        jar.finish().unwrap();
+
+        let context = export_context(&opened, mod_unit_id).unwrap();
+        let paths: Vec<_> = context
+            .duplicate_key_warnings
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert!(paths.iter().any(|path| path.ends_with("en_us.json")));
+        assert!(paths.iter().any(|path| path.ends_with("ja_jp.json")));
+        assert!(!paths.iter().any(|path| path.ends_with("de_de.json")));
     }
 
     fn jar_replacement_fixture(opened: &OpenedProject, mod_unit_id: i64) -> JarReplacementRecord {
