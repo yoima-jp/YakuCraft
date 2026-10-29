@@ -7,6 +7,7 @@ export interface ExportRunDetails {
   inPlaceReplacement: boolean;
   outputPaths: string[];
   modResults: ModExportResultDto[];
+  placeholderErrorCount?: number;
   conflicts: Array<{
     namespace: string;
     key: string;

@@ -222,8 +222,41 @@ describe("Export format and validation", () => {
     render(<ExportScreen />);
     const summary = await screen.findByText("書式エラー 1 件・注意 0 件");
     fireEvent.click(screen.getByTestId("export-start"));
-    expect((await screen.findByRole("alert")).textContent).toBe("書式エラーを直すと書き出せます");
+    expect((await screen.findByRole("alert")).textContent).toBe("書式エラーが 1 件あります。該当の訳はゲーム内で正しく表示されないことがあります");
     expect(summary.closest("details")?.open).toBe(true);
+  });
+
+  it("書式エラーだけならこのまま書き出せる", async () => {
+    vi.mocked(validateSelectedProject).mockResolvedValue({
+      issues: [{ severity: "error", code: "placeholderError", message: "書式エラー", modUnitId: 1, modName: "Fixture", count: null, namespace: "fixture", key: "broken", sourceText: "%s", targetText: "%2$s" }],
+      minecraftVersionDetection: details().minecraftVersionDetection ?? null,
+      counts: { total: 2, translated: 1, missing: 1, needsReview: 1 },
+      isSigned: false,
+    });
+    vi.mocked(saveFileDialog).mockResolvedValue("output.zip");
+    vi.mocked(exportSelectedMergedResourcePack).mockResolvedValue({ status: "completed", outputPath: "output.zip", directlyInstalled: false, modResults: [], conflicts: [] });
+    render(<ExportScreen />);
+    await screen.findByText("書式エラー 1 件・注意 0 件");
+    fireEvent.click(screen.getByTestId("export-start"));
+    fireEvent.click(await screen.findByRole("button", { name: "このまま書き出す" }));
+    await waitFor(() => expect(exportSelectedMergedResourcePack).toHaveBeenCalled());
+  });
+
+  it("書式以外のエラーがあると強制書き出しを表示しない", async () => {
+    vi.mocked(validateSelectedProject).mockResolvedValue({
+      issues: [
+        { severity: "error", code: "placeholderError", message: "書式エラー", modUnitId: 1, modName: "Fixture", count: null, namespace: "fixture", key: "broken", sourceText: "%s", targetText: "%2$s" },
+        { severity: "error", code: "parseError", message: "解析失敗", modUnitId: 1, modName: "Fixture", count: null, namespace: null, key: null, sourceText: null, targetText: null },
+      ],
+      minecraftVersionDetection: details().minecraftVersionDetection ?? null,
+      counts: { total: 2, translated: 1, missing: 1, needsReview: 1 },
+      isSigned: false,
+    });
+    render(<ExportScreen />);
+    await screen.findByText("書式エラー 1 件・注意 0 件");
+    fireEvent.click(screen.getByTestId("export-start"));
+    await screen.findByText("確認事項を直すと書き出せます");
+    expect(screen.queryByRole("button", { name: "このまま書き出す" })).toBeNull();
   });
 
   it("判定したMinecraftバージョンをSelectの初期値にする", async () => {

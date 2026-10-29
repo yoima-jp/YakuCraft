@@ -175,6 +175,9 @@ export function ExportCompletionScreen() {
           <p className="export-completion__missing">未翻訳 合計 {completion.missingCount.toLocaleString("ja-JP")} 件</p>
         )}
       </div>
+      {!!runDetails?.placeholderErrorCount && (
+        <p className="export-completion__missing">書式エラー {runDetails.placeholderErrorCount.toLocaleString("ja-JP")} 件を含めて書き出しました</p>
+      )}
       <p className="export-completion__instruction">{instruction}</p>
       {error && <p className="status-message" role="alert">{error}</p>}
       <footer className="export-completion__actions">
