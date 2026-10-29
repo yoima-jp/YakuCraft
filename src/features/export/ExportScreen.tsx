@@ -306,6 +306,7 @@ export function ExportScreen() {
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [forceCount, setForceCount] = useState<number | null>(null);
   const placeholderDetailsRef = useRef<HTMLDetailsElement>(null);
   const blockingIssuesRef = useRef<HTMLUListElement>(null);
   const focusIssue = useRef<"placeholder" | "blocking" | null>(null);
@@ -578,7 +579,7 @@ export function ExportScreen() {
     }
   };
 
-  const beginExport = async () => {
+  const beginExport = async (allowedCount: number | null = null) => {
     const startingProjectId = projectId;
     if (
       !details
@@ -589,17 +590,24 @@ export function ExportScreen() {
     ) return;
     setBusy(true);
     setError(null);
+    setForceCount(null);
     try {
       const result = await validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat, selectedIds);
       if (!result || !isCurrentProject(startingProjectId)) return;
-      const hasErrors = result.issues.some((issue) =>
+      const blockingErrors = result.issues.filter((issue) =>
         issue.severity === "error" && issue.code !== "modUnavailable",
       );
-      if (hasErrors && kind !== "modifiedJar") {
-        const hasPlaceholderErrors = result.issues.some((issue) => issue.severity === "error" && issue.code === "placeholderError");
-        setError(hasPlaceholderErrors ? "書式エラーを直すと書き出せます" : "確認事項を直すと書き出せます");
-        focusIssue.current = hasPlaceholderErrors ? "placeholder" : "blocking";
-        return;
+      const formatErrorCount = blockingErrors.filter((issue) => issue.code === "placeholderError").length;
+      if (blockingErrors.length > 0 && kind !== "modifiedJar") {
+        const onlyFormatErrors = formatErrorCount === blockingErrors.length;
+        if (!onlyFormatErrors || allowedCount !== formatErrorCount) {
+          setError(onlyFormatErrors
+            ? `書式エラーが ${formatErrorCount.toLocaleString("ja-JP")} 件あります。該当の訳はゲーム内で正しく表示されないことがあります`
+            : "確認事項を直すと書き出せます");
+          if (onlyFormatErrors) setForceCount(formatErrorCount);
+          focusIssue.current = onlyFormatErrors ? "placeholder" : "blocking";
+          return;
+        }
       }
 
       const defaultName = kind === "resourcePack"
@@ -778,7 +786,7 @@ export function ExportScreen() {
         }
       }
 
-      setExportRunDetails({ kind, directInstall: directlyInstalled, inPlaceReplacement, outputPaths, modResults, conflicts });
+      setExportRunDetails({ kind, directInstall: directlyInstalled, inPlaceReplacement, outputPaths, modResults, conflicts, placeholderErrorCount: formatErrorCount });
       const isShaderpackLanguage = kind === "languageFile" && modUnits.some((unit) => (
         unit.sourceKind === "shaderpack"
         && details.includedNamespaces.some((item) => item.modUnitId === unit.id && item.namespace === selectedNamespace)
@@ -860,6 +868,16 @@ export function ExportScreen() {
     0,
   );
   const placeholderWarningCount = placeholderCount - placeholderErrorCount;
+  useEffect(() => {
+    if (forceCount === null) return;
+    const hasOtherErrors = displayIssues.some((issue) =>
+      issue.severity === "error" && issue.code !== "placeholderError" && issue.code !== "modUnavailable",
+    );
+    if (forceCount !== placeholderErrorCount || hasOtherErrors) {
+      setForceCount(null);
+      setError(null);
+    }
+  }, [displayIssues, forceCount, placeholderErrorCount]);
   const otherIssues = displayIssues.filter((issue) => (
     issue.code !== "untranslatedEntries"
       && issue.code !== "placeholderWarning"
@@ -874,6 +892,9 @@ export function ExportScreen() {
       <section className="focus-page export-screen">
         <output aria-live="polite">プロジェクトを読み込んでいます…</output>
         {error && <p className="status-message" role="alert">{error}</p>}
+      {forceCount !== null && forceCount === placeholderErrorCount && (
+        <SecondaryButton disabled={busy} onClick={() => void beginExport(forceCount)}>このまま書き出す</SecondaryButton>
+      )}
       </section>
     );
   }
@@ -1140,6 +1161,9 @@ export function ExportScreen() {
         )}
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
+      {forceCount !== null && forceCount === placeholderErrorCount && (
+        <SecondaryButton disabled={busy} onClick={() => void beginExport(forceCount)}>このまま書き出す</SecondaryButton>
+      )}
       <footer className="export-screen__actions">
         <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>戻る</SecondaryButton>
         <PrimaryButton
