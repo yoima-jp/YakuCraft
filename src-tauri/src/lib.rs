@@ -41,6 +41,7 @@ pub fn run() {
             commands::project::list_mod_units,
             commands::project::refresh_modpack_unit,
             commands::project::cancel_analysis,
+            commands::project::is_shaderpack_folder,
             commands::project::scan_mods_folder,
             commands::project::scan_project_instance_sources,
             commands::project::add_mod_units,
