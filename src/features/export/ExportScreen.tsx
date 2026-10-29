@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { join as joinPath } from "@tauri-apps/api/path";
 
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
-import { Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
+import { Checkbox, Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
@@ -298,6 +298,7 @@ export function ExportScreen() {
   const [namespace, setNamespace] = useState("");
   const [destination, setDestination] = useState<"instance" | "folder">("folder");
   const [replaceInPlace, setReplaceInPlace] = useState(false);
+  const [deployShaderpacksWithExport, setDeployShaderpacksWithExport] = useState(true);
   const [validation, setValidation] = useState<SelectedExportValidationDto | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [missingDetailsOpen, setMissingDetailsOpen] = useState(false);
@@ -357,6 +358,7 @@ export function ExportScreen() {
     setOverview(null);
     setValidation(null);
     setValidationError(null);
+    setDeployShaderpacksWithExport(true);
     setBusy(false);
     setRestoringId(null);
     setRestoreError(null);
@@ -423,6 +425,9 @@ export function ExportScreen() {
   const selectedShaderpackIds = modUnits
     .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack")
     .map((unit) => unit.id);
+  const projectShaderpackIds = modUnits
+    .filter((unit) => unit.sourceKind === "shaderpack")
+    .map((unit) => unit.id);
   const selectedFtbQuestEntries = modUnits
     .filter((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "modpack")
     .reduce((total, unit) => total + (unit.ftbQuestEntries ?? 0), 0);
@@ -439,6 +444,10 @@ export function ExportScreen() {
   const eligibleForInPlace = Boolean(overview?.instancePath)
     && overview?.units.some((unit) => selectedIdSet.has(unit.id)
       && isJarUnit(unit) && unit.originalExists);
+  const showShaderpackDeploymentOption = Boolean(overview?.instancePath && hasShaderpackUnit)
+    && ((kind === "resourcePack" && destination === "instance")
+      || (kind === "modifiedJar" && replaceInPlace && eligibleForInPlace));
+  const deployShaderpacks = showShaderpackDeploymentOption && deployShaderpacksWithExport;
 
   const validate = useCallback(async (
     nextKind = kind,
@@ -580,7 +589,7 @@ export function ExportScreen() {
     }
   };
 
-  const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}`;
+  const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}:${deployShaderpacks}`;
   const beginExport = async (allowedCount: number | null = null) => {
     const startingProjectId = projectId;
     if (
@@ -594,12 +603,26 @@ export function ExportScreen() {
     setError(null);
     setForcePermit(null);
     try {
-      const result = await validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat, selectedIds);
+      let result = await validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat, selectedIds);
       if (!result || !isCurrentProject(startingProjectId)) return;
+      let shaderpackValidationIssues: ExportIssueDto[] = [];
+      if (deployShaderpacks) {
+        const shaderpackValidation = await validateSelectedProject(
+          startingProjectId,
+          "shaderpackZip",
+          projectShaderpackIds,
+        );
+        if (!isCurrentProject(startingProjectId)) return;
+        shaderpackValidationIssues = shaderpackValidation.issues;
+        result = { ...result, issues: [...result.issues, ...shaderpackValidation.issues] };
+        setValidation(result);
+      }
       const blockingErrors = result.issues.filter((issue) =>
         issue.severity === "error" && issue.code !== "modUnavailable",
-      );
-      const formatErrorCount = blockingErrors.filter((issue) => issue.code === "placeholderError").length;
+      ).filter((issue) => !shaderpackValidationIssues.includes(issue) || issue.code === "placeholderError");
+      const formatErrorCount = result.issues.filter((issue) =>
+        issue.severity === "error" && issue.code === "placeholderError",
+      ).length;
       if (blockingErrors.length > 0 && kind !== "modifiedJar") {
         const onlyFormatErrors = formatErrorCount === blockingErrors.length;
         if (!onlyFormatErrors || allowedCount !== formatErrorCount) {
@@ -612,6 +635,10 @@ export function ExportScreen() {
           return;
         }
       }
+
+      if (deployShaderpacks && kind === "resourcePack" && !window.confirm(
+        "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+      )) return;
 
       const defaultName = kind === "resourcePack"
         ? mergeOutputFileName(
@@ -635,6 +662,8 @@ export function ExportScreen() {
       let conflicts: Array<{ namespace: string; key: string; keptFrom: string; droppedFrom: string }> = [];
       let directlyInstalled = false;
       let inPlaceReplacement = false;
+      let shaderpackInstalled = false;
+      let shaderpackError: string | undefined;
       let translatedCount = kind === "modpackFiles" ? details.counts.translated : result.counts.translated;
       let missingCount = kind === "modpackFiles" ? details.counts.missing : result.counts.missing;
 
@@ -747,6 +776,9 @@ export function ExportScreen() {
         outputPaths = [outcome.outputPath];
         conflicts = outcome.conflicts;
         modResults = outcome.modResults;
+        if (deployShaderpacks) {
+          modResults = modResults.filter((item) => !projectShaderpackIds.includes(item.modUnitId));
+        }
         directlyInstalled = outcome.directlyInstalled;
       } else if (kind === "modifiedJar") {
         const outputDirectory = replaceInPlace ? "" : await chooseDirectory(defaultExportDirectory);
@@ -789,7 +821,72 @@ export function ExportScreen() {
         }
       }
 
-      setExportRunDetails({ kind, directInstall: directlyInstalled, inPlaceReplacement, outputPaths, modResults, conflicts, placeholderErrorCount: formatErrorCount });
+      if (deployShaderpacks) {
+        let outcome: Awaited<ReturnType<typeof exportShaderpacks>> | null = null;
+        try {
+          outcome = await exportShaderpacks(
+            startingProjectId,
+            projectShaderpackIds,
+            null,
+            true,
+            false,
+          );
+          if (!isCurrentProject(startingProjectId)) return;
+          if (outcome.status === "overwriteRequired") {
+            const confirmed = window.confirm(
+              `同じ名前のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
+            );
+            if (!isCurrentProject(startingProjectId)) return;
+            if (confirmed) {
+              outcome = await exportShaderpacks(
+                startingProjectId,
+                projectShaderpackIds,
+                null,
+                true,
+                true,
+              );
+              if (!isCurrentProject(startingProjectId)) return;
+            } else {
+              outcome = null;
+            }
+          }
+          if (outcome?.status === "completed") {
+            outputPaths.push(...outcome.outputPaths);
+            modResults.push(...outcome.modResults);
+            shaderpackInstalled = outcome.outputPaths.length > 0;
+            const failedShaderpacks = outcome.modResults.filter((item) => item.status !== "success");
+            if (failedShaderpacks.length > 0) {
+              shaderpackError = `配置できませんでした: ${failedShaderpacks
+                .map((item) => `${item.modName}: ${item.message ?? "配置できませんでした。"}`)
+                .join(" / ")}`;
+            }
+            if (outcome.directlyInstalled) {
+              try {
+                await refreshOverview(startingProjectId);
+                if (!isCurrentProject(startingProjectId)) return;
+              } catch (cause: unknown) {
+                if (isProjectChangedError(cause)) return;
+                shaderpackError ??= `配置は完了しましたが、復元状態を更新できませんでした: ${errorMessage(cause)}`;
+              }
+            }
+          }
+        } catch (cause: unknown) {
+          if (isProjectChangedError(cause)) return;
+          shaderpackError = `配置できませんでした: ${errorMessage(cause)}`;
+        }
+      }
+
+      setExportRunDetails({
+        kind,
+        directInstall: directlyInstalled,
+        inPlaceReplacement,
+        outputPaths,
+        modResults,
+        conflicts,
+        placeholderErrorCount: formatErrorCount,
+        shaderpackInstalled,
+        shaderpackError,
+      });
       const isShaderpackLanguage = kind === "languageFile" && modUnits.some((unit) => (
         unit.sourceKind === "shaderpack"
         && details.includedNamespaces.some((item) => item.modUnitId === unit.id && item.namespace === selectedNamespace)
@@ -1032,10 +1129,17 @@ export function ExportScreen() {
       )}
 
       {(kind === "resourcePack" || kind === "modifiedJar")
-        && modUnits.some((unit) => selectedIdSet.has(unit.id) && unit.sourceKind === "shaderpack") && (
+        && selectedShaderpackIds.length > 0
+        && !showShaderpackDeploymentOption && (
         <p className="export-screen__hint">
           シェーダーパックは{kind === "resourcePack" ? "リソースパック" : "Mod JAR"}に含まれません。「日本語化したシェーダーパック」から書き出してください。
         </p>
+      )}
+
+      {showShaderpackDeploymentOption && (
+        <Checkbox checked={deployShaderpacksWithExport} onChange={setDeployShaderpacksWithExport}>
+          シェーダーパックも shaderpacks/ に配置する
+        </Checkbox>
       )}
 
       {kind === "modpackFiles" && (

@@ -38,6 +38,8 @@ function statusLabel(status: string) {
   }
 }
 
+const SHADERPACK_DIRECT_INSTALL_INSTRUCTION = "配置した ZIP は書き出し画面から元に戻せます。ゲーム内で日本語化したパックを選び直してください";
+
 export function ExportCompletionScreen() {
   const completion = useAppStore((state) => state.exportCompletion);
   const goTo = useAppStore((state) => state.goTo);
@@ -90,9 +92,12 @@ export function ExportCompletionScreen() {
       break;
     case "shaderpackZip":
       instruction = runDetails?.directInstall
-        ? "配置した ZIP は書き出し画面から元に戻せます。ゲーム内のシェーダー選択で選び直してください"
-        : "ゲーム内のシェーダー選択で選び直してください";
+        ? SHADERPACK_DIRECT_INSTALL_INSTRUCTION
+        : "ゲーム内で日本語化したパックを選び直してください";
       break;
+  }
+  if (runDetails?.shaderpackInstalled) {
+    instruction = `${instruction}。${SHADERPACK_DIRECT_INSTALL_INSTRUCTION}`;
   }
 
   const successfulCount = runDetails?.modResults.filter((result) => result.status === "success").length ?? 0;
@@ -179,6 +184,9 @@ export function ExportCompletionScreen() {
         <p className="export-completion__missing">書式エラー {runDetails.placeholderErrorCount.toLocaleString("ja-JP")} 件を含めて書き出しました</p>
       )}
       <p className="export-completion__instruction">{instruction}</p>
+      {runDetails?.shaderpackError && (
+        <p className="status-message" role="alert">シェーダーパックの配置でエラーが発生しました: {runDetails.shaderpackError}</p>
+      )}
       {error && <p className="status-message" role="alert">{error}</p>}
       <footer className="export-completion__actions">
         {outputPaths.length > 0 && <PrimaryButton onClick={() => void showOutputFolder()}>フォルダを開く</PrimaryButton>}
