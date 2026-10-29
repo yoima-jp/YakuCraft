@@ -657,6 +657,14 @@ pub fn cancel_analysis(job_id: String, state: State<'_, AppState>) -> Result<boo
 }
 
 #[tauri::command]
+pub fn is_shaderpack_folder(path: String) -> bool {
+    yc_shaderpack::is_shader_pack(&yc_shaderpack::ShaderPackSource::Folder(PathBuf::from(
+        path,
+    )))
+    .unwrap_or(false)
+}
+
+#[tauri::command]
 pub fn scan_mods_folder(
     path: String,
     channel: Channel<ScanModsFolderEvent>,

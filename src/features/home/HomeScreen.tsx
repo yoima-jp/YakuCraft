@@ -7,7 +7,7 @@ import { DestructiveButton, PrimaryButton, SecondaryButton, TertiaryButton } fro
 import { Dialog, Tooltip } from "../../components/Controls";
 import { ContextMenu, ContextMenuItem, ContextMenuSeparator, shouldPreserveNativeContextMenu, useContextMenuTrigger } from "../../components/ContextMenu";
 import { DropArea } from "../../components/layout/DropArea";
-import { AppCommandError, cancelAnalysis, createProjectFromJars, deleteProject, getProjectSummary, listEntries, listModUnits, listRecentProjects, openProject, renameProject } from "../../lib/tauri";
+import { AppCommandError, cancelAnalysis, createProjectFromJars, deleteProject, getProjectSummary, isShaderpackFolder, listEntries, listModUnits, listRecentProjects, openProject, renameProject } from "../../lib/tauri";
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
@@ -232,16 +232,25 @@ export function HomeScreen() {
     await goTo("scan");
   }, [cancelActiveAnalysis, goTo, setAnalysisError, setAnalysisJobId, setAnalysisProgress, setModImportFailures, setProjectOpenError, setScanFolderPath]);
 
+  const handleFolder = useCallback(async (path: string) => {
+    try {
+      if (await isShaderpackFolder(path)) handleJarPaths([path], true);
+      else await handleModsFolder(path);
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    }
+  }, [handleJarPaths, handleModsFolder]);
+
   const handleDroppedPaths = useCallback((paths: string[]) => {
     const jarPaths = paths.filter(isSupportedArchivePath);
     if (jarPaths.length > 0) {
       handleJarPaths(jarPaths);
     } else if (paths.length === 1) {
-      void handleModsFolder(paths[0]);
+      void handleFolder(paths[0]);
     } else {
       setError("JAR、シェーダー ZIP またはフォルダを選んでください。");
     }
-  }, [handleJarPaths, handleModsFolder]);
+  }, [handleJarPaths, handleFolder]);
 
   const chooseJar = useCallback(async () => {
     setError(null);
@@ -260,31 +269,18 @@ export function HomeScreen() {
     }
   }, [handleJarPath, handleJarPaths, setProjectOpenError]);
 
-  const chooseShaderpackFolder = useCallback(async () => {
-    setError(null);
-    setProjectOpenError(null);
-    try {
-      const selectedPath = await openFileDialog({ multiple: false, directory: true });
-      const path = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
-      if (path) handleJarPaths([path], true);
-    } catch (cause: unknown) {
-      void logFrontendError(cause, "shaderpack folder picker");
-      setError("シェーダーパックフォルダを選べませんでした。もう一度お試しください。");
-    }
-  }, [handleJarPaths, setProjectOpenError]);
-
   const chooseModsFolder = useCallback(async () => {
     setError(null);
     setProjectOpenError(null);
     try {
       const selectedPath = await openFileDialog({ multiple: false, directory: true });
       const path = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
-      if (path) await handleModsFolder(path);
+      if (path) await handleFolder(path);
     } catch (cause: unknown) {
       void logFrontendError(cause, "home folder picker");
       setError("フォルダを選べませんでした。もう一度お試しください。");
     }
-  }, [handleModsFolder, setProjectOpenError]);
+  }, [handleFolder, setProjectOpenError]);
 
   const refreshRecentProjects = useCallback(async () => {
     try {
@@ -443,10 +439,7 @@ export function HomeScreen() {
             </PrimaryButton>
           </Tooltip>
           <SecondaryButton data-testid="home-open-mods-folder" onClick={() => void chooseModsFolder()}>
-            フォルダから読み込む
-          </SecondaryButton>
-          <SecondaryButton data-testid="home-open-shaderpack-folder" onClick={() => void chooseShaderpackFolder()}>
-            シェーダーパックフォルダを選ぶ
+            フォルダを選ぶ
           </SecondaryButton>
         </div>
       </DropArea>

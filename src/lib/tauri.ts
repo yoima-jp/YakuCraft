@@ -360,3 +360,7 @@ export function getMinecraftJarSetting() {
 export function setMinecraftJar(path: string | null) {
   return invokeApp<void>("set_minecraft_jar", { path });
 }
+
+export function isShaderpackFolder(path: string) {
+  return invokeApp<boolean>("is_shaderpack_folder", { path });
+}

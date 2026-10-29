@@ -4,11 +4,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { SecondaryButton, TertiaryButton } from "../../components/button/Buttons";
 import { Checkbox, Dialog } from "../../components/Controls";
 import { ProgressBar } from "../../components/progress/ProgressBar";
-import { cancelAnalysis } from "../../lib/tauri";
+import { cancelAnalysis, isShaderpackFolder } from "../../lib/tauri";
 import { openFileDialog } from "../../lib/dialogs";
 import { logFrontendError } from "../../lib/errorLogging";
 import type { AppError } from "../../types/commands";
-import { scanProjectInstanceSources } from "../scan/tauri";
+import { scanModsFolder, scanProjectInstanceSources } from "../scan/tauri";
 import type {
   AddInstanceScanEventDto,
   ModLanguageStatusDto,
@@ -143,8 +143,8 @@ export function AddUnitsDialog({
       .map((candidate) => candidate.path)));
   };
 
-  const scanInstance = async () => {
-    if (!instancePath || scanJobId || busy) return;
+  const scanInstance = async (path?: string) => {
+    if ((!path && !instancePath) || scanJobId || busy) return;
     setResults(null);
     setSelectedPaths(new Set());
     setSearch("");
@@ -156,10 +156,13 @@ export function AddUnitsDialog({
     const earlyEvents: AddInstanceScanEventDto[] = [];
     let jobId: string | null = null;
     try {
-      const returnedJobId = await scanProjectInstanceSources(projectId, (event) => {
+      const onEvent = (event: AddInstanceScanEventDto) => {
         if (jobId === null) earlyEvents.push(event);
         else handleScanEvent(event, generation);
-      });
+      };
+      const returnedJobId = path
+        ? await scanModsFolder(path, onEvent)
+        : await scanProjectInstanceSources(projectId, onEvent);
       jobId = returnedJobId;
       if (generation !== scanGenerationRef.current) {
         if (!terminalJobsRef.current.has(returnedJobId)) void cancelAnalysis(returnedJobId).catch(() => {});
@@ -192,16 +195,20 @@ export function AddUnitsDialog({
     }
   };
 
-  const chooseShaderpackFolder = async () => {
+  const chooseFolder = async () => {
     setPickerError(null);
     try {
       const selected = await openFileDialog({ multiple: false, directory: true });
       const path = Array.isArray(selected) ? selected[0] : selected;
       if (!path) return;
-      onClose();
-      onAdd([path]);
+      if (await isShaderpackFolder(path)) {
+        onClose();
+        onAdd([path]);
+      } else {
+        await scanInstance(path);
+      }
     } catch (error: unknown) {
-      void logFrontendError(error, "add shaderpack folder picker");
+      void logFrontendError(error, "add folder picker");
       setPickerError("フォルダを選べませんでした。もう一度お試しください。");
     }
   };
@@ -247,7 +254,7 @@ export function AddUnitsDialog({
         {results === null && !scanProgress && !scanJobId && (
           <div className="add-units-dialog__sources">
             <SecondaryButton disabled={busy} onClick={() => void chooseFiles()}>ファイルを選ぶ</SecondaryButton>
-            <SecondaryButton disabled={busy} onClick={() => void chooseShaderpackFolder()}>シェーダーパックフォルダを選ぶ</SecondaryButton>
+            <SecondaryButton disabled={busy} onClick={() => void chooseFolder()}>フォルダを選ぶ</SecondaryButton>
             {instancePath && <SecondaryButton disabled={busy} onClick={() => void scanInstance()}>インスタンスから選ぶ</SecondaryButton>}
           </div>
         )}
