@@ -161,7 +161,7 @@ export async function generateFeatureFixtures(outputDirectory) {
       "category.fixture.basics.description": "A guide category",
       "entry.fixture.start": "Starting the guide",
       "entry.fixture.start.page": "Read the first page",
-      "block.fixture.relic": "Ancient Relic",
+      "block.fixture.relic": "Ancient Relic %s",
     },
   }));
   await writeFile(path.join(mods, "patchouli-body-only.jar"), patchouliJar({
@@ -172,6 +172,10 @@ export async function generateFeatureFixtures(outputDirectory) {
     languageFile: null,
   }));
 
+  await mkdir(path.join(single, "shaderpacks"), { recursive: true });
+  await writeFile(path.join(single, "shaderpacks", "Aurora.zip"), makeZip([
+    ["shaders/lang/en_US.lang", "option.BLOOM=Bloom\noption.BLOOM.comment=Controls bloom intensity\nscreen.LIGHTING=Lighting\nvalue.BLOOM.HIGH=High\noption.EXPOSURE=Exposure %s\n"],
+  ]));
   await writeText(single, "options.txt", "version:1\n");
   await writeText(single, "config/ftbquests/quests/lang/en_us.snbt", `{
   quest.fixture.title: "&aA green quest"

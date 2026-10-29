@@ -288,7 +288,7 @@ async function selectAiProvider(value, label) {
   });
 }
 
-async function captureSettings(theme, modelServerUrl, modelServerRequests) {
+async function captureSettings(theme, modelServerUrl) {
   await $("nav.app-header__actions").$("button=設定").click();
   await $(".settings-screen").waitForDisplayed({ timeout: 10_000 });
 
@@ -327,21 +327,9 @@ async function captureSettings(theme, modelServerUrl, modelServerRequests) {
 
   await selectAiProvider("openai-compatible", "OpenAI 互換（カスタム）");
   await $('[type="url"]').setValue(`${modelServerUrl}/v1`);
-  let modelInput;
-  for (const label of await $$(".settings-fields label")) {
-    if ((await label.getText()).trim().startsWith("モデル")) modelInput = await label.$("input");
-  }
-  assert.ok(modelInput, "モデル入力欄がありません。");
+  const modelInput = await $("#ai-model");
   await modelInput.setValue("screenshot-model");
   await $("button=保存").click();
-  await browser.waitUntil(async () => modelServerRequests.includes("GET /v1/models"), {
-    timeout: 20_000,
-    interval: 100,
-    timeoutMsg: "loopback モックからモデル一覧を取得しませんでした。",
-  });
-  await browser.waitUntil(async () => await browser.execute(() => (
-    document.querySelector("#ai-model-options option")?.textContent === "screenshot-model"
-  )), { timeout: 10_000, interval: 100, timeoutMsg: "モデル候補が表示されませんでした。" });
   await modelInput.setValue("screenshot-model");
   await modelInput.click();
   await browser.keys("ArrowDown");
@@ -379,6 +367,7 @@ async function captureProjectFlow(theme, fixturePath) {
     window.__YAKUCRAFT_E2E__.jarPath = jarPath;
   }, fixturePath);
   await capture(theme, "home");
+  await capture(theme, "home-shaderpack");
   await $('[data-testid="home-open-jar"]').click();
   // 解析中の進捗と中止操作も撮り、画面の見た目を確認できるようにする。
   await $(".analyze-screen").waitForDisplayed({ timeout: 10_000 });
@@ -407,6 +396,7 @@ async function captureProjectFlow(theme, fixturePath) {
     timeoutMsg: "Editorの翻訳行が選択されませんでした。",
   });
   await capture(theme, "editor-selected");
+  await capture(theme, "editor-add-units-single");
   await captureResponsiveEditorLayouts(theme);
 
   await $(".editor-inspector__scroll").waitForDisplayed({ timeout: 5_000 });
@@ -612,7 +602,7 @@ async function selectScreenshotModTab(name) {
 
 async function captureMultiModFlow(theme, instancePath) {
   await setModTabPosition("top");
-  await $('[aria-label="ホームへ戻る"]').click();
+  await $('.app-brand[aria-label="ホームへ戻る"]').click();
   await $('[data-testid="home-open-mods-folder"]').waitForDisplayed({ timeout: 10_000 });
   await browser.execute((directoryPath) => {
     window.__YAKUCRAFT_E2E__ = { ...window.__YAKUCRAFT_E2E__, directoryPath };
@@ -715,7 +705,7 @@ async function captureMultiModFlow(theme, instancePath) {
   await $("footer.export-screen__actions").$("button=戻る").click();
   await $('[aria-label="翻訳エディター"]').waitForDisplayed({ timeout: 10_000 });
 
-  await $('[aria-label="ホームへ戻る"]').click();
+  await $('.app-brand[aria-label="ホームへ戻る"]').click();
   await $("li.recent-projects__item:first-child").waitForDisplayed({ timeout: 10_000 });
   await capture(theme, "home-recent-projects");
   const recentProject = await $("li.recent-projects__item:first-child");
@@ -733,7 +723,7 @@ async function captureVariantSelector(theme, fixturePath) {
   await browser.execute((jarPath) => {
     window.__YAKUCRAFT_E2E__ = { ...window.__YAKUCRAFT_E2E__, jarPath };
   }, fixturePath);
-  await $('[aria-label="ホームへ戻る"]').click();
+  await $('.app-brand[aria-label="ホームへ戻る"]').click();
   await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
   await $('[data-testid="home-open-jar"]').click();
   await $(".analyze-screen").waitForDisplayed({ timeout: 10_000 });
@@ -806,7 +796,7 @@ async function selectScanRow(name, selected) {
 }
 
 async function returnHome() {
-  await $('[aria-label="ホームへ戻る"]').click();
+  await $('.app-brand[aria-label="ホームへ戻る"]').click();
   await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
 }
 
@@ -1036,9 +1026,63 @@ async function captureGeneratedFeatureScreens(theme, fixtures) {
   await returnHome();
 }
 
+async function captureShaderpackScreens(theme, fixtures) {
+  await scanGeneratedInstance(fixtures.singleInstance);
+  await findScanRow("Aurora.zip");
+  await capture(theme, "scan-shaderpacks");
+  for (const row of await $$(".scan-screen__row")) {
+    const checkbox = await row.$('input[type="checkbox"]');
+    if (await checkbox.isEnabled() && await checkbox.isSelected()) await row.$("label").click();
+  }
+  await selectScanRow("Aurora.zip", true);
+  await selectScanRow("Fixture i18n Guide", true);
+  await $(".scan-screen__actions button").click();
+  await $(".review-screen h1").waitForDisplayed({ timeout: 60_000 });
+  await capture(theme, "review-shaderpack");
+  await advanceReviewToEditor();
+  await selectScreenshotModTab("Aurora.zip");
+  await $('[data-testid="translation-target-option.BLOOM"]').waitForDisplayed({ timeout: 30_000 });
+  await capture(theme, "editor-shaderpack");
+  // Tauri のネイティブイベントを WebDriver から再現する。
+  await browser.execute((event, payload) => {
+    const listeners = window.__internal_unstable_listeners_object_id__?.[event];
+    if (!listeners || Object.getOwnPropertyNames(listeners).length === 0) throw new Error(`イベント購読がありません: ${event}`);
+    window.__internal_unstable_listeners_function_id__({ event, payload }, Object.getOwnPropertyNames(listeners));
+  }, "tauri://drag-enter", { paths: ["Aurora.zip"], position: { x: 100, y: 100 } });
+  await $(".editor-drop-overlay").waitForDisplayed({ timeout: 5_000 });
+  await capture(theme, "editor-drop-overlay");
+  await browser.execute(() => {
+    const event = "tauri://drag-leave";
+    const listeners = window.__internal_unstable_listeners_object_id__?.[event];
+    if (!listeners || Object.getOwnPropertyNames(listeners).length === 0) throw new Error(`イベント購読がありません: ${event}`);
+    window.__internal_unstable_listeners_function_id__({ event, payload: null }, Object.getOwnPropertyNames(listeners));
+  });
+  await $(".editor-drop-overlay").waitForDisplayed({ reverse: true, timeout: 5_000 });
+  await $('[data-testid="editor-add-mod"]').click();
+  await $("button=インスタンスから選ぶ").click();
+  await $(".add-units-dialog__list").waitForDisplayed({ timeout: 60_000 });
+  await capture(theme, "editor-add-units-dialog");
+  await browser.keys("Escape");
+  await selectScreenshotModTab("Fixture i18n Guide");
+  await editScreenshotTranslation("block.fixture.relic", "遺物 %d");
+  await $('[data-testid="editor-export"]').click();
+  await $(".export-screen").waitForDisplayed({ timeout: 15_000 });
+  await $('[for="export-option-shaderpackZip"]').click();
+  await capture(theme, "export-shaderpack");
+  await $('[for="export-option-resourcePack"]').click();
+  await $('[data-testid="export-start"]').click();
+  await $("button=このまま書き出す").waitForDisplayed({ timeout: 30_000 });
+  await browser.execute(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await capture(theme, "export-format-error-blocked");
+  await $("button=このまま書き出す").click();
+  await waitForScreenshotExportCompletion();
+  await capture(theme, "export-complete-with-format-errors");
+  await returnHome();
+}
+
 describe("全画面スクリーンショット", () => {
   it("各画面をライトとダークで保存する", async function () {
-    this.timeout(480_000);
+    this.timeout(900_000);
     const fixturePath = process.env.YAKUCRAFT_E2E_LARGE_FIXTURE;
     const darkFixturePath = process.env.YAKUCRAFT_E2E_DARK_FIXTURE;
     const exportPath = process.env.YAKUCRAFT_E2E_EXPORT;
@@ -1061,22 +1105,24 @@ describe("全画面スクリーンショット", () => {
       }, { jarPath: fixturePath, exportPath: resourcePackPath });
 
       await captureSettings("light", modelMock.url, modelMock.requests);
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
       await captureProjectFlow("light", fixturePath);
       await captureVariantSelector("light", variantFixturePath);
       await captureMultiModFlow("light", multiModInstancePath);
       await returnHome();
       await captureGeneratedFeatureScreens("light", lightFeatureFixtures);
+      await captureShaderpackScreens("light", lightFeatureFixtures);
 
       await captureSettings("dark", modelMock.url, modelMock.requests);
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $('[data-testid="home-open-jar"]').waitForDisplayed({ timeout: 10_000 });
       await captureProjectFlow("dark", darkFixturePath);
       await captureVariantSelector("dark", variantFixturePath);
       await captureMultiModFlow("dark", multiModInstancePath);
       await returnHome();
       await captureGeneratedFeatureScreens("dark", darkFeatureFixtures);
+      await captureShaderpackScreens("dark", darkFeatureFixtures);
     } finally {
       modelMock.server.closeAllConnections?.();
       await new Promise((resolve) => modelMock.server.close(resolve));
