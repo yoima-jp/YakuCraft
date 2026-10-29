@@ -212,6 +212,20 @@ describe("Export format and validation", () => {
     expect(await screen.findByRole("list", { name: "書式の確認事項" })).toBeTruthy();
   });
 
+  it("書式エラーで書き出しが止まると詳細を開いて理由を表示する", async () => {
+    vi.mocked(validateSelectedProject).mockResolvedValue({
+      issues: [{ severity: "error", code: "placeholderError", message: "書式エラー", modUnitId: 1, modName: "Fixture", count: null, namespace: "fixture", key: "broken", sourceText: "%s", targetText: "%2$s" }],
+      minecraftVersionDetection: details().minecraftVersionDetection ?? null,
+      counts: { total: 2, translated: 1, missing: 1, needsReview: 1 },
+      isSigned: false,
+    });
+    render(<ExportScreen />);
+    const summary = await screen.findByText("書式エラー 1 件・注意 0 件");
+    fireEvent.click(screen.getByTestId("export-start"));
+    expect((await screen.findByRole("alert")).textContent).toBe("書式エラーを直すと書き出せます");
+    expect(summary.closest("details")?.open).toBe(true);
+  });
+
   it("判定したMinecraftバージョンをSelectの初期値にする", async () => {
     render(<ExportScreen />);
     const versionSelect = await screen.findByRole("combobox", { name: "Minecraft バージョン" });

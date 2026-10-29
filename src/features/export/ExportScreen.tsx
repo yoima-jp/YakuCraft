@@ -306,8 +306,22 @@ export function ExportScreen() {
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const placeholderDetailsRef = useRef<HTMLDetailsElement>(null);
+  const blockingIssuesRef = useRef<HTMLUListElement>(null);
+  const focusIssue = useRef<"placeholder" | "blocking" | null>(null);
   const latestValidationRequest = useRef(0);
   const screenActive = useRef(false);
+
+  useEffect(() => {
+    if (!focusIssue.current) return;
+    const target = focusIssue.current === "placeholder" ? placeholderDetailsRef.current : blockingIssuesRef.current;
+    if (target) {
+      if (target instanceof HTMLDetailsElement) target.open = true;
+      target.scrollIntoView?.({ block: "nearest" });
+      target.focus();
+    }
+    focusIssue.current = null;
+  }, [error, validation]);
 
   const isCurrentProject = useCallback((expectedProjectId: string) => (
     screenActive.current && useProjectStore.getState().details?.project.id === expectedProjectId
@@ -581,7 +595,12 @@ export function ExportScreen() {
       const hasErrors = result.issues.some((issue) =>
         issue.severity === "error" && issue.code !== "modUnavailable",
       );
-      if (hasErrors && kind !== "modifiedJar") return;
+      if (hasErrors && kind !== "modifiedJar") {
+        const hasPlaceholderErrors = result.issues.some((issue) => issue.severity === "error" && issue.code === "placeholderError");
+        setError(hasPlaceholderErrors ? "書式エラーを直すと書き出せます" : "確認事項を直すと書き出せます");
+        focusIssue.current = hasPlaceholderErrors ? "placeholder" : "blocking";
+        return;
+      }
 
       const defaultName = kind === "resourcePack"
         ? mergeOutputFileName(
@@ -1086,7 +1105,7 @@ export function ExportScreen() {
       <section className="export-validation" aria-label="書き出しの確認" aria-live="polite">
         {validationError && <p className="status-message" role="alert">{validationError}</p>}
         {!!blockingIssues.length && (
-          <ul className="export-issues" aria-label="書き出しできない理由">
+          <ul ref={blockingIssuesRef} tabIndex={-1} className="export-issues" aria-label="書き出しできない理由">
             {blockingIssues.map((issue, index) => (
               <li className="export-issue export-issue--error" key={`${issue.modUnitId ?? "project"}-${issue.code}-${index}`}>
                 {issueLabel(issue)}
@@ -1101,8 +1120,8 @@ export function ExportScreen() {
           </details>
         )}
         {placeholderCount > 0 && (
-          <details className="export-validation__details" onToggle={(event) => setPlaceholderDetailsOpen(event.currentTarget.open)}>
-            <summary>
+          <details ref={placeholderDetailsRef} tabIndex={-1} className="export-validation__details" onToggle={(event) => setPlaceholderDetailsOpen(event.currentTarget.open)}>
+            <summary className={placeholderErrorCount > 0 ? "export-issue--error" : undefined}>
               書式エラー {placeholderErrorCount.toLocaleString("ja-JP")} 件・注意 {placeholderWarningCount.toLocaleString("ja-JP")} 件
             </summary>
             {placeholderDetailsOpen && (
