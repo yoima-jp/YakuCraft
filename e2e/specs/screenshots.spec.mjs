@@ -1067,6 +1067,8 @@ async function captureShaderpackScreens(theme, fixtures) {
   await editScreenshotTranslation("block.fixture.relic", "遺物 %d");
   await $('[data-testid="editor-export"]').click();
   await $(".export-screen").waitForDisplayed({ timeout: 15_000 });
+  await $("label=シェーダーパックも shaderpacks/ に配置する").waitForDisplayed({ timeout: 15_000 });
+  if (theme === "light") await capture(theme, "export-with-shaderpack-deployment");
   await $('[for="export-option-shaderpackZip"]').click();
   await capture(theme, "export-shaderpack");
   await $('[for="export-option-resourcePack"]').click();

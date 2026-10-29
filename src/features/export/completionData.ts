@@ -8,6 +8,8 @@ export interface ExportRunDetails {
   outputPaths: string[];
   modResults: ModExportResultDto[];
   placeholderErrorCount?: number;
+  shaderpackInstalled?: boolean;
+  shaderpackError?: string;
   conflicts: Array<{
     namespace: string;
     key: string;
