@@ -1031,7 +1031,7 @@ fn export_selected_merged_resource_pack_core(
                 export_unit_label(&unit),
                 "skipped",
                 None,
-                "シェーダーパックはリソースパックに含めません。専用形式から書き出してください。"
+                "シェーダーパックはリソースパックに含めません。「日本語化したシェーダーパック」から書き出してください。"
                     .to_owned(),
             ));
             continue;

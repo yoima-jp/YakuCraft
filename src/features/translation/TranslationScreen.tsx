@@ -444,7 +444,7 @@ export function TranslationScreen() {
       setIsAdding(false);
       setAddProgress(null);
       setAddJobId(null);
-      setModActionError(error instanceof AppCommandError ? error.message : "Mod を追加できませんでした。");
+      setModActionError(error instanceof AppCommandError ? error.message : "追加できませんでした。");
     }
   }, [handleAddUnitsEvent, projectId]);
 

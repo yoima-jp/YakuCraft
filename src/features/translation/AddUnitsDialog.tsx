@@ -242,7 +242,7 @@ export function AddUnitsDialog({
   };
 
   return (
-    <Dialog open={open} onClose={close} title="Mod を追加">
+    <Dialog open={open} onClose={close} title="追加">
       <div className="add-units-dialog">
         {results === null && !scanProgress && !scanJobId && (
           <div className="add-units-dialog__sources">

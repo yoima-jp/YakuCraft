@@ -180,7 +180,7 @@ export function EditorToolbar({
           詳細
         </TertiaryButton>
         <TertiaryButton data-testid="editor-add-mod" disabled={addDisabled} onClick={onAddMod}>
-          Mod を追加
+          追加
         </TertiaryButton>
         <TertiaryButton onClick={onOpenGlossary}>用語集</TertiaryButton>
         <Tooltip content="書き出し" shortcut="Ctrl+E">
