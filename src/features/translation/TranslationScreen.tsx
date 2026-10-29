@@ -39,6 +39,7 @@ import {
   readUserSizedColumns,
 } from "./tableLayout";
 import { useAutosave } from "./useAutosave";
+import { unitName as modUnitName } from "./unitName";
 import { parseTranslationClipboard, serializeTranslationClipboard } from "./clipboard";
 import { addModUnits } from "../scan/tauri";
 import { ProgressBar } from "../../components/progress/ProgressBar";
@@ -54,14 +55,6 @@ function discardModUnitSnapshot(modUnitId: number) {
   const unitStates = new Map(state.unitStates);
   unitStates.delete(modUnitId);
   useEditorStore.setState({ unitStates });
-}
-
-function modUnitName(unit: { sourceKind?: "jar" | "modpack" | "shaderpack"; name: string | null; sourceFilename: string }) {
-  return unit.sourceKind === "modpack"
-    ? "Modpack 固有（クエスト・KubeJS）"
-    : unit.sourceKind === "shaderpack"
-      ? `シェーダーパック: ${unit.sourceFilename}`
-    : unit.name?.trim() || unit.sourceFilename;
 }
 
 export function TranslationScreen() {

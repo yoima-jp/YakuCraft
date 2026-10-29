@@ -356,11 +356,11 @@ export function ReviewScreen() {
                           {(unit.sourceKind === undefined || unit.sourceKind === "jar") && (
                             <span className="review-mod-list__version">{unit.version ?? "バージョン不明"} · {unit.sourceFilename}</span>
                           )}
-                          <div className="review-mod-list__namespaces">
+                          {unit.sourceKind !== "shaderpack" && <div className="review-mod-list__namespaces">
                             {(namespacesByModUnit.get(unit.id) ?? []).map((namespace) => (
                               <span className="review-mod-list__namespace" key={namespace}>{namespace}</span>
                             ))}
-                          </div>
+                          </div>}
                         </li>
                       );
                     })}
