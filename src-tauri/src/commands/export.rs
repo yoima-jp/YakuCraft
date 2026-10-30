@@ -85,6 +85,7 @@ pub struct ExportUnitStatus {
     pub source_sha256: String,
     pub original_path: String,
     pub original_exists: bool,
+    pub in_instance_mods: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -374,20 +375,31 @@ pub async fn get_export_overview(
             .lock()
             .map_err(|_| state_error("active Project state"))?;
         let opened = active_project_for_id(&active, &project_id)?;
+        let instance_path = opened.summary().instance_path.as_deref().map(Path::new);
         let units = opened
             .repository()
             .list_mod_units()
             .map_err(|error| project_error(error.to_string()))?
             .into_iter()
-            .map(|unit| ExportUnitStatus {
-                id: unit.id,
-                source_kind: unit.source_kind,
-                source_filename: unit.source_filename,
-                name: unit.name,
-                version: unit.version,
-                source_sha256: unit.source_sha256,
-                original_exists: Path::new(&unit.original_path).is_file(),
-                original_path: unit.original_path,
+            .map(|unit| {
+                let in_instance_mods = unit.source_kind == ModUnitSourceKind::Jar
+                    && instance_path.is_some_and(|instance_path| {
+                        original_jar_is_in_instance_mods(
+                            instance_path,
+                            Path::new(&unit.original_path),
+                        )
+                    });
+                ExportUnitStatus {
+                    id: unit.id,
+                    source_kind: unit.source_kind,
+                    source_filename: unit.source_filename,
+                    name: unit.name,
+                    version: unit.version,
+                    source_sha256: unit.source_sha256,
+                    original_exists: Path::new(&unit.original_path).is_file(),
+                    original_path: unit.original_path,
+                    in_instance_mods,
+                }
             })
             .collect();
         let active_replacements = opened
@@ -1246,6 +1258,28 @@ fn export_selected_modified_jars_core(
     let mut results = Vec::with_capacity(units.len());
     for unit in units {
         let label = export_unit_label(&unit);
+        if replace_in_place
+            && Path::new(&unit.original_path).is_file()
+            && opened
+                .summary()
+                .instance_path
+                .as_deref()
+                .is_some_and(|instance_path| {
+                    !original_jar_is_in_instance_mods(
+                        Path::new(instance_path),
+                        Path::new(&unit.original_path),
+                    )
+                })
+        {
+            results.push(mod_export_result(
+                unit.id,
+                label,
+                "skipped",
+                None,
+                "インスタンスの mods フォルダ外のため直接置き換えできません。".to_owned(),
+            ));
+            continue;
+        }
         let context = match export_context(opened, unit.id) {
             Ok(context) => context,
             Err(error) => {
@@ -3785,6 +3819,42 @@ fn normalized_shaderpack_path(path: &Path) -> Result<String, AppError> {
     Ok(normalized.to_string_lossy().to_lowercase())
 }
 
+fn original_jar_is_in_instance_mods(instance_path: &Path, original_path: &Path) -> bool {
+    let Ok(instance_root) = fs::canonicalize(instance_path) else {
+        return false;
+    };
+    let Ok(mods_directory) = fs::canonicalize(instance_root.join("mods")) else {
+        return false;
+    };
+    let Ok(original_jar) = fs::canonicalize(original_path) else {
+        return false;
+    };
+    if !mods_directory.is_dir() || !original_jar.is_file() {
+        return false;
+    }
+    canonical_path_is_within(&mods_directory, &instance_root)
+        && canonical_path_is_within(&original_jar, &mods_directory)
+}
+
+#[cfg(windows)]
+fn canonical_path_is_within(path: &Path, directory: &Path) -> bool {
+    let directory_components: Vec<_> = directory
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let path_components: Vec<_> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    path_components.len() > directory_components.len()
+        && path_components.starts_with(&directory_components)
+}
+
+#[cfg(not(windows))]
+fn canonical_path_is_within(path: &Path, directory: &Path) -> bool {
+    path != directory && path.starts_with(directory)
+}
+
 fn canonical_path_with_missing_leaf(path: &Path) -> Result<PathBuf, AppError> {
     if path.exists() {
         return fs::canonicalize(path).map_err(export_error);
@@ -4064,16 +4134,17 @@ mod export_path_regression_tests {
     use std::{
         fs,
         io::Write,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
         ExportKindInput, MergedPackExportOutcome, MergedPackExportRequest, RestoreJarOutcome,
-        active_project_for_id, export_context, export_language_file_and_record,
-        export_selected_language_files_core, export_selected_merged_resource_pack_core,
-        legacy_parse_escapes_namespaces, restore_modified_jar_core, sha256_file_hex,
+        active_project_for_id, benchmark_export_selected_modified_jars, export_context,
+        export_language_file_and_record, export_selected_language_files_core,
+        export_selected_merged_resource_pack_core, legacy_parse_escapes_namespaces,
+        original_jar_is_in_instance_mods, restore_modified_jar_core, sha256_file_hex,
         validate_project_core_for_units,
     };
     use crate::{commands::project::create_project_from_sources_core, paths::AppPaths};
@@ -4176,6 +4247,138 @@ mod export_path_regression_tests {
             })
             .expect("fixture translation should be saved");
         (temporary, opened, mod_unit_id)
+    }
+
+    fn write_in_place_fixture_jar(path: &Path, mod_id: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = fs::File::create(path).unwrap();
+        let mut jar = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let metadata =
+            format!(r#"{{"schemaVersion":1,"id":"{mod_id}","name":"{mod_id}","version":"1.0.0"}}"#);
+        jar.start_file("fabric.mod.json", options).unwrap();
+        jar.write_all(metadata.as_bytes()).unwrap();
+        jar.start_file(format!("assets/{mod_id}/lang/fr_fr.json"), options)
+            .unwrap();
+        jar.write_all(br#"{"fixture.message":"Source text"}"#)
+            .unwrap();
+        jar.finish().unwrap();
+    }
+
+    #[test]
+    fn direct_jar_replacement_only_writes_files_in_instance_mods() {
+        let temporary = TemporaryDirectory::create();
+        let instance = temporary.0.join("instance");
+        let inside_jar = instance.join("mods/inside.jar");
+        let outside_jar = temporary.0.join("Downloads/outside.jar");
+        write_in_place_fixture_jar(&inside_jar, "inside");
+        write_in_place_fixture_jar(&outside_jar, "outside");
+        let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+        let sources = [inside_jar.clone(), outside_jar.clone()];
+        let created = create_project_from_sources_core(
+            &paths,
+            &sources,
+            Some(&instance),
+            false,
+            &CancellationToken::default(),
+            |_, _, _, _| {},
+        )
+        .unwrap();
+        let units = created.opened.repository().list_mod_units().unwrap();
+        let inside_unit_id = units
+            .iter()
+            .find(|unit| unit.source_filename == "inside.jar")
+            .unwrap()
+            .id;
+        let outside_unit_id = units
+            .iter()
+            .find(|unit| unit.source_filename == "outside.jar")
+            .unwrap()
+            .id;
+        let analyses = created.analyses;
+        let opened = created.opened;
+        for unit in &units {
+            let mut settings = analyses[&unit.id].default_review_settings();
+            settings.source_locale = "en_us".to_owned();
+            opened
+                .writer()
+                .save_review_settings(unit.id, settings, true)
+                .unwrap();
+            let entry = opened
+                .repository()
+                .list_entries(Some(unit.id))
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap();
+            opened
+                .writer()
+                .update_entry(EntryUpdate {
+                    id: entry.id,
+                    target_text: "翻訳".to_owned(),
+                    origin: UpdateOrigin::Manual,
+                })
+                .unwrap();
+        }
+
+        let inside_before = fs::read(&inside_jar).unwrap();
+        let outside_before = fs::read(&outside_jar).unwrap();
+        let results = benchmark_export_selected_modified_jars(
+            &opened,
+            &[inside_unit_id, outside_unit_id],
+            &temporary.0.join("output"),
+            true,
+        )
+        .unwrap();
+
+        assert_ne!(fs::read(&inside_jar).unwrap(), inside_before);
+        assert_eq!(fs::read(&outside_jar).unwrap(), outside_before);
+        let inside_result = results
+            .iter()
+            .find(|result| result.mod_unit_id == inside_unit_id)
+            .unwrap();
+        assert_eq!(inside_result.status, "success");
+        let outside_result = results
+            .iter()
+            .find(|result| result.mod_unit_id == outside_unit_id)
+            .unwrap();
+        assert_eq!(outside_result.status, "skipped");
+        assert_eq!(
+            outside_result.message.as_deref(),
+            Some("インスタンスの mods フォルダ外のため直接置き換えできません。")
+        );
+
+        let nested = instance.join("mods/nested");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(original_jar_is_in_instance_mods(
+            &instance,
+            &nested.join("../inside.jar")
+        ));
+        #[cfg(windows)]
+        {
+            let uppercase_path = PathBuf::from(format!(
+                "{}\\MODS\\INSIDE.JAR",
+                instance.to_string_lossy().to_uppercase()
+            ));
+            assert!(original_jar_is_in_instance_mods(&instance, &uppercase_path));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let linked_jar = instance.join("mods/external-link.jar");
+            symlink(&outside_jar, &linked_jar).unwrap();
+            assert!(!original_jar_is_in_instance_mods(&instance, &linked_jar));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_file;
+
+            let linked_jar = instance.join("mods/external-link.jar");
+            if symlink_file(&outside_jar, &linked_jar).is_ok() {
+                assert!(!original_jar_is_in_instance_mods(&instance, &linked_jar));
+            }
+        }
     }
 
     #[test]

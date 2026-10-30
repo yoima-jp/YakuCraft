@@ -115,6 +115,7 @@ function setupInstanceWithShaderpacks() {
       sourceSha256: "source-hash",
       originalPath: `C:\\mods\\${unit.sourceFilename}`,
       originalExists: true,
+      inInstanceMods: unit.sourceKind === "jar",
     })),
     activeReplacements: [],
   });
@@ -137,6 +138,7 @@ function setupInstanceWithSingleShaderpack() {
       sourceSha256: "source-hash",
       originalPath: `C:\\mods\\${unit.sourceFilename}`,
       originalExists: true,
+      inInstanceMods: unit.sourceKind === "jar",
     })),
     activeReplacements: [],
   });
@@ -157,6 +159,7 @@ function setupInstanceWithModOnly() {
       sourceSha256: "source-hash",
       originalPath: `C:\\mods\\${unit.sourceFilename}`,
       originalExists: true,
+      inInstanceMods: unit.sourceKind === "jar",
     })),
     activeReplacements: [],
   });
@@ -184,6 +187,7 @@ beforeEach(() => {
       sourceSha256: "source-hash",
       originalPath: "C:\\mods\\fixture.jar",
       originalExists: true,
+      inInstanceMods: false,
     }],
     activeReplacements: [],
   });
