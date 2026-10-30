@@ -875,7 +875,7 @@ fn validate_project_core_for_units(
                         || (kind == ExportKindInput::ResourcePack
                             && unit.source_kind == ModUnitSourceKind::Modpack)
                 }
-                ExportKindInput::LanguageFile => unit.source_kind != ModUnitSourceKind::Modpack,
+                ExportKindInput::LanguageFile => true,
                 ExportKindInput::ModpackFiles => false,
             }
     }) {
@@ -901,7 +901,13 @@ fn validate_project_core_for_units(
         };
         let has_selection = match kind {
             ExportKindInput::LanguageFile => context.namespaces.iter().any(|candidate| {
-                candidate.included && Some(candidate.namespace.as_str()) == namespace
+                candidate.included
+                    && Some(candidate.namespace.as_str()) == namespace
+                    // FTB Quests uses document SNBT, which is not a language-file export.
+                    && context
+                        .language_files
+                        .iter()
+                        .any(|language| language.namespace == candidate.namespace)
             }),
             ExportKindInput::ShaderpackZip => context
                 .namespaces
@@ -4064,10 +4070,11 @@ mod export_path_regression_tests {
     };
 
     use super::{
-        MergedPackExportOutcome, MergedPackExportRequest, RestoreJarOutcome, active_project_for_id,
-        export_context, export_language_file_and_record, export_selected_language_files_core,
-        export_selected_merged_resource_pack_core, legacy_parse_escapes_namespaces,
-        restore_modified_jar_core, sha256_file_hex,
+        ExportKindInput, MergedPackExportOutcome, MergedPackExportRequest, RestoreJarOutcome,
+        active_project_for_id, export_context, export_language_file_and_record,
+        export_selected_language_files_core, export_selected_merged_resource_pack_core,
+        legacy_parse_escapes_namespaces, restore_modified_jar_core, sha256_file_hex,
+        validate_project_core_for_units,
     };
     use crate::{commands::project::create_project_from_sources_core, paths::AppPaths};
     use yc_analysis::CancellationToken;
@@ -4425,6 +4432,116 @@ mod export_path_regression_tests {
             .expect("successful export should report its path");
         assert!(PathBuf::from(output).is_file());
         assert!(PathBuf::from(output).starts_with(&output_directory));
+    }
+
+    #[test]
+    fn selected_kubejs_language_export_accepts_only_its_namespace_and_excludes_ftb_snbt() {
+        let temporary = TemporaryDirectory::create();
+        let instance = temporary.0.join("instance");
+        for (relative_path, contents) in [
+            (
+                "minecraft/config/ftbquests/quests/lang/en_us.snbt",
+                "{ quest.q.title: \"English Quest\" }",
+            ),
+            (
+                "minecraft/kubejs/assets/example/lang/en_us.json",
+                r#"{"example.key":"English KubeJS"}"#,
+            ),
+        ] {
+            let path = instance.join(relative_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+        let created = create_project_from_sources_core(
+            &paths,
+            &[],
+            Some(&instance),
+            true,
+            &CancellationToken::default(),
+            |_, _, _, _| {},
+        )
+        .expect("KubeJS and FTB language files should be imported as a Modpack unit");
+        let opened = created.opened;
+        let unit = opened
+            .repository()
+            .list_mod_units()
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("project should contain the imported Modpack unit");
+        let kubejs_entry = opened
+            .repository()
+            .list_entries(Some(unit.id))
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.namespace == "example")
+            .expect("KubeJS language entry should be imported");
+        opened
+            .writer()
+            .update_entry(EntryUpdate {
+                id: kubejs_entry.id,
+                target_text: "日本語のKubeJS".to_owned(),
+                origin: UpdateOrigin::Manual,
+            })
+            .unwrap();
+
+        let selected_ids = [unit.id];
+        let kubejs_validation = validate_project_core_for_units(
+            &opened,
+            ExportKindInput::LanguageFile,
+            None,
+            Some("example"),
+            None,
+            Some(&selected_ids),
+        )
+        .expect("selected KubeJS namespace should validate");
+        assert!(
+            !kubejs_validation
+                .issues
+                .iter()
+                .any(|issue| issue.code == "invalidExportSelection")
+        );
+        let ftb_validation = validate_project_core_for_units(
+            &opened,
+            ExportKindInput::LanguageFile,
+            None,
+            Some("ftbquests"),
+            None,
+            Some(&selected_ids),
+        )
+        .expect("an FTB document namespace should be reported as an invalid language selection");
+        assert!(
+            ftb_validation
+                .issues
+                .iter()
+                .any(|issue| issue.code == "invalidExportSelection")
+        );
+
+        let output_directory = temporary.0.join("language-output");
+        let results = export_selected_language_files_core(
+            &opened,
+            &selected_ids,
+            &output_directory,
+            "example",
+            &Arc::new(Mutex::new(std::collections::HashSet::new())),
+        )
+        .expect("selected KubeJS language file should export");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, "success", "{:?}", results[0].message);
+        let output = results[0]
+            .output_path
+            .as_deref()
+            .expect("successful KubeJS export should report its output");
+        let exported: serde_json::Value =
+            serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+        assert_eq!(exported["example.key"], "日本語のKubeJS");
+        assert_ne!(
+            PathBuf::from(output)
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("snbt")
+        );
     }
 
     #[test]

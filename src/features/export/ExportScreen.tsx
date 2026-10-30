@@ -106,6 +106,20 @@ function isJarUnit(unit: { sourceKind?: "jar" | "modpack" | "shaderpack" }) {
   return unit.sourceKind === undefined || unit.sourceKind === "jar";
 }
 
+function selectableUnitsForKind(
+  units: ReturnType<typeof useProjectStore.getState>["modUnits"],
+  kind: ExportKind,
+) {
+  if (kind === "modifiedJar") return units.filter(isJarUnit);
+  if (kind === "shaderpackZip") return units.filter((unit) => unit.sourceKind === "shaderpack");
+  // 言語ファイルはシェーダーの lang 単体出力にも使うので、全ユニットを対象にする。
+  // 全選択で selectedIds が一覧の内容に置き換わるため、ここで外すと後から再選択できなくなる。
+  if (kind === "languageFile") return units;
+  // シェーダーの lang はパック自体に書き込む方式なので、リソースパックなどの対象からは外す。
+  // Modpack ユニットは KubeJS の翻訳をリソースパックにも含められるため、従来どおり残す。
+  return units.filter((unit) => unit.sourceKind !== "shaderpack");
+}
+
 function ModUnitSelector({
   units,
   selectedIds,
@@ -410,17 +424,7 @@ export function ExportScreen() {
   const hasJarUnit = modUnits.some(isJarUnit);
   const hasModpackUnit = modUnits.some((unit) => unit.sourceKind === "modpack");
   const hasShaderpackUnit = modUnits.some((unit) => unit.sourceKind === "shaderpack");
-  const selectableUnits = kind === "modifiedJar"
-    ? modUnits.filter(isJarUnit)
-    : kind === "shaderpackZip"
-      ? modUnits.filter((unit) => unit.sourceKind === "shaderpack")
-      // 言語ファイルはシェーダーの lang 単体出力にも使うので、全ユニットを対象にする。
-      // 全選択で selectedIds が一覧の内容に置き換わるため、ここで外すと後から再選択できなくなる。
-      : kind === "languageFile"
-        ? modUnits
-        // シェーダーの lang はパック自体に書き込む方式なので、リソースパックなどの対象からは外す。
-        // Modpack ユニットは KubeJS の翻訳をリソースパックにも含められるため、従来どおり残す。
-        : modUnits.filter((unit) => unit.sourceKind !== "shaderpack");
+  const selectableUnits = selectableUnitsForKind(modUnits, kind);
   const selectedJarIds = modUnits
     .filter((unit) => selectedIdSet.has(unit.id) && isJarUnit(unit))
     .map((unit) => unit.id);
@@ -595,11 +599,15 @@ export function ExportScreen() {
   };
 
   const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}:${deployShaderpacks}`;
-  const confirmInstanceDeployment = (includeShaderpacks = false) => requestConfirmation({
+  const confirmInstanceDeployment = () => requestConfirmation({
     title: "インスタンスに配置しますか",
-    message: includeShaderpacks
-      ? "Minecraft を終了してから配置してください。シェーダーパックを shaderpacks/ に配置します。既存ファイルはバックアップされ、書き出し画面から戻せます。"
-      : "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+    message: "Minecraft を終了してから配置してください。シェーダーパックを shaderpacks/ に配置します。既存のシェーダーパックはバックアップされ、書き出し画面から復元できます。",
+    confirmLabel: "配置",
+    destructive: true,
+  });
+  const confirmModpackDeployment = () => requestConfirmation({
+    title: "インスタンスに配置しますか",
+    message: "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
     confirmLabel: "配置",
     destructive: true,
   });
@@ -654,8 +662,8 @@ export function ExportScreen() {
         }
       }
 
-      if (deployShaderpacks || (kind === "resourcePack" && destination === "instance")) {
-        if (!await confirmInstanceDeployment(deployShaderpacks)) return;
+      if (deployShaderpacks || (kind === "shaderpackZip" && destination === "instance")) {
+        if (!await confirmInstanceDeployment()) return;
         if (!isCurrentProject(startingProjectId)) return;
       }
 
@@ -693,7 +701,7 @@ export function ExportScreen() {
           if (!isCurrentProject(startingProjectId)) return;
           if (!outputPath) return;
         } else {
-          if (!await confirmInstanceDeployment()) return;
+          if (!await confirmModpackDeployment()) return;
           if (!isCurrentProject(startingProjectId)) return;
         }
         let outcome = await exportModpackFiles(
@@ -727,10 +735,6 @@ export function ExportScreen() {
           : null;
         if (!isCurrentProject(startingProjectId)) return;
         if (destination === "folder" && !outputDirectory) return;
-        if (destination === "instance") {
-          if (!await confirmInstanceDeployment()) return;
-          if (!isCurrentProject(startingProjectId)) return;
-        }
         let outcome = await exportShaderpacks(
           startingProjectId,
           selectedShaderpackIds,
@@ -1044,6 +1048,13 @@ export function ExportScreen() {
         onChange={(value) => {
           const nextKind = value as ExportKind;
           setKind(nextKind);
+          const nextSelectableUnits = selectableUnitsForKind(modUnits, nextKind);
+          const nextSelectableIds = nextSelectableUnits.map((unit) => unit.id);
+          setSelectedIds((current) => {
+            const retainedIds = current.filter((id) => nextSelectableIds.includes(id));
+            if (nextSelectableUnits.length === 1) return nextSelectableIds;
+            return retainedIds.length > 0 ? retainedIds : nextSelectableIds;
+          });
           if (nextKind === "shaderpackZip") setDestination("folder");
         }}
         options={EXPORT_OPTIONS

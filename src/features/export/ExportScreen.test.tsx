@@ -120,6 +120,48 @@ function setupInstanceWithShaderpacks() {
   });
 }
 
+function setupInstanceWithSingleShaderpack() {
+  const units = [modUnit(1), modUnit(2), modUnit(3)].map((unit, index) => (
+    index === 2 ? { ...unit, sourceKind: "shaderpack" as const } : { ...unit, sourceKind: "jar" as const }
+  ));
+  useProjectStore.getState().setModUnits(units);
+  vi.mocked(listModUnits).mockResolvedValue(units);
+  vi.mocked(getExportOverview).mockResolvedValue({
+    instancePath: "C:\\instance",
+    units: units.map((unit) => ({
+      id: unit.id,
+      sourceKind: unit.sourceKind,
+      sourceFilename: unit.sourceFilename,
+      name: unit.name,
+      version: unit.version,
+      sourceSha256: "source-hash",
+      originalPath: `C:\\mods\\${unit.sourceFilename}`,
+      originalExists: true,
+    })),
+    activeReplacements: [],
+  });
+}
+
+function setupInstanceWithModOnly() {
+  const units = [{ ...modUnit(1), sourceKind: "jar" as const }];
+  useProjectStore.getState().setModUnits(units);
+  vi.mocked(listModUnits).mockResolvedValue(units);
+  vi.mocked(getExportOverview).mockResolvedValue({
+    instancePath: "C:\\instance",
+    units: units.map((unit) => ({
+      id: unit.id,
+      sourceKind: unit.sourceKind,
+      sourceFilename: unit.sourceFilename,
+      name: unit.name,
+      version: unit.version,
+      sourceSha256: "source-hash",
+      originalPath: `C:\\mods\\${unit.sourceFilename}`,
+      originalExists: true,
+    })),
+    activeReplacements: [],
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
@@ -169,6 +211,39 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("Export format and validation", () => {
+  it("形式切り替えで唯一のシェーダーパックを選択する", async () => {
+    setupInstanceWithSingleShaderpack();
+    render(<ExportScreen />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "全選択" }));
+    fireEvent.click(await screen.findByRole("radio", { name: /日本語化したシェーダーパック/ }));
+
+    await waitFor(() => expect(validateSelectedProject).toHaveBeenLastCalledWith(
+      "project-1",
+      "shaderpackZip",
+      [3],
+      undefined,
+      undefined,
+      undefined,
+    ));
+  });
+
+  it("リソースパック単体のインスタンス配置では事前確認を出さず上書き確認を保つ", async () => {
+    setupInstanceWithModOnly();
+    vi.mocked(exportSelectedMergedResourcePack)
+      .mockResolvedValueOnce({ status: "overwriteRequired", outputPath: "C:\\instance\\resourcepacks\\fixture.zip" })
+      .mockResolvedValue({ status: "completed", outputPath: "C:\\instance\\resourcepacks\\fixture.zip", directlyInstalled: true, modResults: [], conflicts: [] });
+    render(<ExportScreen />);
+
+    fireEvent.click(await screen.findByTestId("export-start"));
+    const overwriteDialog = await screen.findByRole("dialog", { name: "リソースパックを上書きしますか" });
+    expect(overwriteDialog.textContent).toContain("同じ名前のリソースパックがあります。");
+    fireEvent.click(screen.getByRole("button", { name: "上書き" }));
+
+    await waitFor(() => expect(exportSelectedMergedResourcePack).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("dialog", { name: "インスタンスに配置しますか" })).toBeNull();
+  });
+
   it("詳細設定は初期状態で閉じ、押すと開閉する", async () => {
     render(<ExportScreen />);
     const disclosure = await screen.findByRole("button", { name: "詳細設定" });
@@ -342,6 +417,7 @@ describe("Export format and validation", () => {
 
     const deploymentDialog = await screen.findByRole("dialog", { name: "インスタンスに配置しますか" });
     expect(deploymentDialog.textContent).toContain("shaderpacks/");
+    expect(deploymentDialog.textContent).toContain("既存のシェーダーパックはバックアップされ");
     expect(exportSelectedModifiedJars).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "配置" }));
 
