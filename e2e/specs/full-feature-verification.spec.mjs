@@ -490,42 +490,35 @@ describe("全機能の動作確認", () => {
       }
       await $('[role="combobox"][aria-label="プロバイダー"]').waitForDisplayed({ timeout: 10_000 });
       const presets = [
-        ["chatgpt", "ChatGPT（サブスクリプション）", false, false, true],
-        ["openai", "OpenAI", true, false, false],
-        ["gemini", "Gemini", true, false, false],
-        ["openrouter", "OpenRouter", true, false, false],
-        ["deepseek", "DeepSeek", true, false, false],
-        ["groq", "Groq", true, false, false],
-        ["ollama", "Ollama", false, false, false],
-        ["lm-studio", "LM Studio", false, false, false],
-        ["anthropic", "Claude（Anthropic）", true, false, false],
-        ["openai-compatible", "OpenAI 互換（カスタム）", true, true, false],
+        ["chatgpt", "ChatGPT（サブスクリプション）", false, false],
+        ["openai", "OpenAI", true, false],
+        ["gemini", "Gemini", true, false],
+        ["openrouter", "OpenRouter", true, false],
+        ["deepseek", "DeepSeek", true, false],
+        ["groq", "Groq", true, false],
+        ["ollama", "Ollama", false, false],
+        ["lm-studio", "LM Studio", false, false],
+        ["anthropic", "Claude（Anthropic）", true, false],
+        ["openai-compatible", "OpenAI 互換（カスタム）", true, true],
       ];
-      for (const [provider, label, hasApiKey, hasUrl, hasChatGptModel] of presets) {
+      for (const [provider, label, hasApiKey, hasUrl] of presets) {
         await selectProvider(provider, label);
         const fields = await browser.execute(() => ({
           apiKey: Boolean(document.querySelector('.settings-fields input[type="password"]')),
           url: Boolean(document.querySelector('.settings-fields input[type="url"]')),
-          chatGptModel: Boolean(document.querySelector('[role="combobox"][aria-label="モデル"]')),
-          modelInput: [...document.querySelectorAll(".settings-fields label")]
-            .some((item) => item.textContent.trim().startsWith("モデル") && item.querySelector("input:not([type]), input[type='text']")),
+          modelInput: Boolean(document.querySelector("#ai-model")),
         }));
         assert.equal(fields.apiKey, hasApiKey, `${label} のAPIキー欄が正しくありません。`);
         assert.equal(fields.url, hasUrl, `${label} の接続先URL欄が正しくありません。`);
-        assert.equal(fields.chatGptModel, hasChatGptModel, `${label} のChatGPTモデル欄が正しくありません。`);
-        assert.equal(fields.modelInput, !hasChatGptModel && provider !== "deepl", `${label} のモデル入力欄が正しくありません。`);
+        assert.equal(fields.modelInput, provider !== "deepl", `${label} のモデル欄が正しくありません。`);
         if (provider === "chatgpt") await $("button=ChatGPTでログイン").waitForDisplayed({ timeout: 5_000 });
       }
 
       const baseUrl = `${mock.url}/v1`;
       const delayedBaseUrl = `${mock.url}/delayed/v1`;
+      const modelInput = await $("#ai-model");
       await setInputValue(await $("input[type='url']"), baseUrl);
       await $("input[type='password']").setValue("e2e-local-key");
-      let modelInput;
-      for (const label of await $$(".settings-fields label")) {
-        if ((await label.getText()).trim().startsWith("モデル")) modelInput = await label.$("input");
-      }
-      assert.ok(modelInput, "モデル入力欄がありません。");
       await modelInput.setValue("mock-model");
       await $('button=保存').click();
       await browser.waitUntil(async () => mock.requests.some((request) => request.path === "/v1/models"), {
@@ -533,8 +526,10 @@ describe("全機能の動作確認", () => {
         interval: 100,
         timeoutMsg: "保存したキーでモデル一覧を取得しませんでした。",
       });
+      await modelInput.click();
       await browser.waitUntil(async () => await browser.execute(() =>
-        document.querySelector("#ai-model-options option")?.textContent === "old-model"), {
+        [...document.querySelectorAll('[role="listbox"][aria-label="モデル候補"] [role="option"]')]
+          .some((option) => option.textContent === "old-model")), {
         timeout: 10_000,
         interval: 100,
       });
@@ -542,15 +537,19 @@ describe("全機能の動作確認", () => {
       assert.equal(mock.requests.find((request) => request.path === "/v1/models")?.authorization, "Bearer e2e-local-key");
 
       await setInputValue(await $("input[type='url']"), delayedBaseUrl);
+      await modelInput.click();
       await browser.waitUntil(async () => mock.requests.some((request) => request.path === "/delayed/v1/models"), {
         timeout: 20_000,
         interval: 100,
         timeoutMsg: "保存済みAPIキーで変更後のURLへ再取得しませんでした。",
       });
-      assert.equal(await browser.execute(() => document.querySelector("#ai-model-options option")?.textContent ?? null), null,
+      assert.equal(await browser.execute(() =>
+        [...document.querySelectorAll('[role="listbox"][aria-label="モデル候補"] [role="option"]')]
+          .some((option) => option.textContent === "old-model")), false,
         "再取得中に古いモデル候補が残っています。");
       await browser.waitUntil(async () => await browser.execute(() =>
-        document.querySelector("#ai-model-options option")?.textContent === "mock-model"), {
+        [...document.querySelectorAll('[role="listbox"][aria-label="モデル候補"] [role="option"]')]
+          .some((option) => option.textContent === "mock-model")), {
         timeout: 15_000,
         interval: 100,
       });
