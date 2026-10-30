@@ -27,5 +27,40 @@ pub fn shader_format_warning(source: &str, translation: &str) -> bool {
         }
         counts
     }
+    let introduces_leading_whitespace = [' ', '\t', '\u{000c}']
+        .into_iter()
+        .any(|character| translation.starts_with(character) && !source.starts_with(character));
+
     counts(source) != counts(translation)
+        || (translation.contains('\n') && !source.contains('\n'))
+        || (translation.contains('\r') && !source.contains('\r'))
+        || (translation.contains('\\') && !source.contains('\\'))
+        || introduces_leading_whitespace
+}
+
+#[cfg(test)]
+mod shader_format_tests {
+    use super::shader_format_warning;
+
+    #[test]
+    fn warns_when_translation_adds_optifine_sensitive_text() {
+        for translation in ["改行\nあり", "slash\\text", " 先頭", "\t先頭"] {
+            assert!(shader_format_warning("原文", translation));
+        }
+        assert!(shader_format_warning("改行\n原文", "改行\r訳文"));
+        assert!(shader_format_warning("\t先頭", " 先頭"));
+    }
+
+    #[test]
+    fn does_not_warn_for_optifine_sensitive_text_already_in_source() {
+        assert!(!shader_format_warning("改行\n原文", "改行\n訳文"));
+        assert!(!shader_format_warning("slash\\source", "slash\\訳"));
+        assert!(!shader_format_warning(" 先頭", " 先頭訳"));
+    }
+
+    #[test]
+    fn still_warns_when_shader_format_codes_change() {
+        assert!(shader_format_warning("色 §a", "色 §b"));
+        assert!(!shader_format_warning("色 §a", "色 §a"));
+    }
 }

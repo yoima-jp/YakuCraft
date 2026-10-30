@@ -201,20 +201,33 @@ fn parse_vanilla_legacy_lines(text: &str) -> Vec<(String, String)> {
 }
 
 pub fn parse_java_properties(text: &str) -> Vec<(String, String)> {
+    parse_java_properties_with_raw_keys(text)
+        .into_iter()
+        .map(|(key, _, value)| (key, value))
+        .collect()
+}
+
+/// Propertiesとして解釈したキーと値に加え、元ファイルのキー表記を返す。
+/// キーが物理行をまたぐ場合は、元の表記を復元できないためraw_keyをNoneにする。
+pub fn parse_java_properties_with_raw_keys(text: &str) -> Vec<(String, Option<String>, String)> {
     // Forgeが使う文字ストリーム版Properties.loadに合わせ、Unicode、区切り文字のescape、
     // 複数行の継続を扱う。
     // https://docs.oracle.com/javase/8/docs/api/java/util/Properties.html#load-java.io.Reader-
-    java_properties_logical_lines(text)
+    java_properties_logical_lines_with_key_completeness(text)
         .into_iter()
-        .filter_map(|line| {
-            let line = line.trim_start_matches([' ', '\t', '\u{000c}']);
-            if line.is_empty() || line.starts_with(['#', '!']) {
+        .filter_map(|(line, raw_key_complete)| {
+            let chars: Vec<_> = line.chars().collect();
+            let key_offset = chars
+                .iter()
+                .take_while(|character| matches!(character, ' ' | '\t' | '\u{000c}'))
+                .count();
+            let property_chars = &chars[key_offset..];
+            if property_chars.is_empty() || matches!(property_chars[0], '#' | '!') {
                 return None;
             }
 
-            let chars: Vec<_> = line.chars().collect();
             let mut escaped = false;
-            let key_end = chars
+            let key_end = property_chars
                 .iter()
                 .position(|character| {
                     if escaped {
@@ -227,29 +240,51 @@ pub fn parse_java_properties(text: &str) -> Vec<(String, String)> {
                         matches!(character, '=' | ':' | ' ' | '\t' | '\u{000c}')
                     }
                 })
-                .unwrap_or(chars.len());
+                .unwrap_or(property_chars.len());
 
             let mut value_start = key_end;
-            if value_start < chars.len() && matches!(chars[value_start], ' ' | '\t' | '\u{000c}') {
-                while value_start < chars.len()
-                    && matches!(chars[value_start], ' ' | '\t' | '\u{000c}')
+            if value_start < property_chars.len()
+                && matches!(property_chars[value_start], ' ' | '\t' | '\u{000c}')
+            {
+                while value_start < property_chars.len()
+                    && matches!(property_chars[value_start], ' ' | '\t' | '\u{000c}')
                 {
                     value_start += 1;
                 }
-                if value_start < chars.len() && matches!(chars[value_start], '=' | ':') {
+                if value_start < property_chars.len()
+                    && matches!(property_chars[value_start], '=' | ':')
+                {
                     value_start += 1;
                 }
-            } else if value_start < chars.len() {
+            } else if value_start < property_chars.len() {
                 value_start += 1;
             }
-            while value_start < chars.len() && matches!(chars[value_start], ' ' | '\t' | '\u{000c}')
+            while value_start < property_chars.len()
+                && matches!(property_chars[value_start], ' ' | '\t' | '\u{000c}')
             {
                 value_start += 1;
             }
 
-            let key = unescape_java_properties(&chars[..key_end].iter().collect::<String>());
-            let value = unescape_java_properties(&chars[value_start..].iter().collect::<String>());
-            Some((key, value))
+            let key =
+                unescape_java_properties(&property_chars[..key_end].iter().collect::<String>());
+            let mut raw_key_end = key_end;
+            if key_end < property_chars.len()
+                && matches!(property_chars[key_end], ' ' | '\t' | '\u{000c}')
+            {
+                while raw_key_end < property_chars.len()
+                    && matches!(property_chars[raw_key_end], ' ' | '\t' | '\u{000c}')
+                {
+                    raw_key_end += 1;
+                }
+                if raw_key_end >= property_chars.len() || property_chars[raw_key_end] != '=' {
+                    raw_key_end = key_end;
+                }
+            }
+            let raw_key = raw_key_complete
+                .then(|| chars[..key_offset + raw_key_end].iter().collect::<String>());
+            let value =
+                unescape_java_properties(&property_chars[value_start..].iter().collect::<String>());
+            Some((key, raw_key, value))
         })
         .collect()
 }
@@ -273,9 +308,17 @@ pub fn java_properties_has_invalid_unicode(text: &str) -> bool {
 }
 
 fn java_properties_logical_lines(text: &str) -> Vec<String> {
+    java_properties_logical_lines_with_key_completeness(text)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+fn java_properties_logical_lines_with_key_completeness(text: &str) -> Vec<(String, bool)> {
     let mut lines = Vec::new();
     let mut logical_line = String::new();
     let mut continuing = false;
+    let mut raw_key_complete = true;
 
     for physical_line in text.lines() {
         // Propertiesのコメント行は末尾のバックスラッシュで継続しない。
@@ -297,6 +340,7 @@ fn java_properties_logical_lines(text: &str) -> Vec<String> {
         } else {
             logical_line.clear();
             logical_line.push_str(physical_line);
+            raw_key_complete = true;
         }
 
         let trailing_backslashes = logical_line
@@ -306,17 +350,42 @@ fn java_properties_logical_lines(text: &str) -> Vec<String> {
             .count();
         continuing = trailing_backslashes % 2 == 1;
         if continuing {
+            if !java_properties_has_key_separator(&logical_line) {
+                raw_key_complete = false;
+            }
             logical_line.pop();
         } else {
-            lines.push(std::mem::take(&mut logical_line));
+            lines.push((std::mem::take(&mut logical_line), raw_key_complete));
         }
     }
 
     if continuing {
         // Properties.loadでは末尾の継続用バックスラッシュは改行と同様に捨てられる。
-        lines.push(logical_line);
+        lines.push((logical_line, raw_key_complete));
     }
     lines
+}
+
+fn java_properties_has_key_separator(line: &str) -> bool {
+    let mut key_started = false;
+    let mut escaped = false;
+    for character in line.chars() {
+        if !key_started && matches!(character, ' ' | '\t' | '\u{000c}') {
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            key_started = true;
+        } else if character == '\\' {
+            escaped = true;
+            key_started = true;
+        } else if matches!(character, '=' | ':' | ' ' | '\t' | '\u{000c}') {
+            return true;
+        } else {
+            key_started = true;
+        }
+    }
+    false
 }
 
 fn unescape_java_properties(value: &str) -> String {

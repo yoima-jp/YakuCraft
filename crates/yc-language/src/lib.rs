@@ -18,7 +18,8 @@ pub use model::{
 };
 pub use parser::{
     java_properties_has_invalid_unicode, legacy_language_uses_parse_escapes, parse_java_properties,
-    parse_json_language, parse_language_file, parse_legacy_language,
+    parse_java_properties_with_raw_keys, parse_json_language, parse_language_file,
+    parse_legacy_language,
 };
 pub use patchouli::{
     PatchouliArchiveFile, PatchouliBook, PatchouliBookConfig, PatchouliDiscovery,

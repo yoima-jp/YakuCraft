@@ -3,9 +3,9 @@
 //! フォルダは `pack_folder` で ZIP に変換し、`write_translated_zip` で日本語化する。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -32,6 +32,8 @@ pub struct Analysis {
 #[derive(Clone, Debug)]
 pub struct ParsedLang {
     pub entries: Vec<(String, String)>,
+    /// Propertiesで解釈したキーから、元ファイルに書かれたキー表記への対応。
+    pub raw_keys: HashMap<String, String>,
     pub warnings: Vec<String>,
 }
 
@@ -181,28 +183,44 @@ pub fn parse_lang(bytes: &[u8]) -> ParsedLang {
         warnings.push("invalid Unicode escape".into());
     }
     let mut entries: Vec<(String, String)> = Vec::new();
-    for (key, value) in yc_language::parse_java_properties(&normalized) {
+    let mut raw_keys = HashMap::new();
+    for (key, raw_key, value) in yc_language::parse_java_properties_with_raw_keys(&normalized) {
         if let Some(existing) = entries.iter_mut().find(|(k, _)| k == &key) {
             warnings.push(format!("duplicate key: {key}"));
             existing.1 = value;
         } else {
-            entries.push((key, value));
+            entries.push((key.clone(), value));
+        }
+        if let Some(raw_key) = raw_key {
+            raw_keys.insert(key, raw_key);
+        } else {
+            raw_keys.remove(&key);
         }
     }
-    ParsedLang { entries, warnings }
+    ParsedLang {
+        entries,
+        raw_keys,
+        warnings,
+    }
 }
 pub fn write_lang(entries: &[(String, String)]) -> Vec<u8> {
-    fn escape(s: &str, key: bool) -> String {
+    write_lang_with_raw_keys(entries, &HashMap::new())
+}
+pub fn write_lang_with_raw_keys(
+    entries: &[(String, String)],
+    raw_keys: &HashMap<String, String>,
+) -> Vec<u8> {
+    fn escape_key(s: &str) -> String {
         let mut out = String::new();
-        for (i, c) in s.chars().enumerate() {
+        for c in s.chars() {
             match c {
                 '\\' => out.push_str("\\\\"),
                 '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 '\u{000c}' => out.push_str("\\f"),
-                ' ' if key || i == 0 => out.push_str("\\ "),
-                '=' | ':' | '#' | '!' if key => {
+                ' ' => out.push_str("\\ "),
+                '=' | ':' | '#' | '!' => {
                     out.push('\\');
                     out.push(c);
                 }
@@ -211,11 +229,30 @@ pub fn write_lang(entries: &[(String, String)]) -> Vec<u8> {
         }
         out
     }
+    fn escape_value(s: &str) -> String {
+        let mut out = String::new();
+        for (i, c) in s.chars().enumerate() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                ' ' if i == 0 => out.push_str("\\ "),
+                '\t' if i == 0 => out.push_str("\\t"),
+                '\u{000c}' if i == 0 => out.push_str("\\f"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
     let mut out = String::new();
     for (key, value) in entries {
-        out.push_str(&escape(key, true));
+        if let Some(raw_key) = raw_keys.get(key) {
+            out.push_str(raw_key);
+        } else {
+            out.push_str(&escape_key(key));
+        }
         out.push('=');
-        out.push_str(&escape(value, false));
+        out.push_str(&escape_value(value));
         out.push('\n');
     }
     out.into_bytes()
@@ -265,14 +302,20 @@ pub fn write_translated_zip(
     let mut zip = ZipArchive::new(File::open(source)?)?;
     let root = archive_root(&mut zip)?.ok_or("shaders directory not found")?;
     let prefix = format!("{root}shaders/lang/");
+    let source_lang_path = format!("{prefix}{source_filename}");
+    let raw_keys = raw_keys_from_archive(&mut zip, &source_lang_path)?;
     atomic_zip(output, |file| {
         let mut writer = ZipWriter::new(file);
+        let mut has_shaders_directory = false;
+        let mut has_lang_directory = false;
         for i in 0..zip.len() {
             let entry = zip.by_index_raw(i)?;
             let name = entry.name()?.into_owned();
             if !safe(&name) {
                 return Err(format!("unsafe ZIP path: {name}").into());
             }
+            has_shaders_directory |= name == format!("{root}shaders/");
+            has_lang_directory |= name == prefix;
             if name
                 .strip_prefix(&prefix)
                 .is_some_and(|n| n.eq_ignore_ascii_case("ja_jp.lang"))
@@ -281,14 +324,60 @@ pub fn write_translated_zip(
             }
             writer.raw_copy_file(entry)?;
         }
+        if !root.is_empty() {
+            if !has_shaders_directory {
+                writer.add_directory(format!("{root}shaders/"), SimpleFileOptions::default())?;
+            }
+            if !has_lang_directory {
+                writer.add_directory(prefix.clone(), SimpleFileOptions::default())?;
+            }
+        }
         writer.start_file(
             format!("{prefix}{}", japanese_filename(source_filename)),
             SimpleFileOptions::default(),
         )?;
-        writer.write_all(&write_lang(entries))?;
+        writer.write_all(&write_lang_with_raw_keys(entries, &raw_keys))?;
         writer.finish()?;
         Ok(())
     })
+}
+
+/// ZIPまたはフォルダ内の言語ファイルからPropertiesキーと生キーの対応を読む。
+/// ファイルが見つからない場合は空の対応を返し、書き出し側で従来のキーエスケープを使う。
+pub fn raw_keys_for_file(source: &Path, path: &str) -> Result<HashMap<String, String>> {
+    if !safe(path) {
+        return Err(format!("unsafe language path: {path}").into());
+    }
+    if source.is_dir() {
+        return match fs::read(source.join(path)) {
+            Ok(bytes) => Ok(parse_lang(&bytes).raw_keys),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(error.into()),
+        };
+    }
+    let mut zip = ZipArchive::new(File::open(source)?)?;
+    raw_keys_from_archive(&mut zip, path)
+}
+
+fn raw_keys_from_archive<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    path: &str,
+) -> Result<HashMap<String, String>> {
+    let mut found = false;
+    for index in 0..zip.len() {
+        let entry = zip.by_index_raw(index)?;
+        if entry.name()?.as_ref() == path {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Ok(HashMap::new());
+    }
+    let mut entry = zip.by_name(path)?;
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes)?;
+    Ok(parse_lang(&bytes).raw_keys)
 }
 pub fn pack_folder(folder: &Path, output: &Path) -> Result<()> {
     fn add(writer: &mut ZipWriter<&mut File>, base: &Path, path: &Path) -> Result<()> {

@@ -2176,9 +2176,17 @@ fn shaderpack_lang_export(
         .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
         .map(|entry| (entry.key.clone(), entry.target_text.clone()))
         .collect::<Vec<_>>();
+    let raw_keys = yc_shaderpack::raw_keys_for_file(&context.source_jar, &source.archive_path)
+        .map_err(|error| {
+            AppError::new(
+                "shaderpack_read",
+                "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                Some(error.to_string()),
+            )
+        })?;
     Ok((
         yc_shaderpack::japanese_filename(&source.file_name).to_owned(),
-        yc_shaderpack::write_lang(&entries),
+        yc_shaderpack::write_lang_with_raw_keys(&entries, &raw_keys),
     ))
 }
 
@@ -3056,7 +3064,16 @@ fn validate_export_context(
                     ValidationSeverity::Error => "error",
                 },
                 issue_code(&issue.code),
-                issue_message(&issue.code, &issue.message),
+                if issue.code == ValidationIssueCode::PlaceholderWarning
+                    && context.source_kind == ModUnitSourceKind::Shaderpack
+                {
+                    format!(
+                        "OptiFineで表示が崩れる可能性があります: {}",
+                        issue.message.trim_start_matches("placeholder mismatch: ")
+                    )
+                } else {
+                    issue_message(&issue.code, &issue.message)
+                },
             ),
         };
         let count = (issue.code == ValidationIssueCode::UntranslatedEntries)
