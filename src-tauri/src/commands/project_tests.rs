@@ -13,7 +13,8 @@ use super::{
     project_delete_error, project_details_core, project_details_core_with_analysis,
     project_details_from_stored_data, refresh_modpack_unit_core, review_asset_summary_core,
     review_asset_summary_core_with_index_and_progress, save_review_settings_core,
-    save_review_settings_core_with_cached_asset_index, truncate_recent_projects,
+    save_review_settings_core_with_cached_asset_index, scan_project_instance_sources_core,
+    truncate_recent_projects,
 };
 use crate::{
     commands::{
@@ -228,23 +229,29 @@ fn active_file_deployment_paths_are_excluded_from_instance_candidates() {
     let (temporary, opened) = create_addition_fixture();
     let game_directory = temporary.0.join("instance");
     let shaderpack_directory = game_directory.join("shaderpacks");
+    let mods_directory = game_directory.join("mods");
     fs::create_dir_all(&shaderpack_directory).expect("shaderpack directory should be created");
+    fs::create_dir_all(&mods_directory).expect("mods directory should be created");
     let candidate = shaderpack_directory.join("BSL-ja.zip");
     write_shaderpack_fixture_zip(&candidate);
-    opened
-        .writer()
-        .save_file_deployment(FileDeploymentRecord {
-            id: 0,
-            mod_unit_id: first_mod_unit_id(&opened),
-            target_path: "shaderpacks/BSL-ja.zip".to_owned(),
-            existed_before: false,
-            previous_sha256: None,
-            backup_path: None,
-            deployed_sha256: "deployed-hash".to_owned(),
-            deployed_at: "2026-10-30T00:00:00Z".to_owned(),
-            restored_at: None,
-        })
-        .expect("active file deployment should be saved");
+    let deployed_jar = mods_directory.join("fixture-ja.jar");
+    write_mod_identity_fixture_jar(&deployed_jar, "deployed_fixture", "1.0.0", "Deployed");
+    for target_path in ["shaderpacks/BSL-ja.zip", "mods/fixture-ja.jar"] {
+        opened
+            .writer()
+            .save_file_deployment(FileDeploymentRecord {
+                id: 0,
+                mod_unit_id: first_mod_unit_id(&opened),
+                target_path: target_path.to_owned(),
+                existed_before: false,
+                previous_sha256: None,
+                backup_path: None,
+                deployed_sha256: "deployed-hash".to_owned(),
+                deployed_at: "2026-10-30T00:00:00Z".to_owned(),
+                restored_at: None,
+            })
+            .expect("active file deployment should be saved");
+    }
 
     let active_deployments = opened
         .repository()
@@ -264,6 +271,68 @@ fn active_file_deployment_paths_are_excluded_from_instance_candidates() {
         &empty,
         &deployment_paths,
     ));
+    assert!(is_existing_instance_candidate(
+        &deployed_jar,
+        None,
+        &empty,
+        &empty,
+        &deployment_paths,
+    ));
+
+    let (unfiltered_mods, unfiltered_shaderpacks) = scan_project_instance_sources_core(
+        &game_directory,
+        Some(&game_directory),
+        &empty,
+        &empty,
+        &[],
+        &CancellationToken::default(),
+        |_| {},
+    )
+    .expect("folder scan should find both deployment candidates before project filtering");
+    assert!(
+        unfiltered_mods
+            .iter()
+            .any(|result| result.path == deployed_jar)
+    );
+    assert!(
+        unfiltered_shaderpacks
+            .iter()
+            .any(|result| result.path == candidate)
+    );
+
+    let units = opened.repository().list_mod_units().unwrap();
+    let existing_hashes = units
+        .iter()
+        .map(|unit| unit.source_sha256.clone())
+        .collect::<HashSet<_>>();
+    let existing_paths = units
+        .iter()
+        .map(|unit| super::path_key(Path::new(&unit.original_path)))
+        .collect::<HashSet<_>>();
+    let deployment_targets = active_deployments
+        .iter()
+        .map(|deployment| deployment.target_path.clone())
+        .collect::<Vec<_>>();
+    let (filtered_mods, filtered_shaderpacks) = scan_project_instance_sources_core(
+        &game_directory,
+        Some(&game_directory),
+        &existing_hashes,
+        &existing_paths,
+        &deployment_targets,
+        &CancellationToken::default(),
+        |_| {},
+    )
+    .expect("project-context folder scan should succeed");
+    assert!(
+        !filtered_mods
+            .iter()
+            .any(|result| result.path == deployed_jar)
+    );
+    assert!(
+        !filtered_shaderpacks
+            .iter()
+            .any(|result| result.path == candidate)
+    );
 
     let case_variant = game_directory.join("SHADERPACKS/bsl-JA.ZIP");
     assert_eq!(
@@ -271,10 +340,12 @@ fn active_file_deployment_paths_are_excluded_from_instance_candidates() {
         cfg!(windows)
     );
 
-    opened
-        .writer()
-        .mark_file_deployment_restored(active_deployments[0].id, "2026-10-30T00:01:00Z".to_owned())
-        .expect("deployment should be marked restored");
+    for deployment in &active_deployments {
+        opened
+            .writer()
+            .mark_file_deployment_restored(deployment.id, "2026-10-30T00:01:00Z".to_owned())
+            .expect("deployment should be marked restored");
+    }
     let restored_deployments = opened
         .repository()
         .list_file_deployments(false)
