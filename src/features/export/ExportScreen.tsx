@@ -4,6 +4,7 @@ import { join as joinPath } from "@tauri-apps/api/path";
 
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { Checkbox, Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
+import { useDialogConfirmation } from "../../components/useDialogConfirmation";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
@@ -278,6 +279,7 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
 }
 
 export function ExportScreen() {
+  const { requestConfirmation, dialog: confirmationDialog } = useDialogConfirmation();
   const details = useProjectStore((state) => state.details);
   const projectId = useProjectStore((state) => state.details?.project.id ?? null);
   const modUnits = useProjectStore((state) => state.modUnits);
@@ -549,9 +551,12 @@ export function ExportScreen() {
       let outcome = await restoreModifiedJar(startingProjectId, replacementId, false);
       if (!isCurrentProject(startingProjectId)) return;
       if (outcome.status === "confirmationRequired") {
-        const confirmed = window.confirm(
-          "このJARは書き出し後に変更されています。バックアップで現在のJARを上書きして元に戻しますか？",
-        );
+        const confirmed = await requestConfirmation({
+          title: "JARを復元しますか",
+          message: "このJARは書き出し後に変更されています。バックアップで現在のJARを上書きして元に戻しますか？",
+          confirmLabel: "上書き",
+          destructive: true,
+        });
         if (!confirmed) return;
         if (!isCurrentProject(startingProjectId)) return;
         outcome = await restoreModifiedJar(startingProjectId, replacementId, true);
@@ -590,6 +595,12 @@ export function ExportScreen() {
   };
 
   const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}:${deployShaderpacks}`;
+  const confirmInstanceDeployment = () => requestConfirmation({
+    title: "インスタンスに配置しますか",
+    message: "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+    confirmLabel: "配置",
+    destructive: true,
+  });
   const beginExport = async (allowedCount: number | null = null) => {
     const startingProjectId = projectId;
     if (
@@ -636,9 +647,10 @@ export function ExportScreen() {
         }
       }
 
-      if (deployShaderpacks && kind === "resourcePack" && !window.confirm(
-        "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
-      )) return;
+      if (deployShaderpacks && kind === "resourcePack") {
+        if (!await confirmInstanceDeployment()) return;
+        if (!isCurrentProject(startingProjectId)) return;
+      }
 
       const defaultName = kind === "resourcePack"
         ? mergeOutputFileName(
@@ -673,19 +685,21 @@ export function ExportScreen() {
           outputPath = await saveFileDialog({ defaultPath: `${defaultPath}.zip`, filters: [{ name: "ZIP", extensions: ["zip"] }] });
           if (!isCurrentProject(startingProjectId)) return;
           if (!outputPath) return;
-        } else if (!window.confirm(
-          "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
-        )) {
-          return;
+        } else {
+          if (!await confirmInstanceDeployment()) return;
+          if (!isCurrentProject(startingProjectId)) return;
         }
         let outcome = await exportModpackFiles(
           startingProjectId, selectedIds, outputPath, destination === "instance", false,
         );
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
-          const confirmed = window.confirm(
-            `既存のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
-          );
+          const confirmed = await requestConfirmation({
+            title: "ファイルを上書きしますか",
+            message: `既存のファイルがあります。\n${displayPath(outcome.targetPath)}`,
+            confirmLabel: "上書き",
+            destructive: true,
+          });
           if (!confirmed) return;
           if (!isCurrentProject(startingProjectId)) return;
           outcome = await exportModpackFiles(
@@ -706,9 +720,10 @@ export function ExportScreen() {
           : null;
         if (!isCurrentProject(startingProjectId)) return;
         if (destination === "folder" && !outputDirectory) return;
-        if (destination === "instance" && !window.confirm(
-          "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
-        )) return;
+        if (destination === "instance") {
+          if (!await confirmInstanceDeployment()) return;
+          if (!isCurrentProject(startingProjectId)) return;
+        }
         let outcome = await exportShaderpacks(
           startingProjectId,
           selectedShaderpackIds,
@@ -718,9 +733,12 @@ export function ExportScreen() {
         );
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
-          const confirmed = window.confirm(
-            `同じ名前のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
-          );
+          const confirmed = await requestConfirmation({
+            title: "シェーダーパックを上書きしますか",
+            message: `同じ名前のファイルがあります。\n${displayPath(outcome.targetPath)}`,
+            confirmLabel: "上書き",
+            destructive: true,
+          });
           if (!confirmed) return;
           if (!isCurrentProject(startingProjectId)) return;
           outcome = await exportShaderpacks(
@@ -758,7 +776,12 @@ export function ExportScreen() {
         );
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
-          const confirmed = window.confirm("同じ名前のリソースパックがあります。上書きしますか？");
+          const confirmed = await requestConfirmation({
+            title: "リソースパックを上書きしますか",
+            message: "同じ名前のリソースパックがあります。",
+            confirmLabel: "上書き",
+            destructive: true,
+          });
           if (!confirmed) return;
           if (!isCurrentProject(startingProjectId)) return;
           outcome = await exportSelectedMergedResourcePack(
@@ -833,9 +856,12 @@ export function ExportScreen() {
           );
           if (!isCurrentProject(startingProjectId)) return;
           if (outcome.status === "overwriteRequired") {
-            const confirmed = window.confirm(
-              `同じ名前のファイルがあります。上書きしますか？\n${displayPath(outcome.targetPath)}`,
-            );
+            const confirmed = await requestConfirmation({
+              title: "シェーダーパックを上書きしますか",
+              message: `同じ名前のファイルがあります。\n${displayPath(outcome.targetPath)}`,
+              confirmLabel: "上書き",
+              destructive: true,
+            });
             if (!isCurrentProject(startingProjectId)) return;
             if (confirmed) {
               outcome = await exportShaderpacks(
@@ -911,10 +937,17 @@ export function ExportScreen() {
     }
   };
 
-  const changeInPlace = (checked: boolean) => {
-    if (checked && !window.confirm(
-      "mods フォルダの jar を直接書き換えます。元の jar はプロジェクト内にバックアップし、あとで元に戻せます。ランチャーによっては mod の更新や整合性チェックで元に戻ることがあります。Minecraft を終了してから実行してください。",
-    )) return;
+  const changeInPlace = async (checked: boolean) => {
+    if (checked) {
+      const startingProjectId = projectId;
+      const confirmed = await requestConfirmation({
+        title: "JARを直接置き換えますか",
+        message: "mods フォルダの jar を直接書き換えます。元の jar はプロジェクト内にバックアップし、あとで元に戻せます。ランチャーによっては mod の更新や整合性チェックで元に戻ることがあります。Minecraft を終了してから実行してください。",
+        confirmLabel: "置き換え",
+        destructive: true,
+      });
+      if (!confirmed || !startingProjectId || !isCurrentProject(startingProjectId)) return;
+    }
     setReplaceInPlace(checked);
   };
 
@@ -1212,7 +1245,7 @@ export function ExportScreen() {
 
       {kind === "modifiedJar" && eligibleForInPlace && (
         <label className="export-screen__advanced-check">
-          <input type="checkbox" checked={replaceInPlace} onChange={(event) => changeInPlace(event.currentTarget.checked)} />
+          <input type="checkbox" checked={replaceInPlace} onChange={(event) => void changeInPlace(event.currentTarget.checked)} />
           mods フォルダの JAR を直接上書きする
         </label>
       )}
@@ -1255,6 +1288,7 @@ export function ExportScreen() {
         )}
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
+      {confirmationDialog}
       <Dialog open={forcePermit !== null && forcePermit.target === exportTarget} title="書式エラーがあります" onClose={() => {
         setForcePermit(null);
         if (placeholderDetailsRef.current) placeholderDetailsRef.current.open = true;

@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { PrimaryButton, SecondaryButton } from "./button/Buttons";
+import { DestructiveButton, PrimaryButton, SecondaryButton } from "./button/Buttons";
 import { Dialog } from "./Controls";
 
 export interface DialogConfirmationRequest {
   title: string;
   message: string;
   confirmLabel: string;
+  destructive?: boolean;
 }
 
 export type RequestConfirmation = (request: DialogConfirmationRequest) => Promise<boolean>;
 
 export function useDialogConfirmation() {
+  // Tauri の dialog プラグインはブラウザー標準の確認APIを非同期に差し替えるため、同期booleanとして扱わず、この共有ダイアログでPromiseを待つ。
   const [pending, setPending] = useState<DialogConfirmationRequest | null>(null);
   const resolveRef = useRef<((confirmed: boolean) => void) | null>(null);
 
@@ -40,10 +42,12 @@ export function useDialogConfirmation() {
       title={pending?.title ?? "確認"}
       onClose={() => settle(false)}
     >
-      {pending && <p>{pending.message}</p>}
+      {pending && <p className="dialog-confirmation__message">{pending.message}</p>}
       <div className="dialog-confirmation__actions">
         <SecondaryButton onClick={() => settle(false)}>キャンセル</SecondaryButton>
-        <PrimaryButton onClick={() => settle(true)}>{pending?.confirmLabel ?? "続ける"}</PrimaryButton>
+        {pending?.destructive
+          ? <DestructiveButton onClick={() => settle(true)}>{pending.confirmLabel}</DestructiveButton>
+          : <PrimaryButton onClick={() => settle(true)}>{pending?.confirmLabel ?? "続ける"}</PrimaryButton>}
       </div>
     </Dialog>
   );

@@ -870,6 +870,34 @@ async function waitForScreenshotExportCompletion() {
   await waitForText(".export-completion h1", "書き出しました", 10_000);
 }
 
+async function confirmScreenshotExportDialogs(initialLabel, optional = false) {
+  await browser.waitUntil(async () => (
+    await $('[role="dialog"]').isDisplayed()
+    || await $(".export-completion h1").isDisplayed()
+    || await $(".export-screen [role='alert']").isDisplayed()
+  ), { timeout: 90_000, interval: 100, timeoutMsg: "確認または書き出し結果が表示されませんでした。" });
+  if (!await $('[role="dialog"]').isDisplayed()) {
+    assert.equal(optional, true, "書き出し確認が表示されませんでした。");
+    return;
+  }
+  let confirmLabel = initialLabel;
+  while (true) {
+    const previousText = await $('[role="dialog"]').getText();
+    await $(`button=${confirmLabel}`).click();
+    await browser.waitUntil(async () => (
+      !await $('[role="dialog"]').isDisplayed().catch(() => false)
+      || await $('[role="dialog"]').getText().catch(() => "") !== previousText
+      || await $(".export-completion h1").isDisplayed()
+      || await $(".export-screen [role='alert']").isDisplayed()
+    ), { timeout: 90_000, interval: 100, timeoutMsg: "確認後の書き出し結果が表示されませんでした。" });
+    const currentDialog = await $('[role="dialog"]');
+    if (!await currentDialog.isDisplayed().catch(() => false)) return;
+    const buttons = await currentDialog.$$("button");
+    confirmLabel = await buttons[1].getText();
+    assert.equal(confirmLabel, "上書き", "想定外の書き出し確認が表示されました。");
+  }
+}
+
 async function captureGeneratedFeatureScreens(theme, fixtures) {
   await scanGeneratedInstance(fixtures.singleInstance);
   const modpackRow = await findScanRow("Modpack 固有（クエスト・KubeJS）");
@@ -986,8 +1014,10 @@ async function captureGeneratedFeatureScreens(theme, fixtures) {
   await chooseScreenshotExportKind();
   await selectOnlyScreenshotModpackUnit();
   await $('[name="modpack-files-destination"][value="instance"]').click();
-  await browser.execute(() => { window.confirm = () => true; });
   await $('[data-testid="export-start"]').click();
+  await $('[role="dialog"]').waitForDisplayed({ timeout: 30_000 });
+  await capture(theme, "export-instance-deploy-confirmation");
+  await confirmScreenshotExportDialogs("配置");
   await waitForScreenshotExportCompletion();
   await capture(theme, "export-modpack-direct-complete");
 
@@ -1005,11 +1035,13 @@ async function captureGeneratedFeatureScreens(theme, fixtures) {
 
   const ftbPath = path.join(fixtures.singleInstance, "config/ftbquests/quests/lang/ja_jp.snbt");
   await $('[data-testid="export-start"]').click();
+  await confirmScreenshotExportDialogs("配置");
   await waitForScreenshotExportCompletion();
   const deployedFtbBytes = await readFile(ftbPath);
   await writeFile(ftbPath, "externally edited after deployment\n", "utf8");
   await $("button=別の形式で書き出す").click();
   await $('[data-testid="export-start"]').click();
+  await confirmScreenshotExportDialogs("配置");
   await browser.waitUntil(async () => await $(".export-screen [role='alert']").isDisplayed(), {
     timeout: 30_000,
     interval: 100,
@@ -1076,6 +1108,7 @@ async function captureShaderpackScreens(theme, fixtures) {
   await $('[role="dialog"]').waitForDisplayed({ timeout: 30_000 });
   await capture(theme, "export-format-error-blocked");
   await $("button=このまま書き出す").click();
+  await confirmScreenshotExportDialogs("配置", true);
   await waitForScreenshotExportCompletion();
   await capture(theme, "export-complete-with-format-errors");
   await returnHome();

@@ -342,9 +342,9 @@ describe("インスタンスフォルダからリソースパックを書き出�
         if ((await checkbox.isSelected()) !== shouldSelect) await checkbox.click();
       }
       const inPlaceCheckbox = await $('.export-screen__advanced-check input[type="checkbox"]');
-      // このE2E環境ではWebView2のconfirmがWebDriver alertとして取得できないため、確認結果を明示する。
-      await browser.execute(() => { window.confirm = () => true; });
       await inPlaceCheckbox.click();
+      await $('[role="dialog"]').waitForDisplayed({ timeout: 30_000 });
+      await $("button=置き換え").click();
       assert.equal(await inPlaceCheckbox.isSelected(), true);
       const startJarExport = await $('[data-testid="export-start"]');
       await startJarExport.waitForClickable({ timeout: 30_000 });
