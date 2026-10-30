@@ -8,7 +8,7 @@ import { cancelAnalysis, isShaderpackFolder } from "../../lib/tauri";
 import { openFileDialog } from "../../lib/dialogs";
 import { logFrontendError } from "../../lib/errorLogging";
 import type { AppError } from "../../types/commands";
-import { scanModsFolder, scanProjectInstanceSources } from "../scan/tauri";
+import { scanProjectInstanceSources } from "../scan/tauri";
 import type {
   AddInstanceScanEventDto,
   ModLanguageStatusDto,
@@ -160,9 +160,7 @@ export function AddUnitsDialog({
         if (jobId === null) earlyEvents.push(event);
         else handleScanEvent(event, generation);
       };
-      const returnedJobId = path
-        ? await scanModsFolder(path, onEvent)
-        : await scanProjectInstanceSources(projectId, onEvent);
+      const returnedJobId = await scanProjectInstanceSources(projectId, onEvent, path);
       jobId = returnedJobId;
       if (generation !== scanGenerationRef.current) {
         if (!terminalJobsRef.current.has(returnedJobId)) void cancelAnalysis(returnedJobId).catch(() => {});

@@ -781,6 +781,7 @@ pub fn scan_mods_folder(
 #[tauri::command]
 pub fn scan_project_instance_sources(
     project_id: String,
+    path: Option<String>,
     channel: Channel<AddInstanceScanEvent>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
@@ -804,6 +805,7 @@ pub fn scan_project_instance_sources(
             .instance_path
             .as_deref()
             .map(PathBuf::from)
+            .or_else(|| path.as_deref().map(PathBuf::from))
             .ok_or_else(|| {
                 AppError::simple(
                     "instance_path_missing",
@@ -842,55 +844,22 @@ pub fn scan_project_instance_sources(
     let analysis_jobs = Arc::clone(&state.analysis_jobs);
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let game_directory = resolve_instance_game_directory_for_addition(&instance_root);
-        let deployment_paths = deployment_path_keys(
-            &game_directory,
-            deployment_targets.iter().map(String::as_str),
+        let selected_folder = path.map(PathBuf::from);
+        let scan_result = scan_project_instance_sources_core(
+            &instance_root,
+            selected_folder.as_deref(),
+            &existing_hashes,
+            &existing_paths,
+            &deployment_targets,
+            &cancellation,
+            |progress| {
+                if let Err(error) = channel.send(AddInstanceScanEvent::Progress { progress }) {
+                    tracing::debug!(%error, "instance scan progress channel closed");
+                }
+            },
         );
-        let mods_directory = game_directory.join("mods");
-        let scan_result = if mods_directory.is_dir() {
-            scan_mods_folder_core(
-                &mods_directory,
-                &ScanOptions::default(),
-                &cancellation,
-                |progress| {
-                    if let Err(error) = channel.send(AddInstanceScanEvent::Progress { progress }) {
-                        tracing::debug!(%error, "instance scan progress channel closed");
-                    }
-                },
-            )
-        } else if cancellation.is_cancelled() {
-            Err(yc_analysis::AnalysisError::Cancelled)
-        } else {
-            Ok(Vec::new())
-        };
         let event = match scan_result {
-            Ok(results) => {
-                let results = results
-                    .into_iter()
-                    .filter(|result| {
-                        !is_existing_instance_candidate(
-                            &result.path,
-                            result.sha256.as_deref(),
-                            &existing_hashes,
-                            &existing_paths,
-                            &deployment_paths,
-                        )
-                    })
-                    .collect();
-                let shaderpack_root = game_directory.join("shaderpacks");
-                let shaderpacks = scan_shaderpack_candidates(&game_directory, &shaderpack_root)
-                    .into_iter()
-                    .filter(|result| {
-                        !is_existing_instance_candidate(
-                            &result.path,
-                            result.sha256.as_deref(),
-                            &existing_hashes,
-                            &existing_paths,
-                            &deployment_paths,
-                        )
-                    })
-                    .collect();
+            Ok((results, shaderpacks)) => {
                 if cancellation.is_cancelled() {
                     AddInstanceScanEvent::Failed {
                         job_id: task_job_id.clone(),
@@ -912,7 +881,11 @@ pub fn scan_project_instance_sources(
                 job_id: task_job_id.clone(),
                 error: AppError::new(
                     "mods_folder_read",
-                    "インスタンスの mods フォルダを読み込めませんでした。",
+                    if selected_folder.is_some() {
+                        "選択したフォルダを読み込めませんでした。"
+                    } else {
+                        "インスタンスの mods フォルダを読み込めませんでした。"
+                    },
                     Some(error.to_string()),
                 ),
             },
@@ -925,6 +898,86 @@ pub fn scan_project_instance_sources(
         }
     });
     Ok(job_id)
+}
+
+fn scan_project_instance_sources_core(
+    instance_root: &Path,
+    selected_folder: Option<&Path>,
+    existing_hashes: &HashSet<String>,
+    existing_paths: &HashSet<String>,
+    deployment_targets: &[String],
+    cancellation: &CancellationToken,
+    on_progress: impl Fn(ScanProgress) + Sync,
+) -> Result<(Vec<ModScanResult>, Vec<yc_analysis::ShaderpackScanResult>), yc_analysis::AnalysisError>
+{
+    let (mods_directory, selected_folder, game_directory) =
+        if let Some(selected_folder) = selected_folder {
+            let resolved = resolve_mods_folder(selected_folder).map_err(|source| {
+                yc_analysis::AnalysisError::ScanFolderIo {
+                    path: selected_folder.to_path_buf(),
+                    source,
+                }
+            })?;
+            let candidate = resolved
+                .instance_dir
+                .unwrap_or_else(|| selected_folder.to_path_buf());
+            let game_directory = resolve_instance_game_directory_for_addition(&candidate);
+            (
+                resolved.scanned_folder,
+                selected_folder.to_path_buf(),
+                game_directory,
+            )
+        } else {
+            let game_directory = resolve_instance_game_directory_for_addition(instance_root);
+            (
+                game_directory.join("mods"),
+                game_directory.clone(),
+                game_directory,
+            )
+        };
+    let deployment_paths =
+        deployment_path_keys(instance_root, deployment_targets.iter().map(String::as_str));
+    let results = if mods_directory.is_dir() {
+        scan_mods_folder_core(
+            &mods_directory,
+            &ScanOptions::default(),
+            cancellation,
+            on_progress,
+        )?
+    } else if cancellation.is_cancelled() {
+        return Err(yc_analysis::AnalysisError::Cancelled);
+    } else {
+        Vec::new()
+    };
+    let results = results
+        .into_iter()
+        .filter(|result| {
+            !is_existing_instance_candidate(
+                &result.path,
+                result.sha256.as_deref(),
+                existing_hashes,
+                existing_paths,
+                &deployment_paths,
+            )
+        })
+        .collect();
+    let shaderpack_root = game_directory.join("shaderpacks");
+    let shaderpacks = scan_shaderpack_candidates(&selected_folder, &shaderpack_root)
+        .into_iter()
+        .filter(|result| {
+            !is_existing_instance_candidate(
+                &result.path,
+                result.sha256.as_deref(),
+                existing_hashes,
+                existing_paths,
+                &deployment_paths,
+            )
+        })
+        .collect();
+    if cancellation.is_cancelled() {
+        return Err(yc_analysis::AnalysisError::Cancelled);
+    }
+    Ok((results, shaderpacks))
 }
 
 fn resolve_instance_game_directory_for_addition(root: &Path) -> PathBuf {

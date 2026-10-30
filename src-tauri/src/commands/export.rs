@@ -915,11 +915,7 @@ fn validate_project_core_for_units(
             ExportKindInput::LanguageFile => context.namespaces.iter().any(|candidate| {
                 candidate.included
                     && Some(candidate.namespace.as_str()) == namespace
-                    // FTB Quests uses document SNBT, which is not a language-file export.
-                    && context
-                        .language_files
-                        .iter()
-                        .any(|language| language.namespace == candidate.namespace)
+                    && namespace_has_language_file_export_source(&context, &candidate.namespace)
             }),
             ExportKindInput::ShaderpackZip => context
                 .namespaces
@@ -1700,10 +1696,11 @@ fn export_selected_language_files_core(
             }
             for document in &document_artifacts {
                 let document_output = unit_directory.join(&document.path);
-                ensure_output_is_safe(&context.source_jar, &document_output)?;
+                // canonicalizeには親フォルダが必要なため、作成後に出力先を検証する。
                 if let Some(parent) = document_output.parent() {
                     fs::create_dir_all(parent).map_err(export_error)?;
                 }
+                ensure_output_is_safe(&context.source_jar, &document_output)?;
                 ensure_output_is_within_directory(output_directory, &document_output)?;
             }
             let written = yc_export::write_patchouli_document_files(
@@ -3145,6 +3142,26 @@ fn validate_export_context(
     })
 }
 
+fn namespace_has_language_file_export_source(context: &ExportContext, namespace: &str) -> bool {
+    if context.source_kind == ModUnitSourceKind::Shaderpack {
+        return context.language_files.iter().any(|language| {
+            language.namespace == namespace
+                && normalize_locale(&language.locale) == normalize_locale(&context.source_locale)
+        });
+    }
+
+    // The language writer consumes regular and KubeJS language files; Patchouli has a separate
+    // document writer. FTB Quests SNBT stays in document_entries and has no language-file output.
+    context
+        .language_files
+        .iter()
+        .any(|language| language.namespace == namespace)
+        || context
+            .patchouli_documents
+            .iter()
+            .any(|document| document.namespace == namespace)
+}
+
 pub(crate) fn export_language_file_core(
     opened: &OpenedProject,
     output_path: &Path,
@@ -4147,6 +4164,7 @@ mod export_path_regression_tests {
         original_jar_is_in_instance_mods, restore_modified_jar_core, sha256_file_hex,
         validate_project_core_for_units,
     };
+    use crate::commands::editor::update_entries_batch_core;
     use crate::{commands::project::create_project_from_sources_core, paths::AppPaths};
     use yc_analysis::CancellationToken;
     use yc_project::{EntryUpdate, JarReplacementRecord, OpenedProject, UpdateOrigin};
@@ -4635,6 +4653,143 @@ mod export_path_regression_tests {
             .expect("successful export should report its path");
         assert!(PathBuf::from(output).is_file());
         assert!(PathBuf::from(output).starts_with(&output_directory));
+    }
+
+    #[test]
+    fn selected_language_export_accepts_patchouli_only_and_regular_language_namespaces() {
+        let temporary = TemporaryDirectory::create();
+        let source = temporary.0.join("patchouli-and-language.jar");
+        let mut jar = ZipWriter::new(fs::File::create(&source).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (path, contents) in [
+            (
+                "fabric.mod.json",
+                r#"{"schemaVersion":1,"id":"guidebook","name":"Guidebook","version":"1.0.0"}"#,
+            ),
+            (
+                "assets/ordinary/lang/en_us.json",
+                r#"{"ordinary.key":"English"}"#,
+            ),
+            (
+                "assets/guidebook/patchouli_books/guide/book.json",
+                r#"{"name":"Guide","i18n":false}"#,
+            ),
+            (
+                "assets/guidebook/patchouli_books/guide/en_us/entries/start.json",
+                r#"{"name":"Start","pages":[{"type":"patchouli:text","text":"Read this"}]}"#,
+            ),
+        ] {
+            jar.start_file(path, options).unwrap();
+            jar.write_all(contents.as_bytes()).unwrap();
+        }
+        jar.finish().unwrap();
+
+        let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+        let created = create_project_from_sources_core(
+            &paths,
+            std::slice::from_ref(&source),
+            None,
+            false,
+            &CancellationToken::default(),
+            |_, _, _, _| {},
+        )
+        .expect("Patchouli and language fixture should create a project");
+        let opened = created.opened;
+        let unit_id = opened.repository().list_mod_units().unwrap()[0].id;
+        let language_entry = opened
+            .repository()
+            .list_entries(Some(unit_id))
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.namespace == "ordinary")
+            .expect("regular language entry should be imported");
+        let patchouli_entry = opened
+            .repository()
+            .list_document_entries(Some(unit_id))
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.namespace == "guidebook")
+            .expect("Patchouli-only document entry should be imported");
+        update_entries_batch_core(
+            &opened,
+            vec![
+                EntryUpdate {
+                    id: language_entry.id,
+                    target_text: "翻訳済み言語".to_owned(),
+                    origin: UpdateOrigin::Manual,
+                },
+                EntryUpdate {
+                    id: patchouli_entry.id,
+                    target_text: "翻訳済み文書".to_owned(),
+                    origin: UpdateOrigin::Manual,
+                },
+            ],
+        )
+        .expect("both translations should be saved");
+
+        let selected_ids = [unit_id];
+        let context = export_context(&opened, unit_id).expect("export context should load");
+        let namespaces: Vec<_> = context
+            .namespaces
+            .iter()
+            .map(|candidate| yc_export::NamespaceExport {
+                namespace: candidate.namespace.clone(),
+                included: candidate.included && candidate.namespace == "guidebook",
+            })
+            .collect();
+        let input = yc_export::ExportInput {
+            namespaces: &namespaces,
+            ..context.input()
+        };
+        assert!(
+            yc_export::create_language_files(&input)
+                .expect("Patchouli-only namespace should have no language artifact")
+                .is_empty()
+        );
+        assert_eq!(
+            yc_export::create_patchouli_document_files(&input)
+                .expect("translated Patchouli document should be exportable")
+                .len(),
+            1
+        );
+        for namespace in ["ordinary", "guidebook"] {
+            let validation = validate_project_core_for_units(
+                &opened,
+                ExportKindInput::LanguageFile,
+                None,
+                Some(namespace),
+                None,
+                Some(&selected_ids),
+            )
+            .expect("output-capable namespace should validate");
+            assert!(
+                !validation
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "invalidExportSelection"),
+                "{namespace} should be selectable"
+            );
+
+            let output_directory = temporary.0.join(format!("language-output-{namespace}"));
+            let results = export_selected_language_files_core(
+                &opened,
+                &selected_ids,
+                &output_directory,
+                namespace,
+                &Arc::new(Mutex::new(std::collections::HashSet::new())),
+            )
+            .expect("selected language export should complete");
+            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results[0].status, "success",
+                "{namespace}: {:?}",
+                results[0]
+            );
+            assert!(
+                PathBuf::from(results[0].output_path.as_deref().unwrap()).is_file(),
+                "{namespace} output should be written"
+            );
+        }
     }
 
     #[test]

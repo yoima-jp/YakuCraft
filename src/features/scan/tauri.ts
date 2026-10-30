@@ -10,10 +10,14 @@ export function scanModsFolder(path: string, onEvent: (event: ScanModsFolderEven
   return invokeApp<string>("scan_mods_folder", { path, channel });
 }
 
-export function scanProjectInstanceSources(projectId: string, onEvent: (event: AddInstanceScanEventDto) => void) {
+export function scanProjectInstanceSources(
+  projectId: string,
+  onEvent: (event: AddInstanceScanEventDto) => void,
+  path?: string,
+) {
   const channel = new Channel<AddInstanceScanEventDto>();
   channel.onmessage = onEvent;
-  return invokeApp<string>("scan_project_instance_sources", { projectId, channel });
+  return invokeApp<string>("scan_project_instance_sources", { projectId, path: path ?? null, channel });
 }
 
 export function addModUnits(
