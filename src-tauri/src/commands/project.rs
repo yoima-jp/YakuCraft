@@ -980,7 +980,7 @@ fn scan_project_instance_sources_core(
     Ok((results, shaderpacks))
 }
 
-fn resolve_instance_game_directory_for_addition(root: &Path) -> PathBuf {
+pub(super) fn resolve_instance_game_directory_for_addition(root: &Path) -> PathBuf {
     if root.join("mods").is_dir() {
         return root.to_path_buf();
     }

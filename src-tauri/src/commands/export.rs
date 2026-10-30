@@ -3840,7 +3840,9 @@ fn original_jar_is_in_instance_mods(instance_path: &Path, original_path: &Path) 
     let Ok(instance_root) = fs::canonicalize(instance_path) else {
         return false;
     };
-    let Ok(mods_directory) = fs::canonicalize(instance_root.join("mods")) else {
+    let game_directory =
+        super::project::resolve_instance_game_directory_for_addition(instance_path);
+    let Ok(mods_directory) = fs::canonicalize(game_directory.join("mods")) else {
         return false;
     };
     let Ok(original_jar) = fs::canonicalize(original_path) else {
@@ -4396,6 +4398,94 @@ mod export_path_regression_tests {
             if symlink_file(&outside_jar, &linked_jar).is_ok() {
                 assert!(!original_jar_is_in_instance_mods(&instance, &linked_jar));
             }
+        }
+    }
+
+    #[test]
+    fn direct_jar_replacement_resolves_launcher_game_directories() {
+        for game_directory_name in ["minecraft", ".minecraft"] {
+            let temporary = TemporaryDirectory::create();
+            let instance = temporary.0.join("instance");
+            let inside_jar = instance.join(game_directory_name).join("mods/x.jar");
+            let outside_jar = temporary.0.join("Downloads/outside.jar");
+            write_in_place_fixture_jar(&inside_jar, "inside");
+            write_in_place_fixture_jar(&outside_jar, "outside");
+            let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+            let sources = [inside_jar.clone(), outside_jar.clone()];
+            let created = create_project_from_sources_core(
+                &paths,
+                &sources,
+                Some(&instance),
+                false,
+                &CancellationToken::default(),
+                |_, _, _, _| {},
+            )
+            .unwrap();
+            let units = created.opened.repository().list_mod_units().unwrap();
+            let inside_unit_id = units
+                .iter()
+                .find(|unit| unit.source_filename == "x.jar")
+                .unwrap()
+                .id;
+            let outside_unit_id = units
+                .iter()
+                .find(|unit| unit.source_filename == "outside.jar")
+                .unwrap()
+                .id;
+            let analyses = created.analyses;
+            let opened = created.opened;
+            for unit in &units {
+                let mut settings = analyses[&unit.id].default_review_settings();
+                settings.source_locale = "en_us".to_owned();
+                opened
+                    .writer()
+                    .save_review_settings(unit.id, settings, true)
+                    .unwrap();
+                let entry = opened
+                    .repository()
+                    .list_entries(Some(unit.id))
+                    .unwrap()
+                    .into_iter()
+                    .next()
+                    .unwrap();
+                opened
+                    .writer()
+                    .update_entry(EntryUpdate {
+                        id: entry.id,
+                        target_text: "翻訳".to_owned(),
+                        origin: UpdateOrigin::Manual,
+                    })
+                    .unwrap();
+            }
+
+            let inside_before = fs::read(&inside_jar).unwrap();
+            let outside_before = fs::read(&outside_jar).unwrap();
+            let results = benchmark_export_selected_modified_jars(
+                &opened,
+                &[inside_unit_id, outside_unit_id],
+                &temporary.0.join("output"),
+                true,
+            )
+            .unwrap();
+
+            assert_ne!(fs::read(&inside_jar).unwrap(), inside_before);
+            assert_eq!(fs::read(&outside_jar).unwrap(), outside_before);
+            assert_eq!(
+                results
+                    .iter()
+                    .find(|result| result.mod_unit_id == inside_unit_id)
+                    .unwrap()
+                    .status,
+                "success"
+            );
+            assert_eq!(
+                results
+                    .iter()
+                    .find(|result| result.mod_unit_id == outside_unit_id)
+                    .unwrap()
+                    .status,
+                "skipped"
+            );
         }
     }
 
