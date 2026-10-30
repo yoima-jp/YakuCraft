@@ -181,7 +181,7 @@ describe("Recentから開いたプロジェクトを削除", () => {
       assert.equal(created.length, 1, "作成したProject directoryを特定できません。");
       const projectId = created[0];
 
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
       const recentCardSelector = "//li[contains(@class, 'recent-projects__item')][.//span[contains(@class, 'recent-projects__name') and normalize-space()='Delete Fixture']]";
       const recentCard = await $(recentCardSelector);

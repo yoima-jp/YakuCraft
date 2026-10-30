@@ -418,7 +418,7 @@ describe("全機能の動作確認", () => {
       await editTranslation(patchouliKey, "置換文字列を壊した説明");
       await waitForPlaceholderWarning(patchouliKey, true);
 
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
       let recentProject;
       const recentProjectTexts = [];
@@ -748,7 +748,7 @@ describe("全機能の動作確認", () => {
       assert.deepEqual(await readFile(existingFtbPath), changedFtbBytes);
       await writeFile(existingFtbPath, originalFtbBytes);
 
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
       await scanFolder(fixtures.splitInstance);
       const splitRow = await scanRowFor("Modpack 固有（クエスト・KubeJS）");
@@ -777,7 +777,7 @@ describe("全機能の動作確認", () => {
       const splitOutputPath = "config/ftbquests/quests/lang/ja_jp/chapters/start.snbt";
       assert.match(splitEntries.get(splitOutputPath).toString("utf8"), /&b分割されたクエスト \{@pagebreak\}/);
 
-      await $('[aria-label="ホームへ戻る"]').click();
+      await $('.app-brand[aria-label="ホームへ戻る"]').click();
       await $(".home-screen").waitForDisplayed({ timeout: 15_000 });
       await scanFolder(fixtures.legacyInstance);
       const legacyRow = await scanRowFor("Modpack 固有（クエスト・KubeJS）");
