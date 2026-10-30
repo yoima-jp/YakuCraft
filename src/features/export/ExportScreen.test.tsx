@@ -2,12 +2,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getProjectSummary, listModUnits } from "../../lib/tauri";
-import { saveFileDialog } from "../../lib/dialogs";
+import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
 import { useProjectStore } from "../../stores/projectStore";
 import type { ProjectDetailsDto } from "../../types/project";
 import { ExportScreen } from "./ExportScreen";
 import {
   exportSelectedMergedResourcePack,
+  exportSelectedModifiedJars,
+  exportShaderpacks,
   getExportOverview,
   restoreModifiedJar,
   validateSelectedProject,
@@ -37,6 +39,7 @@ vi.mock("./exportApi", () => ({
   exportSelectedLanguageFiles: vi.fn(),
   exportSelectedMergedResourcePack: vi.fn(),
   exportSelectedModifiedJars: vi.fn(),
+  exportShaderpacks: vi.fn(),
   getExportOverview: vi.fn(),
   restoreModifiedJar: vi.fn(),
   validateSelectedProject: vi.fn(),
@@ -95,6 +98,28 @@ function modUnit(id: number) {
   };
 }
 
+function setupInstanceWithShaderpacks() {
+  const units = [modUnit(1), modUnit(2), modUnit(3)].map((unit, index) => (
+    index === 0 ? { ...unit, sourceKind: "jar" as const } : { ...unit, sourceKind: "shaderpack" as const }
+  ));
+  useProjectStore.getState().setModUnits(units);
+  vi.mocked(listModUnits).mockResolvedValue(units);
+  vi.mocked(getExportOverview).mockResolvedValue({
+    instancePath: "C:\\instance",
+    units: units.map((unit) => ({
+      id: unit.id,
+      sourceKind: unit.sourceKind,
+      sourceFilename: unit.sourceFilename,
+      name: unit.name,
+      version: unit.version,
+      sourceSha256: "source-hash",
+      originalPath: `C:\\mods\\${unit.sourceFilename}`,
+      originalExists: true,
+    })),
+    activeReplacements: [],
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
@@ -121,6 +146,7 @@ beforeEach(() => {
     activeReplacements: [],
   });
   vi.mocked(saveFileDialog).mockResolvedValue(null);
+  vi.mocked(openFileDialog).mockResolvedValue(null);
   vi.mocked(validateSelectedProject).mockImplementation(async () => ({
     issues: [{
       severity: "warning",
@@ -242,6 +268,86 @@ describe("Export format and validation", () => {
     fireEvent.click(screen.getByTestId("export-start"));
     fireEvent.click(await screen.findByRole("button", { name: "このまま書き出す" }));
     await waitFor(() => expect(exportSelectedMergedResourcePack).toHaveBeenCalled());
+  });
+
+  it("Mod JARでも書式エラーを確認し、ほかのエラーがあってもJAR書き出しを続ける", async () => {
+    vi.mocked(validateSelectedProject).mockResolvedValue({
+      issues: [
+        { severity: "error", code: "placeholderError", message: "書式エラー", modUnitId: 1, modName: "Fixture", count: null, namespace: "fixture", key: "broken", sourceText: "%s", targetText: "%2$s" },
+        { severity: "error", code: "parseError", message: "解析失敗", modUnitId: 1, modName: "Fixture", count: null, namespace: null, key: null, sourceText: null, targetText: null },
+      ],
+      minecraftVersionDetection: details().minecraftVersionDetection ?? null,
+      counts: { total: 2, translated: 1, missing: 1, needsReview: 1 },
+      isSigned: false,
+    });
+    vi.mocked(openFileDialog).mockResolvedValue("C:\\exports");
+    vi.mocked(exportSelectedModifiedJars).mockResolvedValue([{
+      modUnitId: 1,
+      modName: "Fixture",
+      status: "success",
+      outputPath: "C:\\exports\\fixture-ja.jar",
+      message: null,
+    }]);
+    render(<ExportScreen />);
+    fireEvent.click(await screen.findByRole("radio", { name: /Mod JARに埋め込む/ }));
+    fireEvent.click(await screen.findByTestId("export-start"));
+
+    const dialog = await screen.findByRole("dialog", { name: "書式エラーがあります" });
+    expect(dialog.textContent).toContain("1 件の訳はゲーム内で正しく表示されないことがあります。");
+    expect(exportSelectedModifiedJars).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "このまま書き出す" }));
+
+    await waitFor(() => expect(exportSelectedModifiedJars).toHaveBeenCalledOnce());
+    expect(screen.queryByText("確認事項を直すと書き出せます")).toBeNull();
+  });
+
+  it("同時配置するシェーダーパックの書式エラーも強制確認を出す", async () => {
+    setupInstanceWithShaderpacks();
+    vi.mocked(validateSelectedProject).mockImplementation(async (_projectId, kind) => ({
+      issues: kind === "shaderpackZip"
+        ? [{ severity: "error", code: "placeholderError", message: "シェーダーの書式エラー", modUnitId: 2, modName: "Fixture 2", count: null, namespace: "shader", key: "broken", sourceText: "%s", targetText: "%2$s" }]
+        : [],
+      minecraftVersionDetection: details().minecraftVersionDetection ?? null,
+      counts: { total: 2, translated: 1, missing: 1, needsReview: 1 },
+      isSigned: false,
+    }));
+    render(<ExportScreen />);
+    fireEvent.click(await screen.findByTestId("export-start"));
+
+    expect(await screen.findByRole("dialog", { name: "書式エラーがあります" })).toBeTruthy();
+    expect(exportSelectedMergedResourcePack).not.toHaveBeenCalled();
+    expect(exportShaderpacks).not.toHaveBeenCalled();
+  });
+
+  it("Mod JARとシェーダーパック同時配置の確認に配置先を示し、上書き対象を列挙する", async () => {
+    setupInstanceWithShaderpacks();
+    vi.mocked(openFileDialog).mockResolvedValue("C:\\exports");
+    vi.mocked(exportSelectedModifiedJars).mockResolvedValue([{
+      modUnitId: 1,
+      modName: "Fixture",
+      status: "success",
+      outputPath: "C:\\mods\\fixture-1-ja.jar",
+      message: null,
+    }]);
+    vi.mocked(exportShaderpacks).mockResolvedValue({
+      status: "overwriteRequired",
+      targetPaths: ["C:\\instance\\shaderpacks\\first.zip", "C:\\instance\\shaderpacks\\second.zip"],
+    });
+    render(<ExportScreen />);
+    fireEvent.click(await screen.findByRole("radio", { name: /Mod JARに埋め込む/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "mods フォルダの JAR を直接上書きする" }));
+    fireEvent.click(await screen.findByRole("button", { name: "置き換え" }));
+    expect(await screen.findByRole("checkbox", { name: "シェーダーパックも shaderpacks/ に配置する" })).toBeTruthy();
+    fireEvent.click(await screen.findByTestId("export-start"));
+
+    const deploymentDialog = await screen.findByRole("dialog", { name: "インスタンスに配置しますか" });
+    expect(deploymentDialog.textContent).toContain("shaderpacks/");
+    expect(exportSelectedModifiedJars).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+
+    const overwriteDialog = await screen.findByRole("dialog", { name: "シェーダーパックを上書きしますか" });
+    expect(overwriteDialog.textContent).toContain("first.zip");
+    expect(overwriteDialog.textContent).toContain("second.zip");
   });
 
   it("書式以外のエラーがあると強制書き出しを表示しない", async () => {
