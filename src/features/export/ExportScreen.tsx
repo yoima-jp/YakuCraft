@@ -443,13 +443,19 @@ export function ExportScreen() {
       .map((selection) => selection.namespace),
   )], [details?.includedNamespaces, selectedIdSet]);
   const selectedNamespace = includedNamespaces.includes(namespace) ? namespace : (includedNamespaces[0] ?? "");
+  const outOfScopeInPlaceUnits = overview?.units.filter((unit) => (
+    selectedIdSet.has(unit.id)
+      && isJarUnit(unit)
+      && unit.originalExists
+      && !unit.inInstanceMods
+  )) ?? [];
   const versionOptions = useMemo(() => [...new Set([
     ...(details?.supportedMinecraftVersions ?? []),
     ...modUnits.map((unit) => unit.minecraftVersion?.trim() ?? "").filter(Boolean),
   ])], [details?.supportedMinecraftVersions, modUnits]);
   const eligibleForInPlace = Boolean(overview?.instancePath)
     && overview?.units.some((unit) => selectedIdSet.has(unit.id)
-      && isJarUnit(unit) && unit.originalExists);
+      && isJarUnit(unit) && unit.originalExists && unit.inInstanceMods);
   const showShaderpackDeploymentOption = Boolean(overview?.instancePath && hasShaderpackUnit)
     && ((kind === "resourcePack" && destination === "instance")
       || (kind === "modifiedJar" && replaceInPlace && eligibleForInPlace));
@@ -1082,7 +1088,9 @@ export function ExportScreen() {
           selectedIds={selectedIds}
           onChange={(ids) => {
             setSelectedIds(ids);
-            if (!overview?.instancePath || !overview.units.some((unit) => ids.includes(unit.id) && unit.originalExists)) {
+            if (!overview?.instancePath || !overview.units.some((unit) => (
+              ids.includes(unit.id) && unit.originalExists && unit.inInstanceMods
+            ))) {
               setReplaceInPlace(false);
             }
           }}
@@ -1262,10 +1270,17 @@ export function ExportScreen() {
       )}
 
       {kind === "modifiedJar" && eligibleForInPlace && (
-        <label className="export-screen__advanced-check">
-          <input type="checkbox" checked={replaceInPlace} onChange={(event) => void changeInPlace(event.currentTarget.checked)} />
-          mods フォルダの JAR を直接上書きする
-        </label>
+        <>
+          <label className="export-screen__advanced-check">
+            <input type="checkbox" checked={replaceInPlace} onChange={(event) => void changeInPlace(event.currentTarget.checked)} />
+            mods フォルダの JAR を直接上書きする
+          </label>
+          {replaceInPlace && outOfScopeInPlaceUnits.length > 0 && (
+            <p className="status-message" aria-live="polite">
+              {outOfScopeInPlaceUnits.map(unitTitle).join("、")}：インスタンスの mods フォルダ外のため直接置き換えできません。
+            </p>
+          )}
+        </>
       )}
 
       <section className="export-validation" aria-label="書き出しの確認" aria-live="polite">

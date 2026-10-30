@@ -24,6 +24,7 @@ export interface ExportUnitStatusDto {
   sourceSha256: string;
   originalPath: string;
   originalExists: boolean;
+  inInstanceMods: boolean;
 }
 
 export interface ExportOverviewDto {
