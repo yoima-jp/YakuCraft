@@ -942,7 +942,7 @@ export function ExportScreen() {
       const startingProjectId = projectId;
       const confirmed = await requestConfirmation({
         title: "JARを直接置き換えますか",
-        message: "mods フォルダの jar を直接書き換えます。元の jar はプロジェクト内にバックアップし、あとで元に戻せます。ランチャーによっては mod の更新や整合性チェックで元に戻ることがあります。Minecraft を終了してから実行してください。",
+        message: "mods フォルダの JAR を直接書き換えます。元の JAR はプロジェクト内にバックアップし、あとで元に戻せます。ランチャーによっては Mod の更新や整合性チェックで元に戻ることがあります。Minecraft を終了してから実行してください。",
         confirmLabel: "置き換え",
         destructive: true,
       });
