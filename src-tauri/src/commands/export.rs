@@ -161,7 +161,7 @@ pub enum ModpackFilesExportOutcome {
 )]
 pub enum ShaderpackExportOutcome {
     OverwriteRequired {
-        target_path: String,
+        target_paths: Vec<String>,
     },
     Completed {
         output_paths: Vec<String>,
@@ -1881,8 +1881,8 @@ pub(crate) fn export_selected_shaderpacks_core(
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?
         .iter()
-        .map(|unit| normalized_shaderpack_path(Path::new(&unit.original_path)))
-        .collect::<Result<_, _>>()?;
+        .filter_map(|unit| normalized_shaderpack_path(Path::new(&unit.original_path)).ok())
+        .collect();
 
     let mut prepared = Vec::with_capacity(units.len());
     let mut used_names = HashSet::new();
@@ -2003,6 +2003,7 @@ pub(crate) fn export_selected_shaderpacks_core(
             .as_ref()
             .expect("direct installation has an instance root");
         let mut seen = HashSet::new();
+        let mut overwrite_required_paths = Vec::new();
         for (unit, _, target, _) in &prepared {
             validate_modpack_target_path(instance_root, target, true)?;
             if !seen.insert(target.clone()) {
@@ -2019,12 +2020,16 @@ pub(crate) fn export_selected_shaderpacks_core(
             if let Some(record) = active.as_ref() {
                 ensure_modpack_deployment_unchanged(target, &record.deployed_sha256)?;
             } else if target.exists() && !overwrite {
-                return Ok(ShaderpackExportOutcome::OverwriteRequired {
-                    target_path: target.to_string_lossy().into_owned(),
-                });
+                overwrite_required_paths.push(target.to_string_lossy().into_owned());
             }
         }
+        if !overwrite_required_paths.is_empty() {
+            return Ok(ShaderpackExportOutcome::OverwriteRequired {
+                target_paths: overwrite_required_paths,
+            });
+        }
     } else {
+        let mut overwrite_required_paths = Vec::new();
         for (_, source, target, _) in &prepared {
             ensure_output_is_safe(source, target)?;
             ensure_output_is_within_directory(
@@ -2032,10 +2037,13 @@ pub(crate) fn export_selected_shaderpacks_core(
                 target,
             )?;
             if target.exists() && !overwrite {
-                return Ok(ShaderpackExportOutcome::OverwriteRequired {
-                    target_path: target.to_string_lossy().into_owned(),
-                });
+                overwrite_required_paths.push(target.to_string_lossy().into_owned());
             }
+        }
+        if !overwrite_required_paths.is_empty() {
+            return Ok(ShaderpackExportOutcome::OverwriteRequired {
+                target_paths: overwrite_required_paths,
+            });
         }
     }
 

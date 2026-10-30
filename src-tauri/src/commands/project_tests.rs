@@ -30,8 +30,8 @@ use yc_analysis::{AnalysisStage, CancellationToken};
 use yc_language::ReviewSettings;
 use yc_project::{
     AppSettings, EntryUpdate, FileDeploymentRecord, GlossaryTermInput, IncludedNamespace,
-    NamespaceRecord, OpenedProject, ProjectError, ProjectReviewSettings, RecentProject,
-    RecentProjects, TranslationProgress, UpdateOrigin, load_recent_projects,
+    ModUnitSourceKind, NamespaceRecord, OpenedProject, ProjectError, ProjectReviewSettings,
+    RecentProject, RecentProjects, TranslationProgress, UpdateOrigin, load_recent_projects,
     open_project as open_project_file, save_recent_projects, save_settings as save_app_settings,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -2199,6 +2199,123 @@ fn shaderpack_export_disambiguates_case_insensitive_names() {
         assert!(Path::new(&path).is_file());
         assert!(read_zip_entry(Path::new(&path), "shaders/lang/ja_jp.lang").is_some());
     }
+}
+
+#[test]
+fn shaderpack_export_lists_every_existing_target_before_overwriting() {
+    let temporary = TemporaryDirectory::create();
+    let sources = [
+        temporary.0.join("First.zip"),
+        temporary.0.join("Second.zip"),
+    ];
+    for source in &sources {
+        write_shaderpack_fixture_zip(source);
+    }
+    let app_paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let opened = super::create_project_from_sources_core(
+        &app_paths,
+        &sources,
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .unwrap()
+    .opened;
+    let ids: Vec<_> = opened
+        .repository()
+        .list_mod_units()
+        .unwrap()
+        .iter()
+        .map(|unit| unit.id)
+        .collect();
+    let output_directory = temporary.0.join("exports");
+    fs::create_dir_all(&output_directory).unwrap();
+    let existing_targets = [
+        output_directory.join("First-ja.zip"),
+        output_directory.join("Second-ja.zip"),
+    ];
+    for target in &existing_targets {
+        fs::write(target, b"existing shaderpack").unwrap();
+    }
+
+    let outcome = export_selected_shaderpacks_core(
+        &opened,
+        &ids,
+        Some(&output_directory),
+        false,
+        false,
+        &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    let ShaderpackExportOutcome::OverwriteRequired { target_paths } = outcome else {
+        panic!("every existing shaderpack should be included in overwrite confirmation");
+    };
+    let target_paths: std::collections::HashSet<_> = target_paths.into_iter().collect();
+    let expected_paths: std::collections::HashSet<_> = existing_targets
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(target_paths, expected_paths);
+    for target in existing_targets {
+        assert_eq!(fs::read(target).unwrap(), b"existing shaderpack");
+    }
+}
+
+#[test]
+fn shaderpack_export_skips_unresolvable_unrelated_original_paths() {
+    let temporary = TemporaryDirectory::create();
+    let sources = [
+        temporary.0.join("Selected.zip"),
+        temporary.0.join("Unrelated.zip"),
+    ];
+    for source in &sources {
+        write_shaderpack_fixture_zip(source);
+    }
+    let app_paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let opened = super::create_project_from_sources_core(
+        &app_paths,
+        &sources,
+        None,
+        false,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .unwrap()
+    .opened;
+    let units = opened.repository().list_mod_units().unwrap();
+    let selected = units
+        .iter()
+        .find(|unit| unit.source_filename == "Selected.zip")
+        .unwrap();
+    let unrelated = units
+        .iter()
+        .find(|unit| unit.source_filename == "Unrelated.zip")
+        .unwrap();
+    opened
+        .writer()
+        .set_mod_unit_source_kind(unrelated.id, ModUnitSourceKind::Modpack)
+        .unwrap();
+    opened
+        .writer()
+        .update_modpack_source(unrelated.id, unrelated.source_sha256.clone(), String::new())
+        .unwrap();
+    let output_directory = temporary.0.join("exports");
+
+    let outcome = export_selected_shaderpacks_core(
+        &opened,
+        &[selected.id],
+        Some(&output_directory),
+        false,
+        false,
+        &std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    let ShaderpackExportOutcome::Completed { output_paths, .. } = outcome else {
+        panic!("the unrelated unresolved original path should not block shaderpack export");
+    };
+    assert_eq!(output_paths.len(), 1);
+    assert!(Path::new(&output_paths[0]).is_file());
 }
 
 #[test]

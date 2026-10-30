@@ -595,9 +595,11 @@ export function ExportScreen() {
   };
 
   const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}:${deployShaderpacks}`;
-  const confirmInstanceDeployment = () => requestConfirmation({
+  const confirmInstanceDeployment = (includeShaderpacks = false) => requestConfirmation({
     title: "インスタンスに配置しますか",
-    message: "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
+    message: includeShaderpacks
+      ? "Minecraft を終了してから配置してください。シェーダーパックを shaderpacks/ に配置します。既存ファイルはバックアップされ、書き出し画面から戻せます。"
+      : "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
     confirmLabel: "配置",
     destructive: true,
   });
@@ -634,9 +636,14 @@ export function ExportScreen() {
       const formatErrorCount = result.issues.filter((issue) =>
         issue.severity === "error" && issue.code === "placeholderError",
       ).length;
+      const formatConfirmationRequired = formatErrorCount > 0 && allowedCount !== formatErrorCount;
+      if (kind === "modifiedJar" && formatConfirmationRequired) {
+        setForcePermit({ target: exportTarget, count: formatErrorCount });
+        return;
+      }
       if (blockingErrors.length > 0 && kind !== "modifiedJar") {
         const onlyFormatErrors = formatErrorCount === blockingErrors.length;
-        if (!onlyFormatErrors || allowedCount !== formatErrorCount) {
+        if (!onlyFormatErrors || formatConfirmationRequired) {
           if (onlyFormatErrors) {
             setForcePermit({ target: exportTarget, count: formatErrorCount });
           } else {
@@ -647,8 +654,8 @@ export function ExportScreen() {
         }
       }
 
-      if (deployShaderpacks && kind === "resourcePack") {
-        if (!await confirmInstanceDeployment()) return;
+      if (deployShaderpacks || (kind === "resourcePack" && destination === "instance")) {
+        if (!await confirmInstanceDeployment(deployShaderpacks)) return;
         if (!isCurrentProject(startingProjectId)) return;
       }
 
@@ -735,7 +742,7 @@ export function ExportScreen() {
         if (outcome.status === "overwriteRequired") {
           const confirmed = await requestConfirmation({
             title: "シェーダーパックを上書きしますか",
-            message: `同じ名前のファイルがあります。\n${displayPath(outcome.targetPath)}`,
+            message: `上書きするシェーダーパックがあります。\n${outcome.targetPaths.map((path) => `・${displayPath(path)}`).join("\n")}`,
             confirmLabel: "上書き",
             destructive: true,
           });
@@ -858,7 +865,7 @@ export function ExportScreen() {
           if (outcome.status === "overwriteRequired") {
             const confirmed = await requestConfirmation({
               title: "シェーダーパックを上書きしますか",
-              message: `同じ名前のファイルがあります。\n${displayPath(outcome.targetPath)}`,
+              message: `上書きするシェーダーパックがあります。\n${outcome.targetPaths.map((path) => `・${displayPath(path)}`).join("\n")}`,
               confirmLabel: "上書き",
               destructive: true,
             });

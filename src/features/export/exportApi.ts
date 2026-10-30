@@ -77,7 +77,7 @@ export type ModpackFilesExportOutcomeDto =
   | { status: "completed"; outputPath: string; directlyInstalled: boolean; fileCount: number };
 
 export type ShaderpackExportOutcomeDto =
-  | { status: "overwriteRequired"; targetPath: string }
+  | { status: "overwriteRequired"; targetPaths: string[] }
   | { status: "completed"; outputPaths: string[]; directlyInstalled: boolean; modResults: ModExportResultDto[] };
 
 export type RestoreFileDeploymentOutcomeDto = { status: "restored"; targetPath: string };
