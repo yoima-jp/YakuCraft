@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -7,10 +8,10 @@ use std::{
 
 use super::{
     ReviewSettingsInput, add_project_sources_core, create_project_core,
-    create_project_from_sources_core, merge_for_review, modpack_document_entries,
-    preserve_saved_translations, project_analysis_data, project_delete_error, project_details_core,
-    project_details_core_with_analysis, project_details_from_stored_data,
-    refresh_modpack_unit_core, review_asset_summary_core,
+    create_project_from_sources_core, deployment_path_keys, is_existing_instance_candidate,
+    merge_for_review, modpack_document_entries, preserve_saved_translations, project_analysis_data,
+    project_delete_error, project_details_core, project_details_core_with_analysis,
+    project_details_from_stored_data, refresh_modpack_unit_core, review_asset_summary_core,
     review_asset_summary_core_with_index_and_progress, save_review_settings_core,
     save_review_settings_core_with_cached_asset_index, truncate_recent_projects,
 };
@@ -28,10 +29,10 @@ use crate::{
 use yc_analysis::{AnalysisStage, CancellationToken};
 use yc_language::ReviewSettings;
 use yc_project::{
-    AppSettings, EntryUpdate, GlossaryTermInput, IncludedNamespace, NamespaceRecord, OpenedProject,
-    ProjectError, ProjectReviewSettings, RecentProject, RecentProjects, TranslationProgress,
-    UpdateOrigin, load_recent_projects, open_project as open_project_file, save_recent_projects,
-    save_settings as save_app_settings,
+    AppSettings, EntryUpdate, FileDeploymentRecord, GlossaryTermInput, IncludedNamespace,
+    NamespaceRecord, OpenedProject, ProjectError, ProjectReviewSettings, RecentProject,
+    RecentProjects, TranslationProgress, UpdateOrigin, load_recent_projects,
+    open_project as open_project_file, save_recent_projects, save_settings as save_app_settings,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -223,7 +224,78 @@ fn adding_jar_and_shaderpack_preserves_existing_project_state_and_uses_max_ids()
 }
 
 #[test]
-fn identical_hash_is_skipped_and_known_mod_id_with_new_hash_is_rejected() {
+fn active_file_deployment_paths_are_excluded_from_instance_candidates() {
+    let (temporary, opened) = create_addition_fixture();
+    let game_directory = temporary.0.join("instance");
+    let shaderpack_directory = game_directory.join("shaderpacks");
+    fs::create_dir_all(&shaderpack_directory).expect("shaderpack directory should be created");
+    let candidate = shaderpack_directory.join("BSL-ja.zip");
+    write_shaderpack_fixture_zip(&candidate);
+    opened
+        .writer()
+        .save_file_deployment(FileDeploymentRecord {
+            id: 0,
+            mod_unit_id: first_mod_unit_id(&opened),
+            target_path: "shaderpacks/BSL-ja.zip".to_owned(),
+            existed_before: false,
+            previous_sha256: None,
+            backup_path: None,
+            deployed_sha256: "deployed-hash".to_owned(),
+            deployed_at: "2026-10-30T00:00:00Z".to_owned(),
+            restored_at: None,
+        })
+        .expect("active file deployment should be saved");
+
+    let active_deployments = opened
+        .repository()
+        .list_file_deployments(false)
+        .expect("active deployments should load");
+    let deployment_paths = deployment_path_keys(
+        &game_directory,
+        active_deployments
+            .iter()
+            .map(|deployment| deployment.target_path.as_str()),
+    );
+    let empty = HashSet::new();
+    assert!(is_existing_instance_candidate(
+        &candidate,
+        None,
+        &empty,
+        &empty,
+        &deployment_paths,
+    ));
+
+    let case_variant = game_directory.join("SHADERPACKS/bsl-JA.ZIP");
+    assert_eq!(
+        is_existing_instance_candidate(&case_variant, None, &empty, &empty, &deployment_paths,),
+        cfg!(windows)
+    );
+
+    opened
+        .writer()
+        .mark_file_deployment_restored(active_deployments[0].id, "2026-10-30T00:01:00Z".to_owned())
+        .expect("deployment should be marked restored");
+    let restored_deployments = opened
+        .repository()
+        .list_file_deployments(false)
+        .expect("active deployments should load after restore");
+    let restored_paths = deployment_path_keys(
+        &game_directory,
+        restored_deployments
+            .iter()
+            .map(|deployment| deployment.target_path.as_str()),
+    );
+    assert!(!is_existing_instance_candidate(
+        &candidate,
+        None,
+        &empty,
+        &empty,
+        &restored_paths,
+    ));
+}
+
+#[test]
+fn duplicate_mod_id_is_skipped_while_other_units_in_the_batch_are_added() {
     let (temporary, mut opened) = create_addition_fixture();
     let source = temporary.0.join("candidate.jar");
     write_mod_identity_fixture_jar(&source, "new_fixture", "1.0.0", "First version");
@@ -248,25 +320,42 @@ fn identical_hash_is_skipped_and_known_mod_id_with_new_hash_is_rejected() {
 
     let update = temporary.0.join("candidate-update.jar");
     write_mod_identity_fixture_jar(&update, "new_fixture", "2.0.0", "Updated version");
-    let error = match add_project_sources_core(
+    let unique = temporary.0.join("unique.jar");
+    write_mod_identity_fixture_jar(&unique, "unique_fixture", "1.0.0", "Unique source");
+    let added = add_project_sources_core(
         &mut opened,
-        std::slice::from_ref(&update),
+        &[update, unique],
         &CancellationToken::default(),
         |_, _, _, _| {},
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("same Mod ID with a different hash should be rejected"),
-    };
-    assert_eq!(error.code, "mod_id_already_exists");
+    )
+    .expect("a duplicate Mod ID should be skipped without aborting the batch");
+    assert_eq!(
+        added.duplicate_mod_id_filenames,
+        vec!["candidate-update.jar"]
+    );
+    assert_eq!(added.added_unit_ids.len(), 1);
+    let units = opened
+        .repository()
+        .list_mod_units()
+        .expect("project units should remain readable");
+    assert_eq!(units.len(), 4);
+    assert!(units.iter().any(|unit| {
+        unit.id == added.added_unit_ids[0] && unit.source_filename == "unique.jar"
+    }));
+    assert!(
+        !units
+            .iter()
+            .any(|unit| unit.source_filename == "candidate-update.jar")
+    );
     assert_eq!(
         opened
             .repository()
-            .list_mod_units()
-            .expect("project should remain open")
+            .list_entries(Some(1))
+            .expect("existing translations should remain readable")
             .iter()
-            .map(|unit| unit.id)
-            .collect::<Vec<_>>(),
-        vec![1, 3, 4]
+            .find(|entry| entry.key == "message.hello")
+            .and_then(|entry| entry.target_text.as_deref()),
+        Some("保持する既存訳")
     );
     assert!(
         opened

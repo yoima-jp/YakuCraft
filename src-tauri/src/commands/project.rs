@@ -200,6 +200,7 @@ pub(crate) struct AddedProjectUnits {
     pub summary: ProjectSummary,
     pub added_unit_ids: Vec<i64>,
     pub duplicate_filenames: Vec<String>,
+    pub duplicate_mod_id_filenames: Vec<String>,
     pub ignored_filenames: Vec<String>,
     pub analyses: HashMap<i64, Arc<AnalysisData>>,
 }
@@ -506,6 +507,7 @@ pub enum AddUnitsChannelEvent {
         added: usize,
         added_unit_ids: Vec<i64>,
         duplicate_filenames: Vec<String>,
+        duplicate_mod_id_filenames: Vec<String>,
         ignored_filenames: Vec<String>,
     },
     Failed {
@@ -784,7 +786,7 @@ pub fn scan_project_instance_sources(
 ) -> Result<String, AppError> {
     let project_io_lock = Arc::clone(&state.project_io_lock);
     let active_project = Arc::clone(&state.active_project);
-    let (instance_root, existing_hashes, existing_paths) = {
+    let (instance_root, existing_hashes, existing_paths, deployment_targets) = {
         let _project_io = project_io_lock
             .lock()
             .map_err(|_| internal_state_error("Project file operations"))?;
@@ -820,7 +822,14 @@ pub fn scan_project_instance_sources(
             .iter()
             .map(|unit| path_key(Path::new(&unit.original_path)))
             .collect::<HashSet<_>>();
-        (instance_path, hashes, paths)
+        let deployment_targets = opened
+            .repository()
+            .list_file_deployments(false)
+            .map_err(|error| database_error(error.to_string()))?
+            .into_iter()
+            .map(|deployment| deployment.target_path)
+            .collect::<Vec<_>>();
+        (instance_path, hashes, paths, deployment_targets)
     };
 
     let job_id = Uuid::new_v4().to_string();
@@ -834,6 +843,10 @@ pub fn scan_project_instance_sources(
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let game_directory = resolve_instance_game_directory_for_addition(&instance_root);
+        let deployment_paths = deployment_path_keys(
+            &game_directory,
+            deployment_targets.iter().map(String::as_str),
+        );
         let mods_directory = game_directory.join("mods");
         let scan_result = if mods_directory.is_dir() {
             scan_mods_folder_core(
@@ -856,22 +869,26 @@ pub fn scan_project_instance_sources(
                 let results = results
                     .into_iter()
                     .filter(|result| {
-                        !result
-                            .sha256
-                            .as_ref()
-                            .is_some_and(|hash| existing_hashes.contains(hash))
-                            && !existing_paths.contains(&path_key(&result.path))
+                        !is_existing_instance_candidate(
+                            &result.path,
+                            result.sha256.as_deref(),
+                            &existing_hashes,
+                            &existing_paths,
+                            &deployment_paths,
+                        )
                     })
                     .collect();
                 let shaderpack_root = game_directory.join("shaderpacks");
                 let shaderpacks = scan_shaderpack_candidates(&game_directory, &shaderpack_root)
                     .into_iter()
                     .filter(|result| {
-                        !result
-                            .sha256
-                            .as_ref()
-                            .is_some_and(|hash| existing_hashes.contains(hash))
-                            && !existing_paths.contains(&path_key(&result.path))
+                        !is_existing_instance_candidate(
+                            &result.path,
+                            result.sha256.as_deref(),
+                            &existing_hashes,
+                            &existing_paths,
+                            &deployment_paths,
+                        )
                     })
                     .collect();
                 if cancellation.is_cancelled() {
@@ -931,10 +948,46 @@ fn resolve_instance_game_directory_for_addition(root: &Path) -> PathBuf {
 }
 
 fn path_key(path: &Path) -> String {
-    fs::canonicalize(path)
+    let key = fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
-        .into_owned()
+        .into_owned();
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+fn deployment_path_keys<'a>(
+    game_directory: &Path,
+    target_paths: impl IntoIterator<Item = &'a str>,
+) -> HashSet<String> {
+    target_paths
+        .into_iter()
+        .map(|target| {
+            let target = Path::new(target);
+            let path = if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                game_directory.join(target)
+            };
+            path_key(&path)
+        })
+        .collect()
+}
+
+fn is_existing_instance_candidate(
+    path: &Path,
+    sha256: Option<&str>,
+    existing_hashes: &HashSet<String>,
+    existing_paths: &HashSet<String>,
+    deployment_paths: &HashSet<String>,
+) -> bool {
+    sha256.is_some_and(|hash| existing_hashes.contains(hash)) || {
+        let key = path_key(path);
+        existing_paths.contains(&key) || deployment_paths.contains(&key)
+    }
 }
 
 #[tauri::command]
@@ -1048,6 +1101,7 @@ pub fn add_mod_units(
                 added: added.added_unit_ids.len(),
                 added_unit_ids: added.added_unit_ids,
                 duplicate_filenames: added.duplicate_filenames,
+                duplicate_mod_id_filenames: added.duplicate_mod_id_filenames,
                 ignored_filenames: added.ignored_filenames,
             },
             Err(error) => AddUnitsChannelEvent::Failed {
@@ -2557,6 +2611,7 @@ pub(crate) fn add_project_sources_core(
     let mut added_unit_ids = Vec::new();
     let mut analyses = HashMap::new();
     let mut duplicate_filenames = Vec::new();
+    let mut duplicate_mod_id_filenames = Vec::new();
 
     let add_result = (|| -> Result<(), AppError> {
         for (index, source) in sources.iter().enumerate() {
@@ -2573,7 +2628,7 @@ pub(crate) fn add_project_sources_core(
             };
             added_unit_ids.push(unit.id);
 
-            let analysis = analyze_and_save_project_unit(
+            let analysis = match analyze_and_save_project_unit(
                 opened,
                 &unit,
                 cancellation,
@@ -2595,7 +2650,21 @@ pub(crate) fn add_project_sources_core(
                     }
                     Ok(())
                 },
-            )?;
+            ) {
+                Ok(analysis) => analysis,
+                Err(error) if error.code == "mod_id_already_exists" => {
+                    let source_path = opened
+                        .repository()
+                        .mod_unit_source_path(unit.id)
+                        .map_err(|source| database_error(source.to_string()))?;
+                    remove_failed_mod_unit(opened, unit.id, &source_path, true)?;
+                    debug_assert_eq!(added_unit_ids.last(), Some(&unit.id));
+                    added_unit_ids.pop();
+                    duplicate_mod_id_filenames.push(filename);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             known_mod_ids.extend(
                 analysis
                     .result
@@ -2625,6 +2694,7 @@ pub(crate) fn add_project_sources_core(
         summary: opened.summary().clone(),
         added_unit_ids,
         duplicate_filenames,
+        duplicate_mod_id_filenames,
         ignored_filenames,
         analyses,
     })
@@ -2779,7 +2849,7 @@ pub(crate) fn create_project_from_source_inputs_core(
                         error.user_message
                     };
                     failures.push(ModImportFailure { filename, reason });
-                    remove_failed_mod_unit(&opened, unit.id, &source_path)?;
+                    remove_failed_mod_unit(&opened, unit.id, &source_path, false)?;
                 }
             }
         }
@@ -2867,11 +2937,15 @@ fn remove_failed_mod_unit(
     opened: &OpenedProject,
     mod_unit_id: i64,
     source_path: &Path,
+    preserve_project_name: bool,
 ) -> Result<(), AppError> {
-    opened
-        .writer()
-        .remove_mod_unit(mod_unit_id)
-        .map_err(|error| database_error(error.to_string()))?;
+    let writer = opened.writer();
+    let result = if preserve_project_name {
+        writer.remove_mod_unit_preserving_project_name(mod_unit_id)
+    } else {
+        writer.remove_mod_unit(mod_unit_id)
+    };
+    result.map_err(|error| database_error(error.to_string()))?;
     if let Err(error) = std::fs::remove_file(source_path) {
         tracing::warn!(mod_unit_id, %error, "failed JAR copy could not be removed");
     }
