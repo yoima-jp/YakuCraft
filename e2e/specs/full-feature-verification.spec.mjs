@@ -336,10 +336,31 @@ async function restoreFileDeploymentFor(pathFragment, expectRestored = true) {
   assert.fail(`配置済みファイル「${pathFragment}」が見つかりません。`);
 }
 
+async function confirmExportDialogs(initialLabel) {
+  await $('[role="dialog"]').waitForDisplayed({ timeout: 30_000 });
+  let confirmLabel = initialLabel;
+  while (true) {
+    const previousText = await $('[role="dialog"]').getText();
+    await $(`button=${confirmLabel}`).click();
+    await browser.waitUntil(async () => (
+      !await $('[role="dialog"]').isDisplayed().catch(() => false)
+      || await $('[role="dialog"]').getText().catch(() => "") !== previousText
+      || await $(".export-completion h1").isDisplayed()
+      || await $(".export-screen [role='alert']").isDisplayed()
+    ), { timeout: 90_000, interval: 100, timeoutMsg: "確認後の書き出し結果が表示されませんでした。" });
+    const currentDialog = await $('[role="dialog"]');
+    if (!await currentDialog.isDisplayed().catch(() => false)) return;
+    const buttons = await currentDialog.$$("button");
+    confirmLabel = await buttons[1].getText();
+    assert.equal(confirmLabel, "上書き", "想定外の書き出し確認が表示されました。");
+  }
+}
+
 async function directModpackExport() {
   await chooseExportKind("modpackFiles");
   await $('[name="modpack-files-destination"][value="instance"]').click();
   await $('[data-testid="export-start"]').click();
+  await confirmExportDialogs("配置");
 }
 
 describe("全機能の動作確認", () => {
@@ -670,7 +691,6 @@ describe("全機能の動作確認", () => {
       await chooseExportKind("modpackFiles");
       await selectOnlyExportUnit(modpackTabName);
       await $('[name="modpack-files-destination"][value="instance"]').click();
-      await browser.execute(() => { window.confirm = () => true; });
       const symlinkTarget = path.join(temporaryRoot, "symlink-target.json");
       const kubeTargetPath = path.join(fixtures.singleInstance, "kubejs/assets/fixture/lang/ja_jp.json");
       let symlinkAvailable = false;
@@ -695,6 +715,7 @@ describe("全機能の動作確認", () => {
       const existingFtbPath = path.join(fixtures.singleInstance, "config/ftbquests/quests/lang/ja_jp.snbt");
       const originalFtbBytes = await readFile(existingFtbPath);
       await $('[data-testid="export-start"]').click();
+      await confirmExportDialogs("配置");
       await waitForExportCompletion();
       assert.equal(await readFile(kubeTargetPath, "utf8").then((value) => JSON.parse(value)["item.fixture.widget"]), "AI local translation");
       assert.match(await readFile(existingFtbPath, "utf8"), /&a遺物を探す/);

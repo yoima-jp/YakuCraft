@@ -516,6 +516,10 @@
   gap: var(--spacing-sm);
 }
 
+.dialog-confirmation__message {
+  white-space: pre-line;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .disclosure__icon,
   .tooltip__content,

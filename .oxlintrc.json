@@ -3,6 +3,7 @@
   "plugins": ["typescript", "react", "react-hooks", "jsx-a11y"],
   "rules": {
     "no-unused-vars": "error",
+    "no-alert": "error",
     "typescript/no-unused-vars": "error",
     "react-hooks/rules-of-hooks": "error"
   }
