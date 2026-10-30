@@ -42,5 +42,5 @@ export type AnalysisChannelEvent =
 
 export type AddUnitsChannelEventDto =
   | { kind: "progress"; jobId: string; progress: AnalysisProgressDto; modIndex: number; modCount: number; modFilename: string }
-  | { kind: "completed"; jobId: string; added: number; addedUnitIds: number[]; duplicateFilenames: string[]; ignoredFilenames: string[] }
+  | { kind: "completed"; jobId: string; added: number; addedUnitIds: number[]; duplicateFilenames: string[]; duplicateModIdFilenames: string[]; ignoredFilenames: string[] }
   | { kind: "failed"; jobId: string; error: AppError };

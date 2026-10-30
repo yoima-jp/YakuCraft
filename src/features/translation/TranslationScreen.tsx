@@ -349,6 +349,9 @@ export function TranslationScreen() {
       if (event.duplicateFilenames.length > 0) {
         messages.push(event.added === 0 ? "同じファイルは追加済みです" : "同じファイルをスキップしました");
       }
+      if (event.duplicateModIdFilenames.length > 0) {
+        messages.push("Mod ID が重複する項目をスキップしました");
+      }
       if (event.ignoredFilenames.length > 0) messages.push("対象外の項目を除外しました");
       setAddNotice(messages.join("。"));
       setModActionError(null);
