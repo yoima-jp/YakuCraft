@@ -143,11 +143,21 @@ pub struct NestedArchiveInfo {
 }
 
 /// Fatalでない解析上の問題。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnalysisWarningKind {
+    ParseFailure,
+    ReadFailure,
+    DuplicateKey,
+    Other,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisWarning {
     pub container_path: String,
     pub path: String,
+    pub kind: AnalysisWarningKind,
     pub message: String,
 }
 
@@ -285,19 +295,26 @@ pub struct ReviewMergeResult {
 pub enum AnalysisError {
     #[error(transparent)]
     Archive(#[from] ArchiveError),
-    #[error("JARのSHA-256を読み取れません: {0}")]
+    #[error("{}", yc_locale::t!("analysis.hash_io", error = .0))]
     HashIo(#[source] std::io::Error),
-    #[error("言語ファイルが見つかりません")]
+    #[error("{}", yc_locale::t!("analysis.no_language_files"))]
     NoLanguageFiles,
-    #[error("modsフォルダを読み取れません: {path}: {source}")]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "analysis.scan_folder_io",
+            path = .path.display(),
+            error = .source
+        )
+    )]
     ScanFolderIo {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    #[error("シェーダーパックを解析できません: {0}")]
+    #[error("{}", yc_locale::t!("analysis.shaderpack_error", error = .0))]
     Shaderpack(String),
-    #[error("解析はキャンセルされました")]
+    #[error("{}", yc_locale::t!("analysis.cancelled"))]
     Cancelled,
 }
 
@@ -356,10 +373,25 @@ pub fn analyze_shaderpack_with_target_locale(
         total_read_bytes = total_read_bytes.saturating_add(bytes.len() as u64);
         let parsed = yc_shaderpack::parse_lang(&bytes);
         for warning in &parsed.warnings {
+            let (kind, message) = match warning {
+                yc_shaderpack::LangParseWarning::InvalidUtf8 => (
+                    AnalysisWarningKind::Other,
+                    yc_locale::t!("packaging.shaderpack_invalid_utf8"),
+                ),
+                yc_shaderpack::LangParseWarning::InvalidUnicodeEscape => (
+                    AnalysisWarningKind::Other,
+                    yc_locale::t!("packaging.shaderpack_invalid_unicode_escape"),
+                ),
+                yc_shaderpack::LangParseWarning::DuplicateKey { key } => (
+                    AnalysisWarningKind::DuplicateKey,
+                    yc_locale::t!("packaging.shaderpack_duplicate_key", key = key),
+                ),
+            };
             warnings.push(AnalysisWarning {
                 container_path: String::new(),
                 path: file.path.clone(),
-                message: warning.clone(),
+                kind,
+                message,
             });
         }
         let mut entries = IndexMap::new();
@@ -396,12 +428,12 @@ pub fn analyze_shaderpack_with_target_locale(
             warnings: parsed
                 .warnings
                 .iter()
-                .filter_map(|warning| {
-                    warning.strip_prefix("duplicate key: ").map(|key| {
-                        LanguageParseWarning::DuplicateKey {
-                            key: key.to_owned(),
-                        }
-                    })
+                .filter_map(|warning| match warning {
+                    yc_shaderpack::LangParseWarning::DuplicateKey { key } => {
+                        Some(LanguageParseWarning::DuplicateKey { key: key.clone() })
+                    }
+                    yc_shaderpack::LangParseWarning::InvalidUtf8
+                    | yc_shaderpack::LangParseWarning::InvalidUnicodeEscape => None,
                 })
                 .collect(),
             legacy_parse_escapes: false,
@@ -490,9 +522,9 @@ fn read_shaderpack_lang_file(
 }
 
 fn shaderpack_lang_limit_error(path: &str, limit: u64) -> AnalysisError {
-    AnalysisError::Shaderpack(format!(
-        "langファイルの読み込み上限（{limit} bytes）を超えています: {path}"
-    ))
+    AnalysisError::Shaderpack(
+        yc_locale::t!("analysis.shaderpack_lang_limit", limit = limit, path = path).to_string(),
+    )
 }
 
 /// JARを検証し、メタデータと言語ファイルをメモリ上へ解析する。
@@ -533,11 +565,20 @@ fn analyze_jar_with_limits(
     let mut progress = ProgressReporter::new(on_progress);
     ensure_not_cancelled(cancellation)?;
 
-    progress.begin(AnalysisStage::ValidateJar, Some(1), "JARを検証しています");
+    progress.begin(
+        AnalysisStage::ValidateJar,
+        Some(1),
+        &yc_locale::t!("analysis.progress_validate_jar"),
+    );
     ensure_not_cancelled(cancellation)?;
     let mut root = Archive::open_with_limits(path, limits.clone())?;
     let is_signed = root.is_signed();
-    progress.finish(AnalysisStage::ValidateJar, 1, Some(1), "JARを検証しました");
+    progress.finish(
+        AnalysisStage::ValidateJar,
+        1,
+        Some(1),
+        &yc_locale::t!("analysis.progress_validate_jar_done"),
+    );
 
     let sha256 = hash_source(path, cancellation, &mut progress)?;
 
@@ -545,7 +586,7 @@ fn analyze_jar_with_limits(
     progress.begin(
         AnalysisStage::ScanZipPaths,
         Some(root.list_entries().len() as u64),
-        "ZIP内のパスを調べています",
+        &yc_locale::t!("analysis.progress_scan_zip_paths"),
     );
     let root_paths = scan_paths(
         &root,
@@ -559,7 +600,7 @@ fn analyze_jar_with_limits(
     progress.begin(
         AnalysisStage::ParseMetadata,
         Some(1),
-        "Mod情報を解析しています",
+        &yc_locale::t!("analysis.progress_parse_metadata"),
     );
     ensure_not_cancelled(cancellation)?;
     let metadata_paths = paths_for_metadata(&root_paths, cancellation)?;
@@ -574,10 +615,14 @@ fn analyze_jar_with_limits(
         AnalysisStage::ParseMetadata,
         1,
         Some(1),
-        "Mod情報を解析しました",
+        &yc_locale::t!("analysis.progress_parse_metadata_done"),
     );
 
-    progress.begin(AnalysisStage::ScanNestedJars, None, "同梱JARを調べています");
+    progress.begin(
+        AnalysisStage::ScanNestedJars,
+        None,
+        &yc_locale::t!("analysis.progress_scan_nested_jars"),
+    );
     ensure_not_cancelled(cancellation)?;
     let mut opened_nested = Vec::new();
     let mut nested_info = Vec::new();
@@ -599,7 +644,7 @@ fn analyze_jar_with_limits(
             AnalysisStage::ScanNestedJars,
             nested_work,
             None,
-            "同梱JARを調べています",
+            &yc_locale::t!("analysis.progress_scan_nested_jars"),
         );
         match inspect_nested_archive(candidate, cancellation, &mut progress, &mut nested_work)? {
             InspectedNested::Opened(opened) => {
@@ -612,7 +657,8 @@ fn analyze_jar_with_limits(
                     warnings.push(AnalysisWarning {
                         container_path: String::new(),
                         path: info.archive_path.clone(),
-                        message: format!("同梱JARを解析しませんでした: {reason}"),
+                        kind: AnalysisWarningKind::Other,
+                        message: yc_locale::t!("analysis.nested_archive_skipped", reason = reason),
                     });
                 }
                 nested_info.push(info);
@@ -623,13 +669,13 @@ fn analyze_jar_with_limits(
         AnalysisStage::ScanNestedJars,
         nested_work,
         Some(nested_work),
-        "同梱JARを調べました",
+        &yc_locale::t!("analysis.progress_scan_nested_jars_done"),
     );
 
     progress.begin(
         AnalysisStage::DiscoverNamespaces,
         None,
-        "namespaceを調べています",
+        &yc_locale::t!("analysis.progress_discover_namespaces"),
     );
     ensure_not_cancelled(cancellation)?;
     let mut namespaces =
@@ -638,7 +684,7 @@ fn analyze_jar_with_limits(
         AnalysisStage::DiscoverNamespaces,
         namespaces.len() as u64,
         Some(namespaces.len() as u64),
-        "namespaceを調べました",
+        &yc_locale::t!("analysis.progress_discover_namespaces_done"),
     );
 
     ensure_not_cancelled(cancellation)?;
@@ -646,7 +692,7 @@ fn analyze_jar_with_limits(
     progress.begin(
         AnalysisStage::ParseLanguages,
         Some(language_paths.len() as u64),
-        "言語ファイルを解析しています",
+        &yc_locale::t!("analysis.progress_parse_languages"),
     );
     ensure_not_cancelled(cancellation)?;
     if language_paths.is_empty() {
@@ -654,7 +700,7 @@ fn analyze_jar_with_limits(
             AnalysisStage::ParseLanguages,
             0,
             Some(0),
-            "言語ファイルがありません",
+            &yc_locale::t!("analysis.progress_no_language_files"),
         );
     }
     for info in &mut nested_info {
@@ -693,7 +739,11 @@ fn analyze_jar_with_limits(
                     warnings.push(AnalysisWarning {
                         container_path: file.container_path.clone(),
                         path: file.archive_path.clone(),
-                        message: format!("言語ファイルを解析できませんでした: {error}"),
+                        kind: AnalysisWarningKind::ParseFailure,
+                        message: yc_locale::t!(
+                            "analysis.language_file_parse_failed",
+                            error = error
+                        ),
                     });
                     0
                 }
@@ -702,7 +752,8 @@ fn analyze_jar_with_limits(
                 warnings.push(AnalysisWarning {
                     container_path: file.container_path.clone(),
                     path: file.archive_path.clone(),
-                    message: format!("言語ファイルを読み取れませんでした: {error}"),
+                    kind: AnalysisWarningKind::ReadFailure,
+                    message: yc_locale::t!("analysis.language_file_read_failed", error = error),
                 });
                 0
             }
@@ -719,14 +770,14 @@ fn analyze_jar_with_limits(
             AnalysisStage::ParseLanguages,
             (index + 1) as u64,
             Some(total_languages),
-            "言語ファイルを解析しています",
+            &yc_locale::t!("analysis.progress_parse_languages"),
         );
     }
     progress.finish(
         AnalysisStage::ParseLanguages,
         language_summaries.len() as u64,
         Some(language_summaries.len() as u64),
-        "言語ファイルを解析しました",
+        &yc_locale::t!("analysis.progress_parse_languages_done"),
     );
 
     let target_locale = normalize_locale(target_locale);
@@ -781,7 +832,7 @@ fn analyze_jar_with_limits(
     progress.begin(
         AnalysisStage::DetectTargetTranslation,
         Some(3),
-        "翻訳元と言語の件数を調べています",
+        &yc_locale::t!("analysis.progress_detect_source_language"),
     );
     ensure_not_cancelled(cancellation)?;
     let mut default_settings = ReviewSettings {
@@ -818,7 +869,7 @@ fn analyze_jar_with_limits(
         AnalysisStage::DetectTargetTranslation,
         1,
         Some(3),
-        "翻訳元を推奨しました",
+        &yc_locale::t!("analysis.progress_recommended_source_language"),
     );
     default_settings.source_locale = recommendation.clone().unwrap_or_default();
     let existing_target_translation_count = count_existing_target_cancellable(
@@ -842,7 +893,7 @@ fn analyze_jar_with_limits(
         AnalysisStage::DetectTargetTranslation,
         2,
         Some(3),
-        "既存の日本語訳を数えました",
+        &yc_locale::t!("analysis.progress_counted_existing_target"),
     );
     let missing_source_keys_count = count_missing_source_keys_cancellable(
         &parsed_languages,
@@ -855,13 +906,13 @@ fn analyze_jar_with_limits(
         AnalysisStage::DetectTargetTranslation,
         3,
         Some(3),
-        "翻訳元にないキーを数えました",
+        &yc_locale::t!("analysis.progress_counted_missing_source_keys"),
     );
     progress.finish(
         AnalysisStage::DetectTargetTranslation,
         3,
         Some(3),
-        "翻訳元と言語の件数を調べました",
+        &yc_locale::t!("analysis.progress_detect_source_language_done"),
     );
 
     Ok(AnalysisData {
@@ -1039,7 +1090,7 @@ fn inspect_nested_archive(
         return Ok(skipped_nested(
             archive_path,
             candidate.skipped_reason.map_or_else(
-                || "Nested JARを開けませんでした".to_owned(),
+                || yc_locale::t!("analysis.nested_jar_open_failed"),
                 |reason| reason.to_string(),
             ),
         ));
@@ -1055,7 +1106,7 @@ fn inspect_nested_archive(
             AnalysisStage::ScanNestedJars,
             *work_current,
             None,
-            &format!("同梱JAR内を調べています: {archive_path}"),
+            &yc_locale::t!("analysis.progress_scan_nested_archive", path = archive_path),
         );
     }
     paths.sort();
@@ -1130,7 +1181,11 @@ fn collect_patchouli_data(
                 Err(error) => warnings.push(AnalysisWarning {
                     container_path: container_path.clone(),
                     path: path.clone(),
-                    message: format!("Patchouli文書を読み取れませんでした: {error}"),
+                    kind: AnalysisWarningKind::Other,
+                    message: yc_locale::t!(
+                        "analysis.patchouli_document_read_failed",
+                        error = error
+                    ),
                 }),
             }
         }
@@ -1153,7 +1208,11 @@ fn collect_patchouli_data(
             warnings.push(AnalysisWarning {
                 container_path: container_path.clone(),
                 path: warning.path,
-                message: format!("Patchouliの解析を続けられませんでした: {}", warning.reason),
+                kind: AnalysisWarningKind::Other,
+                message: yc_locale::t!(
+                    "analysis.patchouli_parse_continued",
+                    reason = warning.reason
+                ),
             });
         }
         for book in discovery.books {
@@ -1171,9 +1230,10 @@ fn collect_patchouli_data(
                     warnings.push(AnalysisWarning {
                         container_path: container_path.clone(),
                         path: warning.path,
-                        message: format!(
-                            "Patchouliの解析を続けられませんでした: {}",
-                            warning.reason
+                        kind: AnalysisWarningKind::Other,
+                        message: yc_locale::t!(
+                            "analysis.patchouli_parse_continued",
+                            reason = warning.reason
                         ),
                     });
                 }
@@ -1183,9 +1243,10 @@ fn collect_patchouli_data(
                     warnings.push(AnalysisWarning {
                         container_path: container_path.clone(),
                         path: warning.path,
-                        message: format!(
-                            "Patchouliの解析を続けられませんでした: {}",
-                            warning.reason
+                        kind: AnalysisWarningKind::Other,
+                        message: yc_locale::t!(
+                            "analysis.patchouli_parse_continued",
+                            reason = warning.reason
                         ),
                     });
                 }
@@ -1266,7 +1327,7 @@ fn scan_paths<R: Read + std::io::Seek>(
             AnalysisStage::ScanZipPaths,
             (index + 1) as u64,
             total,
-            "ZIP内のパスを調べています",
+            &yc_locale::t!("analysis.progress_scan_zip_paths"),
         );
     }
     ensure_not_cancelled(cancellation)?;
@@ -1276,14 +1337,15 @@ fn scan_paths<R: Read + std::io::Seek>(
         warnings.push(AnalysisWarning {
             container_path: container_path.to_owned(),
             path: sample,
-            message: format!("安全制限により{count}件のEntryを除外しました（{label}）"),
+            kind: AnalysisWarningKind::Other,
+            message: yc_locale::t!("analysis.excluded_entries", count = count, label = label),
         });
     }
     progress.finish(
         AnalysisStage::ScanZipPaths,
         entries.len() as u64,
         total,
-        "ZIP内のパスを調べました",
+        &yc_locale::t!("analysis.progress_scan_zip_paths_done"),
     );
     Ok(paths)
 }
@@ -1362,7 +1424,7 @@ fn discover_namespaces(
             AnalysisStage::DiscoverNamespaces,
             current,
             Some(total),
-            "namespaceを調べています",
+            &yc_locale::t!("analysis.progress_discover_namespaces"),
         );
     }
     for archive in nested {
@@ -1381,7 +1443,7 @@ fn discover_namespaces(
                 AnalysisStage::DiscoverNamespaces,
                 current,
                 Some(total),
-                "namespaceを調べています",
+                &yc_locale::t!("analysis.progress_discover_namespaces"),
             );
         }
     }
@@ -1459,7 +1521,9 @@ fn read_language_file(
         let index = nested_indices
             .get(file.container_path.as_str())
             .copied()
-            .ok_or_else(|| format!("Nested JARが見つかりません: {}", file.container_path))?;
+            .ok_or_else(|| {
+                yc_locale::t!("analysis.nested_jar_not_found", path = file.container_path)
+            })?;
         nested[index]
             .archive
             .read_entry(&file.archive_path, EntryKind::Text)
@@ -1477,6 +1541,7 @@ fn add_metadata_warnings(
     warnings.extend(metadata.warnings.iter().map(|warning| AnalysisWarning {
         container_path: container_path.to_owned(),
         path: warning.path.clone(),
+        kind: AnalysisWarningKind::Other,
         message: warning.message.clone(),
     }));
 }
@@ -1490,7 +1555,8 @@ fn add_loader_warnings(warnings: &mut Vec<AnalysisWarning>, metadata: &MetadataA
         warnings.push(AnalysisWarning {
             container_path: String::new(),
             path: String::new(),
-            message: "Mod Loaderを特定できませんでした。言語ファイルの解析は続行します".to_owned(),
+            kind: AnalysisWarningKind::Other,
+            message: yc_locale::t!("analysis.loader_unknown"),
         });
     }
     if !metadata.mods.is_empty()
@@ -1502,24 +1568,28 @@ fn add_loader_warnings(warnings: &mut Vec<AnalysisWarning>, metadata: &MetadataA
         warnings.push(AnalysisWarning {
             container_path: String::new(),
             path: String::new(),
-            message: "Minecraft versionを特定できませんでした".to_owned(),
+            kind: AnalysisWarningKind::Other,
+            message: yc_locale::t!("analysis.minecraft_version_unknown"),
         });
     }
 }
 
 fn add_language_parse_warnings(warnings: &mut Vec<AnalysisWarning>, file: &ParsedLanguageFile) {
     for warning in &file.warnings {
-        let message = match warning {
-            LanguageParseWarning::DuplicateKey { key } => {
-                format!("重複キー「{key}」は最後の値を使用しました")
-            }
-            LanguageParseWarning::EncodingFallback { encoding } => {
-                format!("UTF-8以外のため{encoding}として読み込みました")
-            }
+        let (kind, message) = match warning {
+            LanguageParseWarning::DuplicateKey { key } => (
+                AnalysisWarningKind::DuplicateKey,
+                yc_locale::t!("analysis.duplicate_key", key = key),
+            ),
+            LanguageParseWarning::EncodingFallback { encoding } => (
+                AnalysisWarningKind::Other,
+                yc_locale::t!("analysis.encoding_fallback", encoding = encoding),
+            ),
         };
         warnings.push(AnalysisWarning {
             container_path: file.file.container_path.clone(),
             path: file.file.archive_path.clone(),
+            kind,
             message,
         });
     }
@@ -1755,7 +1825,7 @@ fn hash_source(
     progress.begin(
         AnalysisStage::Sha256,
         Some(total),
-        "SHA-256を計算しています",
+        &yc_locale::t!("analysis.progress_hash"),
     );
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; HASH_BUFFER_SIZE];
@@ -1772,7 +1842,7 @@ fn hash_source(
             AnalysisStage::Sha256,
             current,
             Some(total),
-            "SHA-256を計算しています",
+            &yc_locale::t!("analysis.progress_hash"),
         );
     }
     ensure_not_cancelled(cancellation)?;
@@ -1780,7 +1850,7 @@ fn hash_source(
         AnalysisStage::Sha256,
         current,
         Some(total),
-        "SHA-256を計算しました",
+        &yc_locale::t!("analysis.progress_hash_done"),
     );
     Ok(hasher
         .finalize()

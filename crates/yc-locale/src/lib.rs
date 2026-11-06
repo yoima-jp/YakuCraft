@@ -67,7 +67,7 @@ pub fn ui_language() -> UiLanguage {
 
 type Catalog = std::collections::HashMap<String, std::collections::HashMap<String, String>>;
 
-const MESSAGE_SOURCES: [&str; 12] = [
+const MESSAGE_SOURCES: [&str; 14] = [
     include_str!("../messages/common.json"),
     include_str!("../messages/project.json"),
     include_str!("../messages/analysis.json"),
@@ -80,6 +80,8 @@ const MESSAGE_SOURCES: [&str; 12] = [
     include_str!("../messages/settings.json"),
     include_str!("../messages/language.json"),
     include_str!("../messages/metadata.json"),
+    include_str!("../messages/storage.json"),
+    include_str!("../messages/packaging.json"),
 ];
 
 static CATALOGS: [OnceLock<Catalog>; MESSAGE_SOURCES.len()] =
@@ -106,6 +108,8 @@ fn namespace_index(namespace: &str) -> Option<usize> {
         "settings" => Some(9),
         "language" => Some(10),
         "metadata" => Some(11),
+        "storage" => Some(12),
+        "packaging" => Some(13),
         _ => None,
     }
 }

@@ -262,7 +262,7 @@ pub fn export_resource_pack(
 /// Resolve the human-readable name used for combined pack files and metadata.
 pub fn merged_resource_pack_display_name(project_name: &str) -> &str {
     let project_name = project_name.trim();
-    if project_name.is_empty() || is_generated_mod_project_name(project_name) {
+    if project_name.is_empty() || yc_locale::is_auto_project_name(project_name) {
         "YakuCraft"
     } else {
         project_name
@@ -287,12 +287,6 @@ pub fn merged_resource_pack_filename(mods: &[MergedPackMod<'_>], project_name: &
         filename_component(merged_resource_pack_display_name(project_name)),
         resource_pack_suffix(target_locale),
     )
-}
-
-fn is_generated_mod_project_name(name: &str) -> bool {
-    name.strip_suffix(" 個の mod").is_some_and(|count| {
-        !count.is_empty() && count.chars().all(|character| character.is_ascii_digit())
-    })
 }
 
 /// Export translations from multiple mods as one resource pack.

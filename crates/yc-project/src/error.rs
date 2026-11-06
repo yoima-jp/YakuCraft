@@ -6,54 +6,90 @@ pub type Result<T> = std::result::Result<T, ProjectError>;
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
-    #[error("ファイル操作に失敗しました: {0}")]
+    #[error("{}", yc_locale::t!("storage.io", error = .0))]
     Io(#[from] io::Error),
-    #[error("SQLite操作に失敗しました: {0}")]
+    #[error("{}", yc_locale::t!("storage.sqlite", error = .0))]
     Sqlite(#[from] rusqlite::Error),
-    #[error("JSONを読み書きできません: {}", yc_language::parse_error_detail(&format!("JSON {:?}", .0.classify()), "<unknown>", .0.line(), .0.column()))]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "storage.json_read_write",
+            detail = yc_language::parse_error_detail(
+                &format!("JSON {:?}", .0.classify()),
+                "<unknown>",
+                .0.line(),
+                .0.column()
+            )
+        )
+    )]
     Json(#[from] serde_json::Error),
-    #[error("JSONを読み書きできません: {}", yc_language::parse_error_detail(&format!("JSON {:?}", .source.classify()), &.path.to_string_lossy(), .source.line(), .source.column()))]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "storage.json_read_write",
+            detail = yc_language::parse_error_detail(
+                &format!("JSON {:?}", .source.classify()),
+                &.path.to_string_lossy(),
+                .source.line(),
+                .source.column()
+            )
+        )
+    )]
     JsonFile {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
     },
-    #[error("用語集CSVを読み書きできません: {0}")]
+    #[error("{}", yc_locale::t!("storage.glossary_csv", error = .0))]
     Csv(#[from] csv::Error),
-    #[error("時刻を処理できません: {0}")]
+    #[error("{}", yc_locale::t!("storage.time_format", error = .0))]
     TimeFormat(#[from] time::error::Format),
-    #[error("時刻を解析できません: {0}")]
+    #[error("{}", yc_locale::t!("storage.time_parse", error = .0))]
     TimeParse(#[from] time::error::Parse),
-    #[error("source JARのSHA-256を計算できません: {0}")]
+    #[error("{}", yc_locale::t!("storage.source_jar_hash", error = .0))]
     Archive(#[from] yc_archive::ArchiveError),
-    #[error("Project IDがUUIDではありません: {0}")]
+    #[error("{}", yc_locale::t!("storage.invalid_project_id", id = .0))]
     InvalidProjectId(String),
-    #[error("Projectが見つかりません: {0}")]
+    #[error("{}", yc_locale::t!("storage.project_not_found", path = .0.display()))]
     ProjectNotFound(PathBuf),
-    #[error("Projectを削除用フォルダーへ移動できません: {0}")]
+    #[error("{}", yc_locale::t!("storage.project_delete_rename", error = .0))]
     ProjectDeleteRename(#[source] io::Error),
-    #[error("Projectは別プロセスですでに開かれています")]
+    #[error("{}", yc_locale::t!("storage.project_already_open"))]
     ProjectAlreadyOpen,
-    #[error("最後のmodはプロジェクトから外せません。")]
+    #[error("{}", yc_locale::t!("storage.last_mod_unit"))]
     LastModUnit,
     #[error("{0}")]
     InvalidProjectName(String),
-    #[error("project.lockの内容を読み取れません")]
+    #[error("{}", yc_locale::t!("storage.invalid_lock_record"))]
     InvalidLockRecord,
-    #[error("DBのschema version {current}はこのアプリでは扱えません (最大 {maximum})")]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "storage.unsupported_schema_version",
+            current = current,
+            maximum = maximum
+        )
+    )]
     UnsupportedSchemaVersion { current: u32, maximum: usize },
-    #[error("migration {migration} を適用できません: {source}")]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "storage.migration_failed",
+            migration = migration,
+            error = .source
+        )
+    )]
     Migration {
         migration: String,
         #[source]
         source: rusqlite::Error,
     },
-    #[error("DBの値が不正です: {0}")]
+    #[error("{}", yc_locale::t!("storage.invalid_database_value", value = .0))]
     InvalidDatabaseValue(String),
-    #[error("translation entryが見つかりません: {0}")]
+    #[error("{}", yc_locale::t!("storage.entry_not_found", id = .0))]
     EntryNotFound(i64),
-    #[error("Project writer threadを開始できません: {0}")]
+    #[error("{}", yc_locale::t!("storage.writer_startup", error = .0))]
     WriterStartup(String),
-    #[error("Project writer threadが停止しています")]
+    #[error("{}", yc_locale::t!("storage.writer_stopped"))]
     WriterStopped,
 }

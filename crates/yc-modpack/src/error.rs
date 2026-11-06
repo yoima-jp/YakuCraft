@@ -2,9 +2,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ModpackError {
-    #[error("unsafe or invalid instance-relative path: {0}")]
+    #[error("{}", yc_locale::t!("packaging.modpack_invalid_path", path = .0))]
     InvalidPath(String),
-    #[error("invalid FTB Quests SNBT in {path} at byte {offset}: {message}")]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "packaging.modpack_invalid_snbt",
+            path = path,
+            offset = offset,
+            message = message
+        )
+    )]
     Snbt {
         path: String,
         offset: usize,
@@ -12,13 +20,23 @@ pub enum ModpackError {
         column: usize,
         message: String,
     },
-    #[error("invalid KubeJS language JSON in {path}: {source}")]
+    #[error(
+        "{}",
+        yc_locale::t!(
+            "packaging.modpack_invalid_json",
+            path = path,
+            error = .source
+        )
+    )]
     Json {
         path: String,
         #[source]
         source: serde_json::Error,
     },
-    #[error("KubeJS language file {0} must be a JSON object containing only string values")]
+    #[error(
+        "{}",
+        yc_locale::t!("packaging.modpack_language_json_object", path = .0)
+    )]
     InvalidLanguageJson(String),
 }
 

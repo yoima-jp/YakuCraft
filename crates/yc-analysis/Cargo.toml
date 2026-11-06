@@ -10,6 +10,7 @@ yc-archive = { path = "../yc-archive" }
 yc-metadata = { path = "../yc-metadata" }
 yc-language = { path = "../yc-language" }
 yc-shaderpack = { path = "../yc-shaderpack" }
+yc-locale = { path = "../yc-locale" }
 indexmap = "2"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"

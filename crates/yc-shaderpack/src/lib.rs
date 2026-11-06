@@ -34,7 +34,13 @@ pub struct ParsedLang {
     pub entries: Vec<(String, String)>,
     /// Propertiesで解釈したキーから、元ファイルに書かれたキー表記への対応。
     pub raw_keys: HashMap<String, String>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<LangParseWarning>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LangParseWarning {
+    InvalidUtf8,
+    InvalidUnicodeEscape,
+    DuplicateKey { key: String },
 }
 
 fn safe(name: &str) -> bool {
@@ -59,7 +65,7 @@ fn archive_root<R: Read + io::Seek>(zip: &mut ZipArchive<R>) -> Result<Option<St
         let entry = zip.by_index_raw(i)?;
         let name = entry.name()?.into_owned();
         if !safe(&name) {
-            return Err(format!("unsafe ZIP path: {name}").into());
+            return Err(yc_locale::t!("packaging.shaderpack_unsafe_zip_path", path = name).into());
         }
         if let Some(root) = root_for(&name) {
             if root.is_empty() {
@@ -87,7 +93,7 @@ pub fn analyze_source(source: &ShaderPackSource) -> Result<Analysis> {
         ShaderPackSource::Folder(path) => path,
     };
     if !path.join("shaders").is_dir() {
-        return Err("shaders directory not found".into());
+        return Err(yc_locale::t!("packaging.shaderpack_directory_missing").into());
     }
     let lang_dir = path.join("shaders/lang");
     let mut files = Vec::new();
@@ -103,13 +109,16 @@ pub fn analyze_source(source: &ShaderPackSource) -> Result<Analysis> {
                 let filename = entry
                     .file_name()
                     .into_string()
-                    .map_err(|_| "non-UTF-8 filename")?;
+                    .map_err(|_| yc_locale::t!("packaging.shaderpack_non_utf8_filename"))?;
                 if !filename.to_ascii_lowercase().ends_with(".lang") {
                     continue;
                 }
                 let locale = filename[..filename.len() - 5].to_lowercase();
                 if !seen.insert(locale.clone()) {
-                    warnings.push(format!("duplicate locale: {locale}"));
+                    warnings.push(yc_locale::t!(
+                        "packaging.shaderpack_duplicate_locale",
+                        locale = locale
+                    ));
                 }
                 files.push(LangFile {
                     path: format!("shaders/lang/{filename}"),
@@ -134,7 +143,8 @@ pub fn analyze_source(source: &ShaderPackSource) -> Result<Analysis> {
 }
 pub fn analyze_zip(path: &Path) -> Result<Analysis> {
     let mut zip = ZipArchive::new(File::open(path)?)?;
-    let root = archive_root(&mut zip)?.ok_or("shaders directory not found")?;
+    let root = archive_root(&mut zip)?
+        .ok_or_else(|| yc_locale::t!("packaging.shaderpack_directory_missing"))?;
     let prefix = format!("{root}shaders/lang/");
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -143,7 +153,7 @@ pub fn analyze_zip(path: &Path) -> Result<Analysis> {
         let entry = zip.by_index_raw(i)?;
         let name = entry.name()?.into_owned();
         if !safe(&name) {
-            return Err(format!("unsafe ZIP path: {name}").into());
+            return Err(yc_locale::t!("packaging.shaderpack_unsafe_zip_path", path = name).into());
         }
         if let Some(filename) = name.strip_prefix(&prefix)
             && !filename.contains('/')
@@ -151,7 +161,10 @@ pub fn analyze_zip(path: &Path) -> Result<Analysis> {
         {
             let locale = filename[..filename.len() - 5].to_lowercase();
             if !seen.insert(locale.clone()) {
-                warnings.push(format!("duplicate locale: {locale}"));
+                warnings.push(yc_locale::t!(
+                    "packaging.shaderpack_duplicate_locale",
+                    locale = locale
+                ));
             }
             files.push(LangFile {
                 path: name.clone(),
@@ -176,17 +189,17 @@ pub fn parse_lang(bytes: &[u8]) -> ParsedLang {
     let text = String::from_utf8_lossy(bytes);
     let mut warnings = Vec::new();
     if std::str::from_utf8(bytes).is_err() {
-        warnings.push("invalid UTF-8".into());
+        warnings.push(LangParseWarning::InvalidUtf8);
     }
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     if yc_language::java_properties_has_invalid_unicode(&normalized) {
-        warnings.push("invalid Unicode escape".into());
+        warnings.push(LangParseWarning::InvalidUnicodeEscape);
     }
     let mut entries: Vec<(String, String)> = Vec::new();
     let mut raw_keys = HashMap::new();
     for (key, raw_key, value) in yc_language::parse_java_properties_with_raw_keys(&normalized) {
         if let Some(existing) = entries.iter_mut().find(|(k, _)| k == &key) {
-            warnings.push(format!("duplicate key: {key}"));
+            warnings.push(LangParseWarning::DuplicateKey { key: key.clone() });
             existing.1 = value;
         } else {
             entries.push((key.clone(), value));
@@ -308,7 +321,8 @@ pub fn write_translated_zip(
     entries: &[(String, String)],
 ) -> Result<()> {
     let mut zip = ZipArchive::new(File::open(source)?)?;
-    let root = archive_root(&mut zip)?.ok_or("shaders directory not found")?;
+    let root = archive_root(&mut zip)?
+        .ok_or_else(|| yc_locale::t!("packaging.shaderpack_directory_missing"))?;
     let prefix = format!("{root}shaders/lang/");
     let source_lang_path = format!("{prefix}{source_filename}");
     let target_locale = yc_language::normalize_locale(target_locale);
@@ -395,7 +409,9 @@ pub fn write_translated_zip(
             let entry = zip.by_index_raw(i)?;
             let name = entry.name()?.into_owned();
             if !safe(&name) {
-                return Err(format!("unsafe ZIP path: {name}").into());
+                return Err(
+                    yc_locale::t!("packaging.shaderpack_unsafe_zip_path", path = name).into(),
+                );
             }
             has_shaders_directory |= name == format!("{root}shaders/");
             has_lang_directory |= name == prefix;
@@ -423,7 +439,7 @@ pub fn write_translated_zip(
 /// ファイルが見つからない場合は空の対応を返し、書き出し側で従来のキーエスケープを使う。
 pub fn raw_keys_for_file(source: &Path, path: &str) -> Result<HashMap<String, String>> {
     if !safe(path) {
-        return Err(format!("unsafe language path: {path}").into());
+        return Err(yc_locale::t!("packaging.shaderpack_unsafe_language_path", path = path).into());
     }
     if source.is_dir() {
         return match fs::read(source.join(path)) {
@@ -463,15 +479,15 @@ pub fn pack_folder(folder: &Path, output: &Path) -> Result<()> {
             let path = entry.path();
             let ty = entry.file_type()?;
             if ty.is_symlink() {
-                return Err("symbolic links are not supported".into());
+                return Err(yc_locale::t!("packaging.shaderpack_symlink_unsupported").into());
             }
             let name = path
                 .strip_prefix(base)?
                 .to_str()
-                .ok_or("non-UTF-8 path")?
+                .ok_or_else(|| yc_locale::t!("packaging.shaderpack_non_utf8_path"))?
                 .replace('\\', "/");
             if !safe(&name) {
-                return Err(format!("unsafe path: {name}").into());
+                return Err(yc_locale::t!("packaging.shaderpack_unsafe_path", path = name).into());
             }
             if ty.is_dir() {
                 writer.add_directory(format!("{name}/"), SimpleFileOptions::default())?;
@@ -484,14 +500,14 @@ pub fn pack_folder(folder: &Path, output: &Path) -> Result<()> {
         Ok(())
     }
     if !folder.join("shaders").is_dir() {
-        return Err("shaders directory not found".into());
+        return Err(yc_locale::t!("packaging.shaderpack_directory_missing").into());
     }
     let parent = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     if fs::canonicalize(parent)?.starts_with(fs::canonicalize(folder)?) {
-        return Err("output must be outside the source folder".into());
+        return Err(yc_locale::t!("packaging.shaderpack_output_outside_source").into());
     }
     atomic_zip(output, |file| {
         let mut writer = ZipWriter::new(file);

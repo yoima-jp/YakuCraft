@@ -84,7 +84,7 @@ impl Parser<'_> {
                 break;
             }
             if self.offset >= self.input.len() {
-                return self.error("expected a key or closing brace");
+                return self.error(yc_locale::t!("packaging.snbt_expected_key_or_brace"));
             }
             let key = self.parse_key()?;
             self.skip_horizontal_space();
@@ -92,7 +92,10 @@ impl Parser<'_> {
             self.skip_trivia();
             let value = self.parse_value()?;
             if !seen_keys.insert(key.clone()) {
-                return self.error(format!("duplicate key {key:?}"));
+                return self.error(yc_locale::t!(
+                    "packaging.snbt_duplicate_key",
+                    key = format!("{key:?}")
+                ));
             }
             entries.push((key, value));
 
@@ -108,13 +111,13 @@ impl Parser<'_> {
                 break;
             }
             if !separated_by_newline {
-                return self.error("expected a comma, newline, or closing brace");
+                return self.error(yc_locale::t!("packaging.snbt_expected_separator_or_brace"));
             }
             let _ = had_newline;
         }
         self.skip_trivia();
         if self.offset != self.input.len() {
-            return self.error("unexpected content after the top-level compound");
+            return self.error(yc_locale::t!("packaging.snbt_trailing_content"));
         }
         Ok(SnbtDocument { entries })
     }
@@ -131,11 +134,12 @@ impl Parser<'_> {
                         break;
                     }
                     if self.offset >= self.input.len() {
-                        return self.error("expected a string or closing bracket");
+                        return self
+                            .error(yc_locale::t!("packaging.snbt_expected_string_or_bracket"));
                     }
                     match self.peek() {
                         Some('"' | '\'') => values.push(self.parse_quoted()?),
-                        _ => return self.error("language arrays may contain only strings"),
+                        _ => return self.error(yc_locale::t!("packaging.snbt_array_strings_only")),
                     }
                     let separated_by_newline = self.skip_trivia();
                     if self.consume(',') {
@@ -146,12 +150,14 @@ impl Parser<'_> {
                     } else if self.consume(']') {
                         break;
                     } else if !separated_by_newline {
-                        return self.error("expected a comma, newline, or closing bracket");
+                        return self.error(yc_locale::t!(
+                            "packaging.snbt_expected_separator_or_bracket"
+                        ));
                     }
                 }
                 Ok(SnbtValue::StringArray(values))
             }
-            _ => self.error("language values must be quoted strings or arrays of strings"),
+            _ => self.error(yc_locale::t!("packaging.snbt_expected_string_or_array")),
         }
     }
 
@@ -167,7 +173,7 @@ impl Parser<'_> {
                     self.advance();
                 }
                 if self.offset == start {
-                    return self.error("expected an unquoted or quoted key");
+                    return self.error(yc_locale::t!("packaging.snbt_expected_key"));
                 }
                 Ok(self.input[start..self.offset].to_owned())
             }
@@ -175,11 +181,12 @@ impl Parser<'_> {
     }
 
     fn parse_quoted(&mut self) -> Result<String, (usize, String)> {
-        let quote = self
-            .peek()
-            .ok_or((self.offset, "expected quoted string".into()))?;
+        let quote = self.peek().ok_or((
+            self.offset,
+            yc_locale::t!("packaging.snbt_expected_quoted_string"),
+        ))?;
         if quote != '"' && quote != '\'' {
-            return self.error("expected quoted string");
+            return self.error(yc_locale::t!("packaging.snbt_expected_quoted_string"));
         }
         self.advance();
         let mut output = String::new();
@@ -190,7 +197,7 @@ impl Parser<'_> {
             }
             if character == '\\' {
                 let Some(escaped) = self.peek() else {
-                    return self.error("unterminated escape sequence");
+                    return self.error(yc_locale::t!("packaging.snbt_unterminated_escape"));
                 };
                 self.advance();
                 if escaped == quote || escaped == '\\' {
@@ -205,7 +212,7 @@ impl Parser<'_> {
                 output.push(character);
             }
         }
-        self.error("unterminated quoted string")
+        self.error(yc_locale::t!("packaging.snbt_unterminated_string"))
     }
 
     fn skip_trivia(&mut self) -> bool {
@@ -248,7 +255,10 @@ impl Parser<'_> {
         if self.consume(expected) {
             Ok(())
         } else {
-            self.error(format!("expected {expected:?}"))
+            self.error(yc_locale::t!(
+                "packaging.snbt_expected_token",
+                expected = format!("{expected:?}")
+            ))
         }
     }
 

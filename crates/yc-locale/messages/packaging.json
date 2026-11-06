@@ -1,0 +1,219 @@
+{
+  "packaging.unknown_value": {
+    "ja": "不明",
+    "en": "Unknown",
+    "zh-Hans": "未知",
+    "zh-Hant": "未知",
+    "ko": "알 수 없음"
+  },
+  "packaging.modpack_invalid_path": {
+    "ja": "unsafe or invalid instance-relative path: {path}",
+    "en": "Unsafe or invalid instance-relative path: {path}",
+    "zh-Hans": "实例内路径无效或不安全：{path}",
+    "zh-Hant": "執行個體內路徑無效或不安全：{path}",
+    "ko": "인스턴스 내부 경로가 잘못되었거나 안전하지 않습니다: {path}"
+  },
+  "packaging.modpack_invalid_snbt": {
+    "ja": "invalid FTB Quests SNBT in {path} at byte {offset}: {message}",
+    "en": "Invalid FTB Quests SNBT in {path} at byte {offset}: {message}",
+    "zh-Hans": "{path} 中的 FTB Quests SNBT 在第 {offset} 个字节处无效：{message}",
+    "zh-Hant": "{path} 中的 FTB Quests SNBT 在第 {offset} 個位元組處無效：{message}",
+    "ko": "{path}의 FTB Quests SNBT가 {offset}바이트 위치에서 잘못되었습니다: {message}"
+  },
+  "packaging.modpack_invalid_json": {
+    "ja": "invalid KubeJS language JSON in {path}: {error}",
+    "en": "Invalid KubeJS language JSON in {path}: {error}",
+    "zh-Hans": "{path} 中的 KubeJS 语言 JSON 无效：{error}",
+    "zh-Hant": "{path} 中的 KubeJS 語言 JSON 無效：{error}",
+    "ko": "{path}의 KubeJS 언어 JSON이 올바르지 않습니다: {error}"
+  },
+  "packaging.modpack_language_json_object": {
+    "ja": "KubeJS language file {path} must be a JSON object containing only string values",
+    "en": "KubeJS language file {path} must be a JSON object containing only string values",
+    "zh-Hans": "KubeJS 语言文件 {path} 必须是只包含字符串值的 JSON 对象",
+    "zh-Hant": "KubeJS 語言檔案 {path} 必須是只包含字串值的 JSON 物件",
+    "ko": "KubeJS 언어 파일 {path}은 문자열 값만 포함하는 JSON 객체여야 합니다"
+  },
+  "packaging.modpack_scan_error": {
+    "ja": "{path}: {error}",
+    "en": "{path}: {error}",
+    "zh-Hans": "{path}：{error}",
+    "zh-Hant": "{path}：{error}",
+    "ko": "{path}: {error}"
+  },
+  "packaging.shaderpack_directory_missing": {
+    "ja": "shaders directory not found",
+    "en": "shaders directory not found",
+    "zh-Hans": "未找到 shaders 文件夹",
+    "zh-Hant": "找不到 shaders 資料夾",
+    "ko": "shaders 폴더를 찾을 수 없습니다"
+  },
+  "packaging.shaderpack_duplicate_key": {
+    "ja": "duplicate key: {key}",
+    "en": "duplicate key: {key}",
+    "zh-Hans": "键 {key} 重复",
+    "zh-Hant": "鍵 {key} 重複",
+    "ko": "키 {key}가 중복되었습니다"
+  },
+  "packaging.shaderpack_duplicate_locale": {
+    "ja": "duplicate locale: {locale}",
+    "en": "duplicate locale: {locale}",
+    "zh-Hans": "语言代码重复：{locale}",
+    "zh-Hant": "語言代碼重複：{locale}",
+    "ko": "언어 코드가 중복되었습니다: {locale}"
+  },
+  "packaging.shaderpack_invalid_unicode_escape": {
+    "ja": "invalid Unicode escape",
+    "en": "invalid Unicode escape",
+    "zh-Hans": "Unicode 转义无效",
+    "zh-Hant": "Unicode 跳脫序列無效",
+    "ko": "잘못된 유니코드 이스케이프입니다"
+  },
+  "packaging.shaderpack_invalid_utf8": {
+    "ja": "invalid UTF-8",
+    "en": "invalid UTF-8",
+    "zh-Hans": "UTF-8 无效",
+    "zh-Hant": "UTF-8 無效",
+    "ko": "잘못된 UTF-8입니다"
+  },
+  "packaging.shaderpack_non_utf8_filename": {
+    "ja": "non-UTF-8 filename",
+    "en": "non-UTF-8 filename",
+    "zh-Hans": "文件名不是 UTF-8 编码",
+    "zh-Hant": "檔案名稱不是 UTF-8 編碼",
+    "ko": "파일 이름이 UTF-8이 아닙니다"
+  },
+  "packaging.shaderpack_non_utf8_path": {
+    "ja": "non-UTF-8 path",
+    "en": "non-UTF-8 path",
+    "zh-Hans": "路径不是 UTF-8 编码",
+    "zh-Hant": "路徑不是 UTF-8 編碼",
+    "ko": "경로가 UTF-8이 아닙니다"
+  },
+  "packaging.shaderpack_output_outside_source": {
+    "ja": "output must be outside the source folder",
+    "en": "output must be outside the source folder",
+    "zh-Hans": "输出位置必须在源文件夹之外",
+    "zh-Hant": "輸出位置必須在來源資料夾之外",
+    "ko": "출력 위치는 원본 폴더 외부여야 합니다"
+  },
+  "packaging.shaderpack_symlink_unsupported": {
+    "ja": "symbolic links are not supported",
+    "en": "symbolic links are not supported",
+    "zh-Hans": "不支持符号链接",
+    "zh-Hant": "不支援符號連結",
+    "ko": "심볼릭 링크는 지원되지 않습니다"
+  },
+  "packaging.shaderpack_unsafe_language_path": {
+    "ja": "unsafe language path: {path}",
+    "en": "unsafe language path: {path}",
+    "zh-Hans": "语言文件路径不安全：{path}",
+    "zh-Hant": "語言檔案路徑不安全：{path}",
+    "ko": "언어 파일 경로가 안전하지 않습니다: {path}"
+  },
+  "packaging.shaderpack_unsafe_path": {
+    "ja": "unsafe path: {path}",
+    "en": "unsafe path: {path}",
+    "zh-Hans": "路径不安全：{path}",
+    "zh-Hant": "路徑不安全：{path}",
+    "ko": "경로가 안전하지 않습니다: {path}"
+  },
+  "packaging.shaderpack_unsafe_zip_path": {
+    "ja": "unsafe ZIP path: {path}",
+    "en": "unsafe ZIP path: {path}",
+    "zh-Hans": "ZIP 中的路径不安全：{path}",
+    "zh-Hant": "ZIP 中的路徑不安全：{path}",
+    "ko": "ZIP 내부 경로가 안전하지 않습니다: {path}"
+  },
+  "packaging.snbt_array_strings_only": {
+    "ja": "language arrays may contain only strings",
+    "en": "language arrays may contain only strings",
+    "zh-Hans": "语言数组只能包含字符串",
+    "zh-Hant": "語言陣列只能包含字串",
+    "ko": "언어 배열에는 문자열만 넣을 수 있습니다"
+  },
+  "packaging.snbt_duplicate_key": {
+    "ja": "duplicate key {key}",
+    "en": "duplicate key {key}",
+    "zh-Hans": "键 {key} 重复",
+    "zh-Hant": "鍵 {key} 重複",
+    "ko": "키 {key}가 중복되었습니다"
+  },
+  "packaging.snbt_expected_key": {
+    "ja": "expected an unquoted or quoted key",
+    "en": "expected an unquoted or quoted key",
+    "zh-Hans": "需要未加引号或已加引号的键",
+    "zh-Hant": "需要未加引號或已加引號的鍵",
+    "ko": "따옴표가 있거나 없는 키가 필요합니다"
+  },
+  "packaging.snbt_expected_key_or_brace": {
+    "ja": "expected a key or closing brace",
+    "en": "expected a key or closing brace",
+    "zh-Hans": "需要键或右花括号",
+    "zh-Hant": "需要鍵或右大括號",
+    "ko": "키 또는 닫는 중괄호가 필요합니다"
+  },
+  "packaging.snbt_expected_quoted_string": {
+    "ja": "expected quoted string",
+    "en": "expected quoted string",
+    "zh-Hans": "需要带引号的字符串",
+    "zh-Hant": "需要加上引號的字串",
+    "ko": "따옴표로 묶인 문자열이 필요합니다"
+  },
+  "packaging.snbt_expected_separator_or_brace": {
+    "ja": "expected a comma, newline, or closing brace",
+    "en": "expected a comma, newline, or closing brace",
+    "zh-Hans": "需要逗号、换行或右花括号",
+    "zh-Hant": "需要逗號、換行或右大括號",
+    "ko": "쉼표, 줄바꿈 또는 닫는 중괄호가 필요합니다"
+  },
+  "packaging.snbt_expected_separator_or_bracket": {
+    "ja": "expected a comma, newline, or closing bracket",
+    "en": "expected a comma, newline, or closing bracket",
+    "zh-Hans": "需要逗号、换行或右方括号",
+    "zh-Hant": "需要逗號、換行或右方括號",
+    "ko": "쉼표, 줄바꿈 또는 닫는 대괄호가 필요합니다"
+  },
+  "packaging.snbt_expected_string_or_array": {
+    "ja": "language values must be quoted strings or arrays of strings",
+    "en": "language values must be quoted strings or arrays of strings",
+    "zh-Hans": "语言值必须是带引号的字符串或字符串数组",
+    "zh-Hant": "語言值必須是加上引號的字串或字串陣列",
+    "ko": "언어 값은 따옴표로 묶인 문자열 또는 문자열 배열이어야 합니다"
+  },
+  "packaging.snbt_expected_string_or_bracket": {
+    "ja": "expected a string or closing bracket",
+    "en": "expected a string or closing bracket",
+    "zh-Hans": "需要字符串或右方括号",
+    "zh-Hant": "需要字串或右方括號",
+    "ko": "문자열 또는 닫는 대괄호가 필요합니다"
+  },
+  "packaging.snbt_expected_token": {
+    "ja": "expected {expected}",
+    "en": "expected {expected}",
+    "zh-Hans": "需要 {expected}",
+    "zh-Hant": "需要 {expected}",
+    "ko": "{expected}이(가) 필요합니다"
+  },
+  "packaging.snbt_trailing_content": {
+    "ja": "unexpected content after the top-level compound",
+    "en": "unexpected content after the top-level compound",
+    "zh-Hans": "顶层 compound 后有多余内容",
+    "zh-Hant": "頂層 compound 後有多餘內容",
+    "ko": "최상위 compound 뒤에 예상하지 못한 내용이 있습니다"
+  },
+  "packaging.snbt_unterminated_escape": {
+    "ja": "unterminated escape sequence",
+    "en": "unterminated escape sequence",
+    "zh-Hans": "转义序列未结束",
+    "zh-Hant": "跳脫序列未結束",
+    "ko": "이스케이프 시퀀스가 끝나지 않았습니다"
+  },
+  "packaging.snbt_unterminated_string": {
+    "ja": "unterminated quoted string",
+    "en": "unterminated quoted string",
+    "zh-Hans": "带引号的字符串未结束",
+    "zh-Hant": "加上引號的字串未結束",
+    "ko": "따옴표로 묶인 문자열이 끝나지 않았습니다"
+  }
+}

@@ -166,17 +166,17 @@ pub fn parse_glossary_import(contents: &str) -> Result<Vec<GlossaryTermInput>> {
         .enumerate()
         .map(|(index, row)| {
             if !(2..=4).contains(&row.len()) {
-                return Err(ProjectError::InvalidDatabaseValue(format!(
-                    "glossary row {} must have two to four columns",
-                    index + 1
+                return Err(ProjectError::InvalidDatabaseValue(yc_locale::t!(
+                    "storage.glossary_column_count",
+                    row = index + 1
                 )));
             }
             let source_term = row.get(0).unwrap_or_default().trim().to_owned();
             let target_term = row.get(1).unwrap_or_default().trim().to_owned();
             if source_term.is_empty() || target_term.is_empty() {
-                return Err(ProjectError::InvalidDatabaseValue(format!(
-                    "glossary row {} has an empty term",
-                    index + 1
+                return Err(ProjectError::InvalidDatabaseValue(yc_locale::t!(
+                    "storage.glossary_empty_term",
+                    row = index + 1
                 )));
             }
             let note = row
@@ -190,9 +190,9 @@ pub fn parse_glossary_import(contents: &str) -> Result<Vec<GlossaryTermInput>> {
                 None | Some("" | "false") => false,
                 Some("true") => true,
                 Some(_) => {
-                    return Err(ProjectError::InvalidDatabaseValue(format!(
-                        "glossary row {} case sensitivity must be true or false",
-                        index + 1
+                    return Err(ProjectError::InvalidDatabaseValue(yc_locale::t!(
+                        "storage.glossary_case_sensitivity",
+                        row = index + 1
                     )));
                 }
             };
@@ -213,13 +213,23 @@ fn is_header(row: &csv::StringRecord) -> bool {
         .trim()
         .trim_start_matches('\u{feff}');
     let target = row.get(1).unwrap_or_default().trim();
-    matches!(source, "原文" | "source" | "source_term")
-        && matches!(target, "訳語" | "target" | "target_term")
+    matches!(
+        source.to_ascii_lowercase().as_str(),
+        "原文" | "source" | "source term" | "source_term" | "源文本" | "원문"
+    ) && matches!(
+        target.to_ascii_lowercase().as_str(),
+        "訳語" | "target" | "target term" | "target_term" | "译文" | "譯文" | "번역"
+    )
 }
 
 pub fn format_glossary_export(terms: &[GlossaryTerm]) -> Result<String> {
     let mut writer = csv::WriterBuilder::new().from_writer(Vec::new());
-    writer.write_record(["原文", "訳語", "メモ", "大小区別"])?;
+    writer.write_record([
+        yc_locale::t!("storage.glossary_header_source"),
+        yc_locale::t!("storage.glossary_header_target"),
+        yc_locale::t!("storage.glossary_header_note"),
+        yc_locale::t!("storage.glossary_header_case_sensitive"),
+    ])?;
     for term in terms {
         writer.write_record([
             term.source_term.as_str(),
