@@ -36,7 +36,7 @@
 
 .editor-toolbar__search-label {
   display: flex;
-  min-inline-size: min(14rem, 100%);
+  min-inline-size: min(8rem, 100%);
   flex: 1 1 14rem;
 }
 

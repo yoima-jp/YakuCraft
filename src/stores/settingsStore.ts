@@ -95,9 +95,13 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
         ? settings["language.uiLanguage"]
         : detectUiLanguage(systemLocale);
       const configuredTarget = settings["language.targetLocale"];
-      const targetLocale = typeof configuredTarget === "string" && findMinecraftLanguage(configuredTarget)
-        ? findMinecraftLanguage(configuredTarget)?.code ?? detectTargetLocale(systemLocale)
-        : detectTargetLocale(systemLocale);
+      const configuredLocale = typeof configuredTarget === "string"
+        ? configuredTarget.trim().replaceAll("-", "_")
+        : "";
+      const configuredLanguage = configuredLocale ? findMinecraftLanguage(configuredLocale) : undefined;
+      const targetLocale = configuredLanguage?.code ?? detectTargetLocale(systemLocale);
+      // Onboarding中は翻訳先が未確定なので、OS由来の暫定値を設定へ書き戻さない。
+      const shouldPersistTargetLocale = !configuredLanguage && settings["onboarding.completed"] !== false;
       loadedSettings["language.uiLanguage"] = uiLanguage;
       loadedSettings["language.targetLocale"] = targetLocale;
       if (!isAppearanceTheme(loadedSettings["appearance.theme"])) {
@@ -106,6 +110,14 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
       cacheAppearanceTheme(loadedSettings["appearance.theme"]);
       setUiLanguage(uiLanguage);
       set({ settings: loadedSettings, loaded: true, error: null, systemLocale });
+      if (shouldPersistTargetLocale) {
+        try {
+          // Project作成時も画面と同じ補正済み翻訳先を使えるよう、設定を一度同期する。
+          await saveSettings({ "language.targetLocale": targetLocale });
+        } catch {
+          // 読み込んだ画面の値は維持し、設定の保存失敗で起動を止めない。
+        }
+      }
     } catch {
       let systemLocale: string | null = null;
       try {

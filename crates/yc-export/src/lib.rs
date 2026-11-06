@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use yc_language::{
     DiscoveredLanguageFile, LanguageFileFormat, TranslationEntry, WriterOptions,
-    is_empty_translation, language_export_filename, patchouli_target_document_path,
-    rebuild_document_with_warnings, write_language_file,
+    is_empty_translation, language_export_filename, normalize_locale,
+    patchouli_target_document_path, rebuild_document_with_warnings, write_language_file,
 };
 
 pub use deployment::{
@@ -50,6 +50,8 @@ pub struct ExportInput<'a> {
     pub entries: &'a [TranslationEntry],
     pub namespaces: &'a [NamespaceExport],
     pub language_files: &'a [DiscoveredLanguageFile],
+    /// en_usを書き出すときに原本の英語キーを維持するための元アーカイブ。
+    pub source_archive_path: Option<&'a Path>,
     /// Namespaces whose selected source `.lang` file uses Forge's `#PARSE_ESCAPES` mode.
     pub legacy_parse_escapes_namespaces: &'a [String],
     pub source_locale: &'a str,
@@ -275,12 +277,25 @@ pub fn create_language_files(
             return Err(ExportError::UnsafeArchivePath(file_name));
         }
         let format = language_format_for_filename(&namespace.namespace, &file_name)?;
-        let bytes = write_language_file(
-            &namespace.namespace,
-            input.entries,
-            format,
-            writer_options_for_namespace(input, &namespace.namespace),
-        )?;
+        let bytes = if normalize_locale(input.target_locale) == "en_us" {
+            let source_archive_path = input
+                .source_archive_path
+                .ok_or(ExportError::SourceArchiveRequired)?;
+            modified_jar::write_english_based_language_file(
+                input,
+                source_archive_path,
+                &namespace.namespace,
+                &file_name,
+                format,
+            )?
+        } else {
+            write_language_file(
+                &namespace.namespace,
+                input.entries,
+                format,
+                writer_options_for_namespace(input, &namespace.namespace),
+            )?
+        };
         files.push(LanguageFileArtifact {
             namespace: namespace.namespace.clone(),
             file_name,
@@ -326,6 +341,8 @@ pub fn write_language_files(
 
 #[derive(Debug, Error)]
 pub enum ExportError {
+    #[error("source archive is required to preserve en_us language entries")]
+    SourceArchiveRequired,
     #[error("language file format is unsupported for namespace {namespace}")]
     UnsupportedLanguageFileFormat { namespace: String },
     #[error("export validation failed: {0}")]

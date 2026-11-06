@@ -751,6 +751,9 @@ fn configured_target_locale(paths: &AppPaths) -> Result<String, AppError> {
         .map(str::trim)
         .filter(|locale| !locale.is_empty())
         .map(normalize_locale)
+        .and_then(|locale| {
+            yc_locale::find_minecraft_language(&locale).map(|language| language.code.to_owned())
+        })
         .unwrap_or_else(|| DEFAULT_TARGET_LOCALE.to_owned());
     Ok(locale)
 }

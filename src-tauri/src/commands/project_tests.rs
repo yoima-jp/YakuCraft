@@ -95,11 +95,11 @@ fn project_creation_reads_the_configured_target_once_and_reopens_with_the_saved_
     );
     settings.values.insert(
         "language.targetLocale".to_owned(),
-        serde_json::json!("de-DE"),
+        serde_json::json!("not_a_locale"),
     );
     save_app_settings(&paths.settings_file, &settings).unwrap();
     let target_locale = configured_target_locale(&paths).unwrap();
-    assert_eq!(target_locale, "de_de");
+    assert_eq!(target_locale, yc_language::DEFAULT_TARGET_LOCALE);
 
     let created = create_project_from_source_inputs_with_target_locale_core(
         &paths,
@@ -117,23 +117,26 @@ fn project_creation_reads_the_configured_target_once_and_reopens_with_the_saved_
     let project_id = created.opened.summary().id.clone();
     assert_eq!(
         created.opened.repository().target_locale().unwrap(),
-        "de_de"
+        yc_language::DEFAULT_TARGET_LOCALE
     );
     drop(created);
 
     settings.values.insert(
         "language.targetLocale".to_owned(),
-        serde_json::json!("fr_FR"),
+        serde_json::json!("de-DE"),
     );
     save_app_settings(&paths.settings_file, &settings).unwrap();
-    assert_eq!(configured_target_locale(&paths).unwrap(), "fr_fr");
+    assert_eq!(configured_target_locale(&paths).unwrap(), "de_de");
 
     let reopened = open_project_file(
         &paths.projects_dir,
         project_id.parse().expect("created project UUID"),
     )
     .expect("reopen project after settings changed");
-    assert_eq!(reopened.repository().target_locale().unwrap(), "de_de");
+    assert_eq!(
+        reopened.repository().target_locale().unwrap(),
+        yc_language::DEFAULT_TARGET_LOCALE
+    );
 }
 
 #[test]
