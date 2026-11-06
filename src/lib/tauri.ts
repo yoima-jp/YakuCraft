@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 import { logFrontendError } from "./errorLogging";
+import { t } from "../i18n";
 import type { AnalysisChannelEvent, AppError, OperationProgressDto } from "../types/commands";
 export type { AnalysisChannelEvent, AnalysisProgressDto, AppError } from "../types/commands";
 import type { AiJobEventDto, AiProviderId, AiSettingsDto, ChatGptCredentialStatusDto, SaveAiProviderDto } from "../types/ai";
@@ -58,7 +59,7 @@ export async function invokeApp<T>(
 
     throw new AppCommandError({
       code: "unexpected",
-      userMessage: "処理に失敗しました。もう一度お試しください。",
+      userMessage: t("common.operationFailed"),
       recoverable: true,
     });
   }

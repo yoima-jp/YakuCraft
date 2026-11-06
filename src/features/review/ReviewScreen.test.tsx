@@ -5,6 +5,7 @@ import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
 import type { ProjectDetailsDto } from "../../types/project";
 import { getReviewAssetSummary, listEntries, saveReviewSettings } from "../../lib/tauri";
+import { minecraftLanguageLabel } from "../../i18n/minecraftLanguages";
 import { ReviewScreen } from "./ReviewScreen";
 
 vi.mock("../../lib/tauri", () => ({
@@ -266,5 +267,32 @@ describe("Review setup flow", () => {
       includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }, { modUnitId: 1, namespace: "guidebook" }],
     }), expect.any(Function)));
     await waitFor(() => expect(useAppStore.getState().route).toBe("editor"));
+  });
+
+  it("翻訳先を表示し、同じ言語の原文を警告する", async () => {
+    vi.mocked(getReviewAssetSummary).mockResolvedValue({
+      existingTargetTranslationCount: 1,
+      sameLanguageEntryCount: 1,
+      missingSourceKeysCount: 1,
+      assets: details().assetSummary!,
+    });
+
+    render(<ReviewScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "翻訳対象に含める" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "library · 1" }));
+    await waitFor(() => expect(screen.getByTestId("review-next")).toHaveProperty("disabled", false));
+    fireEvent.click(screen.getByRole("button", { name: "次へ" }));
+
+    expect(screen.getByText(minecraftLanguageLabel("ja_jp"))).toBeTruthy();
+    expect(screen.getByText("1 件の原文が翻訳先と同じ言語（日本語）です。別の原文の言語を選ぶか、翻訳先を確認してください。")).toBeTruthy();
+    expect(screen.getByTestId("review-next")).toHaveProperty("disabled", false);
+  });
+
+  it("同じ言語の原文がなければ警告を表示しない", () => {
+    render(<ReviewScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "次へ" }));
+
+    expect(screen.getByText(minecraftLanguageLabel("ja_jp"))).toBeTruthy();
+    expect(screen.queryByText(/原文が翻訳先と同じ言語/)).toBeNull();
   });
 });

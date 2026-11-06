@@ -13,6 +13,7 @@ import {
 } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import type { AnalysisChannelEvent, AppError } from "../../types/commands";
+import { formatNumber, lowerText, t, useT, useUiLanguage } from "../../i18n";
 import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { isAnalysisEventForJob } from "./analysisEvents";
@@ -22,21 +23,7 @@ import { scanModsFolder } from "./tauri";
 import type { ModLanguageStatusDto, ModScanResultDto, ModpackScanDto, ScanModsFolderEventDto, ShaderpackScanResultDto } from "./types";
 import "./ScanScreen.css";
 
-const STATUS_LABELS: Record<ModLanguageStatusDto["kind"], string> = {
-  untranslated: "未翻訳",
-  partial: "部分翻訳",
-  complete: "翻訳済み",
-  no_language_files: "言語ファイルなし",
-  failed: "読み込み失敗",
-};
-
-const FILTER_LABELS = [
-  ["untranslated", "未翻訳"],
-  ["partial", "部分翻訳"],
-  ["complete", "翻訳済み"],
-  ["no_language_files", "言語ファイルなし"],
-  ["failed", "読み込み失敗"],
-] as const satisfies ReadonlyArray<readonly [ModLanguageStatusDto["kind"], string]>;
+const FILTER_KINDS = ["untranslated", "partial", "complete", "no_language_files", "failed"] as const satisfies readonly ModLanguageStatusDto["kind"][];
 
 type StatusFilters = Record<ModLanguageStatusDto["kind"], boolean>;
 
@@ -52,12 +39,12 @@ function appError(error: unknown): AppError {
   void logFrontendError(error, "scan screen");
   return error instanceof AppCommandError
     ? error.appError
-    : { code: "unexpected", userMessage: "処理に失敗しました。もう一度お試しください。", recoverable: true };
+    : { code: "unexpected", userMessage: t("common.operationFailed"), recoverable: true };
 }
 
-function statusLabel(status: ModLanguageStatusDto): string {
-  if (status.kind === "partial") return `部分翻訳 ${Math.round(status.coverage * 100)}%`;
-  return STATUS_LABELS[status.kind];
+function statusLabel(status: ModLanguageStatusDto, labels: Record<ModLanguageStatusDto["kind"], string>): string {
+  if (status.kind === "partial") return t("scan.partialCoverage", { coverage: Math.round(status.coverage * 100) });
+  return labels[status.kind];
 }
 
 function modName(result: ModScanResultDto): string {
@@ -69,7 +56,7 @@ function isSelectable(result: ModScanResultDto): boolean {
 }
 
 function modpackHasImportableFiles(scan: ModpackScanDto): boolean {
-  return scan.files.some((file) => file.locale.toLocaleLowerCase() === "en_us");
+  return scan.files.some((file) => file.locale.toLowerCase() === "en_us");
 }
 
 function shaderpackSelectable(result: ShaderpackScanResultDto): boolean {
@@ -77,6 +64,15 @@ function shaderpackSelectable(result: ShaderpackScanResultDto): boolean {
 }
 
 export function ScanScreen() {
+  const translate = useT();
+  const uiLanguage = useUiLanguage();
+  const statusLabels = {
+    untranslated: translate("scan.statusUntranslated"),
+    partial: translate("scan.statusPartial"),
+    complete: translate("scan.statusComplete"),
+    no_language_files: translate("scan.statusNoLanguages"),
+    failed: translate("scan.statusFailed"),
+  };
   const folderPath = useScanStore((state) => state.folderPath);
   const scanRevision = useScanStore((state) => state.scanRevision);
   const scanJobId = useScanStore((state) => state.scanJobId);
@@ -115,6 +111,21 @@ export function ScanScreen() {
   const terminalCreateJobsRef = useRef(new Set<string>());
   const createGenerationRef = useRef(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const selectedCountText = (count: number) => count === 1
+    ? translate("scan.selectedCount_one", { count: formatNumber(count) })
+    : translate("scan.selectedCount", { count: formatNumber(count) });
+  const modCountText = (count: number) => count === 1
+    ? translate("scan.modCount_one", { count: formatNumber(count) })
+    : translate("scan.modCount", { count: formatNumber(count) });
+  const shaderpackCountText = (count: number) => count === 1
+    ? translate("scan.shaderpackCount_one", { count: formatNumber(count) })
+    : translate("scan.shaderpackCount", { count: formatNumber(count) });
+  const entryCountText = (count: number) => count === 1
+    ? translate("scan.entryCount_one", { count: formatNumber(count) })
+    : translate("scan.entryCount", { count: formatNumber(count) });
+  const createProjectText = (count: number) => count === 1
+    ? translate("scan.createProject_one", { count: formatNumber(count) })
+    : translate("scan.createProject", { count: formatNumber(count) });
 
   const thresholdPercent = thresholdInput === ""
     ? 100
@@ -187,20 +198,20 @@ export function ScanScreen() {
 
   const visibleResults = useMemo(() => {
     if (!results) return [];
-    const query = search.trim().toLocaleLowerCase();
+    const query = lowerText(search.trim(), uiLanguage);
     return results.filter((result) => {
       if (!statusFilters[result.status.kind]) return false;
       if (!query) return true;
       return [modName(result), result.fileName, result.mods[0]?.modId ?? ""]
-        .some((value) => value.toLocaleLowerCase().includes(query));
+        .some((value) => lowerText(value, uiLanguage).includes(query));
     });
-  }, [results, search, statusFilters]);
+  }, [results, search, statusFilters, uiLanguage]);
 
   const visibleShaderpacks = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase();
+    const query = lowerText(search.trim(), uiLanguage);
     return shaderpacks.filter((result) => statusFilters[result.status.kind]
-      && (!query || result.fileName.toLocaleLowerCase().includes(query)));
-  }, [search, shaderpacks, statusFilters]);
+      && (!query || lowerText(result.fileName, uiLanguage).includes(query)));
+  }, [search, shaderpacks, statusFilters, uiLanguage]);
 
   const showModpack = Boolean(modpackScan);
   const modpackSelectable = Boolean(modpackScan && modpackHasImportableFiles(modpackScan));
@@ -322,10 +333,10 @@ export function ScanScreen() {
     setAnalysisJobId(null);
     setModImportFailures([]);
     const sourceLabel = [
-      selectedMods.length > 0 ? `${selectedMods.length.toLocaleString("ja-JP")} 個のMod` : "",
-      selectedShaderpacks.length > 0 ? `${selectedShaderpacks.length.toLocaleString("ja-JP")} 個のシェーダーパック` : "",
-      selectedModpack ? "Modpack 固有" : "",
-    ].filter(Boolean).join("・");
+      selectedMods.length > 0 ? modCountText(selectedMods.length) : "",
+      selectedShaderpacks.length > 0 ? shaderpackCountText(selectedShaderpacks.length) : "",
+      selectedModpack ? translate("scan.modpackUnique") : "",
+    ].filter(Boolean).join(translate("scan.selectionSeparator"));
     const sourcePath = paths[0] ?? instanceDir ?? scannedFolder ?? folderPath ?? "";
     setSourceJar(sourcePath, sourceLabel);
     await goTo("analyze");
@@ -386,25 +397,25 @@ export function ScanScreen() {
     return (
       <section className="focus-page analyze-screen scan-screen" aria-labelledby="scan-title">
         <div className="analyze-screen__content">
-          <h1 className="page-title" id="scan-title">フォルダを調べています</h1>
+          <h1 className="page-title" id="scan-title">{translate("scan.scanningFolder")}</h1>
           {folderPath && <p className="scan-screen__path selectable">{folderPath}</p>}
           {scanError ? (
             <div className="scan-screen__error" role="alert">
               <p>{scanError.userMessage}</p>
               {scanError.detail && <pre className="selectable">{scanError.detail}</pre>}
-              <SecondaryButton onClick={() => useScanStore.getState().retryScan()}>再スキャン</SecondaryButton>
+              <SecondaryButton onClick={() => useScanStore.getState().retryScan()}>{translate("scan.retry")}</SecondaryButton>
             </div>
           ) : (
             <>
-              <ProgressBar value={progressPercent} label="スキャンの進行状況" />
+              <ProgressBar value={progressPercent} label={translate("scan.progress")} />
               <p className="analyze-screen__stage" aria-live="polite">
                 {scanProgress
-                  ? `${scanProgress.completed} / ${scanProgress.total} · ${scanProgress.currentFile}`
-                  : "準備中…"}
+                  ? `${formatNumber(scanProgress.completed)} / ${formatNumber(scanProgress.total)} · ${scanProgress.currentFile}`
+                  : translate("common.preparing")}
               </p>
               {scanJobId && (
                 <SecondaryButton disabled={scanCancelRequested} onClick={() => void cancelFolderScan()}>
-                  {scanCancelRequested ? "中止中…" : "キャンセル"}
+                  {scanCancelRequested ? translate("scan.canceling") : translate("common.cancel")}
                 </SecondaryButton>
               )}
             </>
@@ -418,19 +429,19 @@ export function ScanScreen() {
     <section className="focus-page scan-screen" aria-labelledby="scan-results-title">
       <header className="scan-screen__header">
         <div>
-          <h1 className="page-title" id="scan-results-title">日本語訳を確認</h1>
+          <h1 className="page-title" id="scan-results-title">{translate("scan.resultsTitle")}</h1>
           <p className="scan-screen__path selectable">{scannedFolder ?? folderPath}</p>
         </div>
         {looksLikeInstanceDir ? null : (
           <p className="scan-screen__instance-note">
-            インスタンスのフォルダが見つからないため、インスタンスへの配置は使えません
+            {translate("scan.instanceUnavailable")}
           </p>
         )}
       </header>
 
       <div className="scan-screen__controls">
         <label className="scan-screen__search">
-          <span>名前で検索</span>
+          <span>{translate("scan.searchByName")}</span>
           <input
             type="search"
             autoComplete="off"
@@ -442,41 +453,41 @@ export function ScanScreen() {
           />
         </label>
         <div className="scan-screen__threshold">
-          <span>部分翻訳の対象</span>
+          <span>{translate("scan.partialThreshold")}</span>
           <span className="scan-screen__threshold-input">
             <NumberInput
-              aria-label="部分翻訳のしきい値"
+              aria-label={translate("scan.partialThresholdInput")}
               min={0}
               max={100}
               value={thresholdInput}
               onChange={(event) => setThresholdInput(event.currentTarget.value)}
             />
-            <span>% 未満</span>
+            <span>{translate("scan.lessThan")}</span>
           </span>
         </div>
       </div>
 
       <fieldset className="scan-screen__filters">
-        <legend>状態</legend>
-        {FILTER_LABELS.map(([kind, label]) => (
+        <legend>{translate("scan.statusFilter")}</legend>
+        {FILTER_KINDS.map((kind) => (
           <Checkbox
             checked={statusFilters[kind]}
             key={kind}
             onChange={(checked) => setStatusFilters((current) => ({ ...current, [kind]: checked }))}
           >
-            {label}
+            {statusLabels[kind]}
           </Checkbox>
         ))}
       </fieldset>
 
       <div className="scan-screen__selection-bar">
-        <output aria-live="polite">{(selectedPaths.size + Number(selectedModpack)).toLocaleString("ja-JP")} 件選択中</output>
+        <output aria-live="polite">{selectedCountText(selectedPaths.size + Number(selectedModpack))}</output>
         <div>
           <TertiaryButton disabled={(visibleSelectable.length === 0 && visibleSelectableShaderpacks.length === 0 && !(showModpack && modpackSelectable)) || allVisibleSelected} onClick={() => updateVisibleSelection(true)}>
-            表示中を全選択
+            {translate("scan.selectVisible")}
           </TertiaryButton>
           <TertiaryButton disabled={(visibleSelectable.length === 0 && visibleSelectableShaderpacks.length === 0 && !(showModpack && modpackSelectable)) || (selectedPaths.size === 0 && !selectedModpack)} onClick={() => updateVisibleSelection(false)}>
-            表示中を全解除
+            {translate("scan.clearVisible")}
           </TertiaryButton>
         </div>
       </div>
@@ -485,7 +496,7 @@ export function ScanScreen() {
         <ul
           className="scan-screen__list"
           ref={listRef}
-          aria-label="スキャンしたModとシェーダーパック"
+          aria-label={translate("scan.resultsList")}
         >
           <li className="scan-screen__list-space" aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
           {virtualizer.getVirtualItems().map((virtualRow) => {
@@ -507,18 +518,20 @@ export function ScanScreen() {
                   >
                     <span className="scan-screen__row-content">
                       <span className="scan-screen__row-heading">
-                        <strong>Modpack 固有（クエスト・KubeJS）</strong>
-                        <span>{modpackScan.totalEntries.toLocaleString("ja-JP")} 件</span>
+                        <strong>{translate("scan.modpackName")}</strong>
+                        <span>{entryCountText(modpackScan.totalEntries)}</span>
                         <span className="scan-screen__status" data-status={oldFtb ? "partial" : "untranslated"}>
-                          {oldFtb ? "クエスト旧形式" : "翻訳対象"}
+                          {oldFtb ? translate("scan.legacyQuestFormat") : translate("scan.translatable")}
                         </span>
                       </span>
                       <span className="scan-screen__filename">
-                        クエスト {modpackScan.ftbQuestEntries.toLocaleString("ja-JP")} 件 · KubeJS {modpackScan.kubejsEntries.toLocaleString("ja-JP")} 件
+                        {translate("scan.modpackContents", { quests: formatNumber(modpackScan.ftbQuestEntries), kubejs: formatNumber(modpackScan.kubejsEntries) })}
                       </span>
                       {oldFtb && (
                         <span className="scan-screen__reason">
-                          この形式のクエストは翻訳できません{modpackScan.kubejsNamespaces.length > 0 ? "。KubeJS は取り込めます" : ""}
+                          {modpackScan.kubejsNamespaces.length > 0
+                            ? translate("scan.legacyQuestUnsupportedWithKubeJs")
+                            : translate("scan.legacyQuestUnsupported")}
                         </span>
                       )}
                     </span>
@@ -553,9 +566,9 @@ export function ScanScreen() {
                   >
                     <span className="scan-screen__row-content">
                       <span className="scan-screen__row-heading">
-                        <strong>シェーダーパック</strong>
-                        <span>{shaderpack.sourceKeyCount.toLocaleString("ja-JP")} 件</span>
-                        <span className="scan-screen__status" data-status={shaderpack.status.kind}>{statusLabel(shaderpack.status)}</span>
+                        <strong>{translate("scan.shaderpackName")}</strong>
+                        <span>{entryCountText(shaderpack.sourceKeyCount)}</span>
+                        <span className="scan-screen__status" data-status={shaderpack.status.kind}>{statusLabel(shaderpack.status, statusLabels)}</span>
                       </span>
                       <span className="scan-screen__filename">{shaderpack.fileName}</span>
                       {shaderpack.status.kind === "failed" && <span className="scan-screen__reason selectable">{shaderpack.status.reason}</span>}
@@ -566,7 +579,7 @@ export function ScanScreen() {
             }
             const selectable = isSelectable(result);
             const label = modName(result);
-            const version = result.mods[0]?.version ?? "バージョン不明";
+            const version = result.mods[0]?.version ?? translate("scan.unknownVersion");
             const checked = selectedPaths.has(result.path);
             return (
               <li
@@ -590,7 +603,7 @@ export function ScanScreen() {
                     <span className="scan-screen__row-heading">
                       <strong>{label}</strong>
                       <span>{version}</span>
-                      <span className="scan-screen__status" data-status={result.status.kind}>{statusLabel(result.status)}</span>
+                      <span className="scan-screen__status" data-status={result.status.kind}>{statusLabel(result.status, statusLabels)}</span>
                     </span>
                     <span className="scan-screen__filename">{result.fileName}</span>
                     {result.status.kind === "failed" && <span className="scan-screen__reason selectable">{result.status.reason}</span>}
@@ -602,13 +615,13 @@ export function ScanScreen() {
         </ul>
       ) : (
         <p className="scan-screen__empty">
-          {results.length === 0 && shaderpacks.length === 0 ? "Mod やシェーダーパックが見つかりません。" : "条件に合う項目がありません。"}
+          {results.length === 0 && shaderpacks.length === 0 ? translate("scan.noResults") : translate("scan.noMatches")}
         </p>
       )}
 
       <footer className="scan-screen__actions">
         <PrimaryButton disabled={(selectedPaths.size === 0 && !selectedModpack) || creating} onClick={() => void createSelectedProject()}>
-          {(selectedPaths.size + Number(selectedModpack)).toLocaleString("ja-JP")} 件でプロジェクトを作成
+          {createProjectText(selectedPaths.size + Number(selectedModpack))}
         </PrimaryButton>
       </footer>
       {scanError && <p className="status-message" role="alert">{scanError.userMessage}</p>}

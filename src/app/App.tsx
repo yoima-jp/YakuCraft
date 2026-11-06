@@ -16,11 +16,12 @@ import { useContextMenuPolicy } from "../components/ContextMenu";
 import { Tooltip } from "../components/Controls";
 import { TranslationScreen } from "../features/translation/TranslationScreen";
 import { OnboardingScreen } from "../features/onboarding/OnboardingScreen";
-import { useUiLanguage } from "../i18n";
+import { useT, useUiLanguage } from "../i18n";
 import "./App.css";
 
 export function App() {
   useContextMenuPolicy();
+  const translate = useT();
   const route = useAppStore((state) => state.route);
   const settingsReturnRoute = useAppStore((state) => state.settingsReturnRoute);
   const goTo = useAppStore((state) => state.goTo);
@@ -117,7 +118,7 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <button className="app-brand" type="button" aria-label="ホームへ戻る" disabled={homeDisabled} onClick={goHome}>
+        <button className="app-brand" type="button" aria-label={translate("app.home")} disabled={homeDisabled} onClick={goHome}>
           {/* アプリアイコン（src-tauri/icons/app-icon.svg）と同じ形。黒い枝は currentColor にして、
               ダークテーマでも文字色に追従して見えるようにする。緑はブランド色のまま固定する。 */}
           <svg className="app-brand__mark" viewBox="196 196 632 668" aria-hidden="true" focusable="false">
@@ -132,14 +133,14 @@ export function App() {
           <span>YakuCraft</span>
         </button>
         {route === "home" ? (
-          <nav className="app-header__actions" aria-label="画面操作">
-            <TertiaryButton onClick={() => void openSettings("general")}>設定</TertiaryButton>
+          <nav className="app-header__actions" aria-label={translate("app.screenActions")}>
+            <TertiaryButton onClick={() => void openSettings("general")}>{translate("app.settings")}</TertiaryButton>
           </nav>
         ) : (
-          <nav className="app-header__actions" aria-label="画面操作">
-            <Tooltip content="ホームへ戻る">
+          <nav className="app-header__actions" aria-label={translate("app.screenActions")}>
+            <Tooltip content={translate("app.home")}>
               <IconButton
-                aria-label="ホームへ戻る"
+                aria-label={translate("app.home")}
                 disabled={homeDisabled}
                 onClick={goHome}
               >
@@ -149,7 +150,7 @@ export function App() {
               </IconButton>
             </Tooltip>
             {route !== "settings" && route !== "loading" && route !== "analyze" && (
-              <TertiaryButton onClick={() => void openSettings("general")}>設定</TertiaryButton>
+              <TertiaryButton onClick={() => void openSettings("general")}>{translate("app.settings")}</TertiaryButton>
             )}
           </nav>
         )}
