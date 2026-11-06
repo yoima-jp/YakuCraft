@@ -8,6 +8,8 @@ import type { EditorFilter } from "../../stores/editorStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { formatNumber, useT } from "../../i18n";
+import { targetLanguageName } from "../../i18n/minecraftLanguages";
 import { cancelAiJob } from "../../lib/tauri";
 import { FILTER_OPTIONS } from "./TranslationTable";
 import type { SaveStatus } from "../../stores/editorStore";
@@ -27,8 +29,6 @@ interface EditorToolbarProps {
   editingDisabled?: boolean;
 }
 
-const NUMBER_FORMAT = new Intl.NumberFormat("ja-JP");
-
 export function EditorToolbar({
   searchRef,
   onExport,
@@ -42,6 +42,7 @@ export function EditorToolbar({
   addDisabled = false,
   editingDisabled = false,
 }: EditorToolbarProps) {
+  const t = useT();
   const initialQuery = useEditorStore((state) => state.searchQuery);
   const namespaces = useEditorStore((state) => state.namespaces);
   const namespaceFilter = useEditorStore((state) => state.namespaceFilter);
@@ -53,6 +54,8 @@ export function EditorToolbar({
   const entries = useEditorStore((state) => state.entries);
   const activeAiJob = useAiJobStore((state) => state.activeJob);
   const modUnitCount = useProjectStore((state) => state.modUnits.length);
+  const targetLocale = useProjectStore((state) => state.details?.targetLocale ?? "ja_jp");
+  const targetLanguage = targetLanguageName(targetLocale);
   const aiNotice = useAiJobStore((state) => state.notice);
   const clearAiNotice = useAiJobStore((state) => state.clearNotice);
   const canUndo = useEditorStore((state) => state.undoStack.length > 0);
@@ -69,20 +72,19 @@ export function EditorToolbar({
 
   const saveMessage =
     saveStatus === "saving"
-      ? "保存中…"
+      ? t("editor.save.saving")
       : saveStatus === "error"
-        ? "保存できませんでした"
-        : "保存済み";
+        ? t("editor.save.failed")
+        : t("editor.save.saved");
+  const reviewCountKey = needsReviewCount === 1 ? "editor.progress.review_one" : "editor.progress.review";
 
   return (
     <>
       <header className="editor-toolbar">
-        <h1 className="editor-toolbar__title">
-          翻訳
-        </h1>
+        <h1 className="editor-toolbar__title">{t("editor.title")}</h1>
         <label className="editor-toolbar__search-label" htmlFor="translation-search">
-          <span className="visually-hidden">検索</span>
-          <Tooltip content="キー・原文・日本語を検索" shortcut="Ctrl+F">
+          <span className="visually-hidden">{t("editor.search.label")}</span>
+          <Tooltip content={t("editor.search.description", { language: targetLanguage })} shortcut="Ctrl+F">
             <input
               ref={searchRef}
               id="translation-search"
@@ -94,32 +96,32 @@ export function EditorToolbar({
               spellCheck={false}
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="検索"
+              placeholder={t("editor.search.label")}
               aria-keyshortcuts="Control+F"
             />
           </Tooltip>
         </label>
-        <Menu className="editor-toolbar__filters" aria-label="絞り込み" trigger="絞り込み" panelRole="group">
+        <Menu className="editor-toolbar__filters" aria-label={t("editor.search.filter")} trigger={t("editor.search.filter")} panelRole="group">
           <fieldset className="editor-toolbar__filters-panel">
-            <legend className="visually-hidden">翻訳の絞り込み</legend>
+            <legend className="visually-hidden">{t("editor.search.filterLegend")}</legend>
             <div>
-              <span>状態</span>
+              <span>{t("editor.search.status")}</span>
               <Select
-                aria-label="状態"
+                aria-label={t("editor.search.status")}
                 className="editor-toolbar__select"
-                options={FILTER_OPTIONS.map(([value, label]) => ({ value, label }))}
+                options={FILTER_OPTIONS.map(([value, messageKey]) => ({ value, label: t(messageKey) }))}
                 value={filter}
                 onChange={(value) => setFilter(value as EditorFilter)}
               />
             </div>
             {namespaces.length > 1 && (
               <div>
-                <span>名前空間</span>
+                <span>{t("editor.column.namespace")}</span>
                 <Select
-                  aria-label="名前空間"
+                  aria-label={t("editor.column.namespace")}
                   className="editor-toolbar__select"
                   options={[
-                    { value: "all", label: "すべて" },
+                    { value: "all", label: t("editor.filter.all") },
                     ...namespaces.map((namespace) => ({ value: namespace, label: namespace })),
                   ]}
                   value={namespaceFilter}
@@ -130,16 +132,16 @@ export function EditorToolbar({
           </fieldset>
         </Menu>
         <fieldset className="editor-toolbar__history">
-          <legend className="visually-hidden">編集履歴</legend>
-          <Tooltip content="元に戻す" shortcut="Ctrl+Z">
-            <IconButton onClick={undo} disabled={editingDisabled || !canUndo || Boolean(activeAiJob)} aria-label="元に戻す" aria-keyshortcuts="Control+Z">
+          <legend className="visually-hidden">{t("editor.history")}</legend>
+          <Tooltip content={t("editor.history.undo")} shortcut="Ctrl+Z">
+            <IconButton onClick={undo} disabled={editingDisabled || !canUndo || Boolean(activeAiJob)} aria-label={t("editor.history.undo")} aria-keyshortcuts="Control+Z">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M9 14 4 9l5-5M4 9h8a6 6 0 1 1 0 12" />
               </svg>
             </IconButton>
           </Tooltip>
-          <Tooltip content="やり直す" shortcut="Ctrl+Y">
-            <IconButton onClick={redo} disabled={editingDisabled || !canRedo || Boolean(activeAiJob)} aria-label="やり直す" aria-keyshortcuts="Control+Y">
+          <Tooltip content={t("editor.history.redo")} shortcut="Ctrl+Y">
+            <IconButton onClick={redo} disabled={editingDisabled || !canRedo || Boolean(activeAiJob)} aria-label={t("editor.history.redo")} aria-keyshortcuts="Control+Y">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="m15 14 5-5-5-5m5 5h-8a6 6 0 1 0 0 12" />
               </svg>
@@ -148,63 +150,63 @@ export function EditorToolbar({
         </fieldset>
         <div className="editor-toolbar__progress" aria-live="polite">
           <span>
-            {NUMBER_FORMAT.format(translatedCount)} / {NUMBER_FORMAT.format(orderedCount)} 翻訳済み
+            {t("editor.progress.completed", { translated: formatNumber(translatedCount), total: formatNumber(orderedCount) })}
           </span>
-          <span className="editor-toolbar__review-count">{NUMBER_FORMAT.format(needsReviewCount)}件 要確認</span>
+          <span className="editor-toolbar__review-count">{t(reviewCountKey, { count: formatNumber(needsReviewCount) })}</span>
         </div>
         <div className="editor-toolbar__save">
           <output data-testid="editor-save-status" aria-live="polite">{saveMessage}</output>
           {saveStatus === "error" && (
             <TertiaryButton onClick={onRetrySave}>
-              再試行
+              {t("editor.save.retry")}
             </TertiaryButton>
           )}
         </div>
-        <Menu className="editor-toolbar__ai-menu" panelAlignment="end" panelClassName="editor-toolbar__ai-menu-panel" aria-label="AI翻訳" trigger="AI翻訳" panelRole="menu">
+        <Menu className="editor-toolbar__ai-menu" panelAlignment="end" panelClassName="editor-toolbar__ai-menu-panel" aria-label={t("editor.ai.menu")} trigger={t("editor.ai.menu")} panelRole="menu">
           <MenuItem
             disabled={editingDisabled || Boolean(activeAiJob)}
             onClick={() => void translateWithAi(orderedIds.filter((id) => !entries.get(id)?.targetText), requestConfirmation)}
           >
-            未翻訳を翻訳
+            {t("editor.ai.translateMissing")}
           </MenuItem>
           {modUnitCount > 1 && (
             <MenuItem
               disabled={editingDisabled || Boolean(activeAiJob)}
               onClick={() => void translateWholeProjectWithAi(requestConfirmation)}
             >
-              プロジェクト全体の未翻訳を翻訳
+              {t("editor.ai.translateProjectMissing")}
             </MenuItem>
           )}
         </Menu>
         <TertiaryButton data-testid="editor-toggle-inspector" onClick={onToggleInspector} aria-expanded={inspectorOpen}>
-          詳細
+          {t("editor.inspector.toggle")}
         </TertiaryButton>
         <TertiaryButton data-testid="editor-add-mod" disabled={addDisabled} onClick={onAddMod}>
-          追加
+          {t("editor.add")}
         </TertiaryButton>
-        <TertiaryButton onClick={onOpenGlossary}>用語集</TertiaryButton>
-        <Tooltip content="書き出し" shortcut="Ctrl+E">
+        <TertiaryButton onClick={onOpenGlossary}>{t("glossary.title")}</TertiaryButton>
+        <Tooltip content={t("editor.export")} shortcut="Ctrl+E">
           <PrimaryButton data-testid="editor-export" onClick={onExport} aria-keyshortcuts="Control+E">
-            書き出し
+            {t("editor.export")}
           </PrimaryButton>
         </Tooltip>
       </header>
       {activeAiJob && (
         <div className="editor-ai-progress" aria-live="polite">
-          <span>AI翻訳 {activeAiJob.completed.toLocaleString("ja-JP")} / {activeAiJob.total.toLocaleString("ja-JP")}</span>
+          <span>{t("editor.ai.progress", { completed: formatNumber(activeAiJob.completed), total: formatNumber(activeAiJob.total) })}</span>
           <TertiaryButton
             disabled={!activeAiJob.id}
             onClick={() => activeAiJob.id && void cancelAiJob(activeAiJob.id)}
-            aria-label="AI翻訳をキャンセル"
+            aria-label={t("editor.ai.cancel")}
           >
-            キャンセル
+            {t("editor.ai.cancel")}
           </TertiaryButton>
         </div>
       )}
       {aiNotice && (
         <output className="editor-ai-notice" aria-live="polite">
           <span>{aiNotice}</span>
-          <TertiaryButton onClick={clearAiNotice} aria-label="通知を閉じる">閉じる</TertiaryButton>
+          <TertiaryButton onClick={clearAiNotice} aria-label={t("editor.notification.close")}>{t("editor.close")}</TertiaryButton>
         </output>
       )}
     </>
@@ -220,24 +222,25 @@ export function EditorSelectionToolbar({
   disabled: boolean;
   onTranslate: () => void;
 }) {
+  const t = useT();
   const visible = selectedCount > 0;
   return (
     <div
       className={`editor-selection-toolbar${visible ? " editor-selection-toolbar--visible" : ""}`}
       role="toolbar"
-      aria-label="選択中の項目"
+      aria-label={t("editor.selection.ariaLabel")}
       aria-hidden={!visible}
       inert={!visible}
     >
-      <span aria-live="polite">{NUMBER_FORMAT.format(selectedCount)}件選択中</span>
-      <Tooltip content="AIで翻訳" shortcut="Ctrl+Enter">
+      <span aria-live="polite">{t("editor.selection.count", { count: formatNumber(selectedCount) })}</span>
+      <Tooltip content={t("editor.ai.translate")} shortcut="Ctrl+Enter">
         <TertiaryButton
           disabled={disabled || !visible}
           onClick={onTranslate}
           aria-keyshortcuts="Control+Enter"
           tabIndex={visible ? 0 : -1}
         >
-          AIで翻訳
+          {t("editor.ai.translate")}
         </TertiaryButton>
       </Tooltip>
     </div>

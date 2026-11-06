@@ -6,7 +6,10 @@ import { PrimaryButton, TertiaryButton } from "../../components/button/Buttons";
 import { AppCommandError, deleteGlossaryTerm, exportGlossary, glossaryCandidates, importGlossary, listGlossaryTerms, updateGlossaryTerm, upsertGlossaryTerm, upsertGlossaryTerms } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
+import { formatNumber, lowerText, t as translate, useT, useUiLanguage } from "../../i18n";
+import { minecraftLocaleToBcp47 } from "../../i18n/minecraftLanguages";
 import { useEditorStore } from "../../stores/editorStore";
+import { useProjectStore } from "../../stores/projectStore";
 import type { GlossaryCandidate, GlossaryTerm, GlossaryTermInput } from "../../types/translation";
 import "./GlossaryPanel.css";
 
@@ -26,8 +29,12 @@ interface GlossaryPanelProps {
 type PanelMode = "terms" | "candidates";
 
 export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProps) {
+  const t = useT();
+  const uiLanguage = useUiLanguage();
   const terms = useEditorStore((state) => state.glossaryTerms);
   const setGlossaryTerms = useEditorStore((state) => state.setGlossaryTerms);
+  const targetLocale = useProjectStore((state) => state.details?.targetLocale ?? "ja_jp");
+  const targetLang = minecraftLocaleToBcp47(targetLocale);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<PanelMode>("terms");
   const [candidates, setCandidates] = useState<GlossaryCandidate[]>([]);
@@ -42,17 +49,17 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
   const [notice, setNotice] = useState<string | null>(null);
 
   const filteredTerms = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = lowerText(query.trim(), uiLanguage);
     return normalizedQuery
-      ? terms.filter((term) => `${term.sourceTerm}\n${term.targetTerm}\n${term.note ?? ""}`.toLowerCase().includes(normalizedQuery))
+      ? terms.filter((term) => lowerText(`${term.sourceTerm}\n${term.targetTerm}\n${term.note ?? ""}`, uiLanguage).includes(normalizedQuery))
       : terms;
-  }, [query, terms]);
+  }, [query, terms, uiLanguage]);
   const filteredCandidates = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = lowerText(query.trim(), uiLanguage);
     return normalizedQuery
-      ? candidates.filter((candidate) => `${candidate.sourceTerm}\n${candidate.targetTerm}`.toLowerCase().includes(normalizedQuery))
+      ? candidates.filter((candidate) => lowerText(`${candidate.sourceTerm}\n${candidate.targetTerm}`, uiLanguage).includes(normalizedQuery))
       : candidates;
-  }, [candidates, query]);
+  }, [candidates, query, uiLanguage]);
   const visibleItems = mode === "terms" ? filteredTerms : filteredCandidates;
   // oxlint-disable-next-line react/incompatible-library -- Virtualizer reads the live scroll element during render.
   const virtualizer = useVirtualizer({
@@ -77,7 +84,7 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
         if (active) setGlossaryTerms(loaded);
       })
       .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, "用語集を読み込めませんでした。"));
+        if (active) setError(errorMessage(reason, translate("glossary.loadFailed")));
       });
     return () => { active = false; };
   }, [initialDraft, open, setGlossaryTerms]);
@@ -95,16 +102,16 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
         ? await upsertGlossaryTerm(input)
         : await updateGlossaryTerm(id, input);
       setGlossaryTerms(savedTerms);
-      setNotice("保存しました");
+      setNotice(t("glossary.saved"));
       return true;
     } catch (reason: unknown) {
       if (id !== undefined && isGlossaryTermConflict(reason)) return "duplicate" as const;
-      setError(errorMessage(reason, "用語を保存できませんでした。"));
+      setError(errorMessage(reason, t("glossary.saveFailed")));
       return false;
     } finally {
       setBusy(false);
     }
-  }, [setGlossaryTerms]);
+  }, [setGlossaryTerms, t]);
 
   const showCandidates = useCallback(async () => {
     setBusy(true);
@@ -114,11 +121,11 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
       setSelectedCandidates(new Map());
       setMode("candidates");
     } catch (reason: unknown) {
-      setError(errorMessage(reason, "候補を読み込めませんでした。"));
+      setError(errorMessage(reason, t("glossary.candidatesLoadFailed")));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [t]);
 
   const addSelectedCandidates = useCallback(async () => {
     if (selectedCandidates.size === 0) return;
@@ -133,13 +140,14 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
       }));
       setGlossaryTerms(await upsertGlossaryTerms(inputs));
       setMode("terms");
-      setNotice(`${inputs.length.toLocaleString("ja-JP")}件を追加しました`);
+      const messageKey = inputs.length === 1 ? "glossary.candidatesAdded_one" : "glossary.candidatesAdded";
+      setNotice(t(messageKey, { count: formatNumber(inputs.length) }));
     } catch (reason: unknown) {
-      setError(errorMessage(reason, "候補を追加できませんでした。"));
+      setError(errorMessage(reason, t("glossary.candidatesAddFailed")));
     } finally {
       setBusy(false);
     }
-  }, [selectedCandidates, setGlossaryTerms]);
+  }, [selectedCandidates, setGlossaryTerms, t]);
 
   const importFile = useCallback(async () => {
     setError(null);
@@ -151,13 +159,13 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
       });
       if (typeof path !== "string") return;
       setGlossaryTerms(await importGlossary(path));
-      setNotice("取り込みました");
+      setNotice(t("glossary.imported"));
     } catch (reason: unknown) {
-      setError(errorMessage(reason, "用語集を取り込めませんでした。"));
+      setError(errorMessage(reason, t("glossary.importFailed")));
     } finally {
       setBusy(false);
     }
-  }, [setGlossaryTerms]);
+  }, [setGlossaryTerms, t]);
 
   const exportFile = useCallback(async () => {
     setError(null);
@@ -169,13 +177,14 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
       });
       if (!path) return;
       const count = await exportGlossary(path);
-      setNotice(`${count.toLocaleString("ja-JP")}件を書き出しました`);
+      const messageKey = count === 1 ? "glossary.exported_one" : "glossary.exported";
+      setNotice(t(messageKey, { count: formatNumber(count) }));
     } catch (reason: unknown) {
-      setError(errorMessage(reason, "用語集を書き出せませんでした。"));
+      setError(errorMessage(reason, t("glossary.exportFailed")));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [t]);
 
   const toggleCandidate = useCallback((candidate: GlossaryCandidate, checked: boolean) => {
     setSelectedCandidates((current) => {
@@ -190,16 +199,16 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
   }, []);
 
   return (
-    <Dialog open={open} onClose={onClose} title="用語集" closeOnBackdrop>
+    <Dialog open={open} onClose={onClose} title={t("glossary.title")} closeOnBackdrop>
       <div className="glossary-panel">
         <div className="glossary-panel__toolbar">
-          <button className="glossary-panel__close" type="button" onClick={onClose} aria-label="閉じる">
+          <button className="glossary-panel__close" type="button" onClick={onClose} aria-label={t("glossary.close")}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
           <input
             type="search"
-            aria-label="用語を検索"
-            placeholder="検索"
+            aria-label={t("glossary.search")}
+            placeholder={t("glossary.searchPlaceholder")}
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
@@ -207,10 +216,10 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
             if (mode === "terms") void showCandidates();
             else setMode("terms");
           }}>
-            {mode === "terms" ? "候補" : "一覧"}
+            {mode === "terms" ? t("glossary.mode.candidates") : t("glossary.mode.list")}
           </TertiaryButton>
-          <TertiaryButton disabled={busy} onClick={() => void importFile()}>取込</TertiaryButton>
-          <TertiaryButton disabled={busy} onClick={() => void exportFile()}>書出</TertiaryButton>
+          <TertiaryButton disabled={busy} onClick={() => void importFile()}>{t("glossary.import")}</TertiaryButton>
+          <TertiaryButton disabled={busy} onClick={() => void exportFile()}>{t("glossary.export")}</TertiaryButton>
         </div>
         <form className="glossary-panel__add" onSubmit={(event) => {
           event.preventDefault();
@@ -227,26 +236,28 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
             setNote("");
           });
         }}>
-          <input aria-label="原文" placeholder="原文" value={sourceTerm} onChange={(event) => setSourceTerm(event.currentTarget.value)} />
-          <input aria-label="訳語" placeholder="訳語" value={targetTerm} onChange={(event) => setTargetTerm(event.currentTarget.value)} />
-          <input aria-label="メモ" placeholder="メモ" value={note} onChange={(event) => setNote(event.currentTarget.value)} />
-          <label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.currentTarget.checked)} />大小区別</label>
-          <PrimaryButton disabled={busy || !sourceTerm.trim() || !targetTerm.trim()}>追加</PrimaryButton>
+          <input aria-label={t("glossary.source")} placeholder={t("glossary.source")} value={sourceTerm} onChange={(event) => setSourceTerm(event.currentTarget.value)} />
+          <input aria-label={t("glossary.target")} placeholder={t("glossary.target")} lang={targetLang} dir="auto" value={targetTerm} onChange={(event) => setTargetTerm(event.currentTarget.value)} />
+          <input aria-label={t("glossary.note")} placeholder={t("glossary.note")} value={note} onChange={(event) => setNote(event.currentTarget.value)} />
+          <label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.currentTarget.checked)} />{t("glossary.caseSensitive")}</label>
+          <PrimaryButton disabled={busy || !sourceTerm.trim() || !targetTerm.trim()}>{t("glossary.add")}</PrimaryButton>
         </form>
         {mode === "candidates" && (
           <div className="glossary-panel__candidate-actions">
-            <span>{filteredCandidates.length.toLocaleString("ja-JP")}件</span>
+            <span>{t("glossary.candidateCount", { count: formatNumber(filteredCandidates.length) })}</span>
             <PrimaryButton disabled={busy || selectedCandidates.size === 0} onClick={() => void addSelectedCandidates()}>
-              追加 {selectedCandidates.size > 0 ? selectedCandidates.size.toLocaleString("ja-JP") : ""}
+              {selectedCandidates.size > 0
+                ? t("glossary.addSelected", { count: formatNumber(selectedCandidates.size) })
+                : t("glossary.addSelectedNone")}
             </PrimaryButton>
           </div>
         )}
         {error && <p className="glossary-panel__message" role="alert">{error}</p>}
         {notice && <output className="glossary-panel__message">{notice}</output>}
         {visibleItems.length === 0 ? (
-          <p className="glossary-panel__empty">{mode === "terms" ? "用語はありません" : "候補はありません"}</p>
+          <p className="glossary-panel__empty">{mode === "terms" ? t("glossary.termsEmpty") : t("glossary.candidatesEmpty")}</p>
         ) : (
-          <div className="glossary-panel__list" ref={scrollRef} role="list" aria-label={mode === "terms" ? "用語一覧" : "候補一覧"}>
+          <div className="glossary-panel__list" ref={scrollRef} role="list" aria-label={mode === "terms" ? t("glossary.termsList") : t("glossary.candidatesList")}>
             <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
               {virtualizer.getVirtualItems().map((row) => {
                 const item = visibleItems[row.index];
@@ -269,15 +280,16 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
                       <GlossaryTermRow
                         term={item as GlossaryTerm}
                         busy={busy}
+                        targetLang={targetLang}
                         onSave={(id, input) => save(input, id)}
                         onDelete={async (id) => {
                           setBusy(true);
                           setError(null);
                           try {
                             setGlossaryTerms(await deleteGlossaryTerm(id));
-                            setNotice("削除しました");
+                            setNotice(t("glossary.deleted"));
                           } catch (reason: unknown) {
-                            setError(errorMessage(reason, "用語を削除できませんでした。"));
+                            setError(errorMessage(reason, t("glossary.deleteFailed")));
                           } finally {
                             setBusy(false);
                           }
@@ -287,6 +299,7 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
                       <CandidateRow
                         candidate={item as GlossaryCandidate}
                         checked={selectedCandidates.has(candidateKey(item as GlossaryCandidate))}
+                        targetLang={targetLang}
                         onChange={(checked) => toggleCandidate(item as GlossaryCandidate, checked)}
                       />
                     )}
@@ -304,14 +317,17 @@ export function GlossaryPanel({ open, initialDraft, onClose }: GlossaryPanelProp
 function GlossaryTermRow({
   term,
   busy,
+  targetLang,
   onSave,
   onDelete,
 }: {
   term: GlossaryTerm;
   busy: boolean;
+  targetLang: string | undefined;
   onSave: (id: number, input: GlossaryTermInput) => Promise<boolean | "duplicate">;
   onDelete: (id: number) => void;
 }) {
+  const t = useT();
   const [sourceError, setSourceError] = useState(false);
   const sourceInput = useRef<HTMLInputElement>(null);
   const targetInput = useRef<HTMLInputElement>(null);
@@ -322,17 +338,17 @@ function GlossaryTermRow({
       <div className="glossary-panel__source-field">
         <input
           ref={sourceInput}
-          aria-label={`原文 ${term.sourceTerm}`}
+          aria-label={t("glossary.termSource", { term: term.sourceTerm })}
           aria-invalid={sourceError || undefined}
           aria-describedby={sourceError ? `glossary-term-${term.id}-source-error` : undefined}
           defaultValue={term.sourceTerm}
           onChange={() => setSourceError(false)}
         />
-        {sourceError && <span id={`glossary-term-${term.id}-source-error`} className="glossary-panel__term-error" role="alert">重複しています</span>}
+        {sourceError && <span id={`glossary-term-${term.id}-source-error`} className="glossary-panel__term-error" role="alert">{t("glossary.duplicate")}</span>}
       </div>
-      <input ref={targetInput} aria-label={`訳語 ${term.sourceTerm}`} defaultValue={term.targetTerm} />
-      <input ref={noteInput} aria-label={`メモ ${term.sourceTerm}`} defaultValue={term.note ?? ""} />
-      <label><input ref={caseInput} type="checkbox" defaultChecked={term.caseSensitive} />大小区別</label>
+      <input ref={targetInput} aria-label={t("glossary.termTarget", { term: term.sourceTerm })} lang={targetLang} dir="auto" defaultValue={term.targetTerm} />
+      <input ref={noteInput} aria-label={t("glossary.termNote", { term: term.sourceTerm })} defaultValue={term.note ?? ""} />
+      <label><input ref={caseInput} type="checkbox" defaultChecked={term.caseSensitive} />{t("glossary.caseSensitive")}</label>
       <TertiaryButton
         disabled={busy}
         onClick={() => {
@@ -344,8 +360,8 @@ function GlossaryTermRow({
           };
           void onSave(term.id, input).then((result) => setSourceError(result === "duplicate"));
         }}
-      >保存</TertiaryButton>
-      <TertiaryButton disabled={busy} onClick={() => onDelete(term.id)} aria-label={`用語 ${term.sourceTerm} を削除`}>削除</TertiaryButton>
+      >{t("glossary.save")}</TertiaryButton>
+      <TertiaryButton disabled={busy} onClick={() => onDelete(term.id)} aria-label={t("glossary.termDelete", { term: term.sourceTerm })}>{t("glossary.delete")}</TertiaryButton>
     </div>
   );
 }
@@ -353,17 +369,19 @@ function GlossaryTermRow({
 function CandidateRow({
   candidate,
   checked,
+  targetLang,
   onChange,
 }: {
   candidate: GlossaryCandidate;
   checked: boolean;
+  targetLang: string | undefined;
   onChange: (checked: boolean) => void;
 }) {
   return (
     <label className="glossary-panel__candidate-row">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
-      <span>{candidate.sourceTerm} → {candidate.targetTerm}</span>
-      <span className="glossary-panel__candidate-count">{candidate.count.toLocaleString("ja-JP")}</span>
+      <span>{candidate.sourceTerm} → <span lang={targetLang} dir="auto">{candidate.targetTerm}</span></span>
+      <span className="glossary-panel__candidate-count">{formatNumber(candidate.count)}</span>
     </label>
   );
 }

@@ -1,5 +1,6 @@
 import type { TranslationEntry } from "../../types/translation";
 import { updateEntriesBatch } from "../../lib/tauri";
+import { t } from "../../i18n";
 
 export interface EditorPersistence {
   save(entries: readonly TranslationEntry[]): Promise<TranslationEntry[]>;
@@ -31,7 +32,7 @@ export class MockEditorPersistence implements EditorPersistence {
     }
     if (this.failuresRemaining > 0) {
       this.failuresRemaining -= 1;
-      throw new Error("モック保存に失敗しました");
+      throw new Error(t("editor.mockSaveFailed"));
     }
     for (const entry of entries) this.savedEntries.set(entry.id, entry);
     return [...entries];

@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { SecondaryButton, TertiaryButton } from "../../components/button/Buttons";
 import { Checkbox, Dialog } from "../../components/Controls";
 import { ProgressBar } from "../../components/progress/ProgressBar";
+import { formatNumber, lowerText, t, useT } from "../../i18n";
 import { cancelAnalysis, isShaderpackFolder } from "../../lib/tauri";
 import { openFileDialog } from "../../lib/dialogs";
 import { logFrontendError } from "../../lib/errorLogging";
@@ -22,19 +23,19 @@ type Candidate = {
   path: string;
   fileName: string;
   label: string;
-  version: string;
+  version: string | null;
   kind: "jar" | "shaderpack";
   count: number;
   status: ModLanguageStatusDto;
 };
 
-const STATUS_LABELS: Record<ModLanguageStatusDto["kind"], string> = {
-  untranslated: "未翻訳",
-  partial: "部分翻訳",
-  complete: "翻訳済み",
-  no_language_files: "言語ファイルなし",
-  failed: "読み込み失敗",
-};
+const STATUS_LABELS = {
+  untranslated: "editor.addUnits.status.untranslated",
+  partial: "editor.addUnits.status.partial",
+  complete: "editor.addUnits.status.complete",
+  no_language_files: "editor.addUnits.status.noFiles",
+  failed: "editor.addUnits.status.failed",
+} as const;
 
 function candidateFromMod(result: ModScanResultDto): Candidate {
   const mod = result.mods[0];
@@ -42,7 +43,7 @@ function candidateFromMod(result: ModScanResultDto): Candidate {
     path: result.path,
     fileName: result.fileName,
     label: mod?.name ?? mod?.modId ?? result.fileName,
-    version: mod?.version ?? "バージョン不明",
+    version: mod?.version ?? null,
     kind: "jar",
     count: result.sourceKeyCount,
     status: result.status,
@@ -53,8 +54,8 @@ function candidateFromShaderpack(result: ShaderpackScanResultDto): Candidate {
   return {
     path: result.path,
     fileName: result.fileName,
-    label: "シェーダーパック",
-    version: "",
+    label: "",
+    version: null,
     kind: "shaderpack",
     count: result.sourceKeyCount,
     status: result.status,
@@ -65,13 +66,7 @@ function appError(error: unknown): AppError {
   void logFrontendError(error, "add mod instance scan");
   return error instanceof Error && "appError" in error
     ? (error as Error & { appError: AppError }).appError
-    : { code: "unexpected", userMessage: "インスタンスをスキャンできませんでした。", recoverable: true };
-}
-
-function statusLabel(status: ModLanguageStatusDto): string {
-  return status.kind === "partial"
-    ? `部分翻訳 ${Math.round(status.coverage * 100)}%`
-    : STATUS_LABELS[status.kind];
+    : { code: "unexpected", userMessage: t("editor.addUnits.scanFailed"), recoverable: true };
 }
 
 export function AddUnitsDialog({
@@ -89,6 +84,7 @@ export function AddUnitsDialog({
   onClose: () => void;
   onAdd: (paths: string[]) => void;
 }) {
+  const t = useT();
   const listRef = useRef<HTMLUListElement>(null);
   const scanGenerationRef = useRef(0);
   const scanJobRef = useRef<string | null>(null);
@@ -101,13 +97,16 @@ export function AddUnitsDialog({
   const [scanJobId, setScanJobId] = useState<string | null>(null);
   const [scanCancelRequested, setScanCancelRequested] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const addCountKey = selectedPaths.size === 1 ? "editor.addUnits.addCount_one" : "editor.addUnits.addCount";
 
   const visibleCandidates = useMemo(() => {
     if (!results) return [];
-    const query = search.trim().toLocaleLowerCase();
-    return results.filter((candidate) => !query || [candidate.label, candidate.fileName]
-      .some((value) => value.toLocaleLowerCase().includes(query)));
-  }, [results, search]);
+    const query = lowerText(search.trim());
+    return results.filter((candidate) => !query || [
+      candidate.kind === "shaderpack" ? t("editor.shaderpack") : candidate.label,
+      candidate.fileName,
+    ].some((value) => lowerText(value).includes(query)));
+  }, [results, search, t]);
 
   // TanStack Virtual keeps instance scans with many mods responsive.
   // oxlint-disable-next-line react/incompatible-library
@@ -182,14 +181,14 @@ export function AddUnitsDialog({
       const selected = await openFileDialog({
         multiple: true,
         directory: false,
-        filters: [{ name: "JAR / シェーダー ZIP", extensions: ["jar", "zip"] }],
+        filters: [{ name: t("editor.addUnits.fileFilter"), extensions: ["jar", "zip"] }],
       });
       if (!selected) return;
       onClose();
       onAdd(typeof selected === "string" ? [selected] : selected);
     } catch (error: unknown) {
       void logFrontendError(error, "add mod file picker");
-      setPickerError("ファイルを選べませんでした。もう一度お試しください。");
+      setPickerError(t("editor.addUnits.filePickerFailed"));
     }
   };
 
@@ -207,7 +206,7 @@ export function AddUnitsDialog({
       }
     } catch (error: unknown) {
       void logFrontendError(error, "add folder picker");
-      setPickerError("フォルダを選べませんでした。もう一度お試しください。");
+      setPickerError(t("editor.addUnits.folderPickerFailed"));
     }
   };
 
@@ -247,13 +246,13 @@ export function AddUnitsDialog({
   };
 
   return (
-    <Dialog open={open} onClose={close} title="追加">
+    <Dialog open={open} onClose={close} title={t("editor.addUnits.title")}>
       <div className="add-units-dialog">
         {results === null && !scanProgress && !scanJobId && (
           <div className="add-units-dialog__sources">
-            <SecondaryButton disabled={busy} onClick={() => void chooseFiles()}>ファイルを選ぶ</SecondaryButton>
-            <SecondaryButton disabled={busy} onClick={() => void chooseFolder()}>フォルダを選ぶ</SecondaryButton>
-            {instancePath && <SecondaryButton disabled={busy} onClick={() => void scanInstance()}>インスタンスから選ぶ</SecondaryButton>}
+            <SecondaryButton disabled={busy} onClick={() => void chooseFiles()}>{t("editor.addUnits.chooseFiles")}</SecondaryButton>
+            <SecondaryButton disabled={busy} onClick={() => void chooseFolder()}>{t("editor.addUnits.chooseFolder")}</SecondaryButton>
+            {instancePath && <SecondaryButton disabled={busy} onClick={() => void scanInstance()}>{t("editor.addUnits.chooseInstance")}</SecondaryButton>}
           </div>
         )}
 
@@ -267,15 +266,15 @@ export function AddUnitsDialog({
           <div className="add-units-dialog__progress">
             <ProgressBar
               value={scanProgress?.total ? Math.round(scanProgress.completed / scanProgress.total * 100) : 0}
-              label="インスタンスのスキャン進行状況"
+              label={t("editor.addUnits.instanceScanLabel")}
             />
             <output aria-live="polite">
               {scanProgress
                 ? `${scanProgress.completed} / ${scanProgress.total} · ${scanProgress.currentFile}`
-                : "準備中…"}
+                : t("editor.addUnits.preparing")}
             </output>
             <SecondaryButton disabled={scanCancelRequested} onClick={() => void cancelScan()}>
-              {scanCancelRequested ? "中止中…" : "キャンセル"}
+              {scanCancelRequested ? t("editor.add.cancelling") : t("editor.ai.cancel")}
             </SecondaryButton>
           </div>
         )}
@@ -283,18 +282,18 @@ export function AddUnitsDialog({
         {results !== null && (
           <>
             <label className="add-units-dialog__search">
-              <span className="visually-hidden">名前で検索</span>
-              <input type="search" value={search} onChange={(event) => setSearch(event.currentTarget.value)} placeholder="名前で検索" />
+              <span className="visually-hidden">{t("editor.addUnits.search")}</span>
+              <input type="search" value={search} onChange={(event) => setSearch(event.currentTarget.value)} placeholder={t("editor.addUnits.search")} />
             </label>
             <div className="add-units-dialog__selection">
-              <output>{selectedPaths.size.toLocaleString("ja-JP")} 件選択中</output>
+              <output>{t("editor.addUnits.selected", { count: formatNumber(selectedPaths.size) })}</output>
               <div>
-                <TertiaryButton disabled={visibleCandidates.length === 0} onClick={() => selectVisible(true)}>表示中を全選択</TertiaryButton>
-                <TertiaryButton disabled={selectedPaths.size === 0} onClick={() => selectVisible(false)}>表示中を全解除</TertiaryButton>
+                <TertiaryButton disabled={visibleCandidates.length === 0} onClick={() => selectVisible(true)}>{t("editor.addUnits.selectVisible")}</TertiaryButton>
+                <TertiaryButton disabled={selectedPaths.size === 0} onClick={() => selectVisible(false)}>{t("editor.addUnits.clearVisible")}</TertiaryButton>
               </div>
             </div>
             {visibleCandidates.length > 0 ? (
-              <ul className="add-units-dialog__list" ref={listRef} aria-label="追加できるModとシェーダーパック">
+              <ul className="add-units-dialog__list" ref={listRef} aria-label={t("editor.addUnits.available")}>
                 <li aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
                 {virtualizer.getVirtualItems().map((row) => {
                   const candidate = visibleCandidates[row.index];
@@ -321,10 +320,14 @@ export function AddUnitsDialog({
                       >
                         <span className="add-units-dialog__row-content">
                           <span className="add-units-dialog__heading">
-                            <strong>{candidate.label}</strong>
-                            {candidate.version && <span>{candidate.version}</span>}
+                            <strong>{candidate.kind === "shaderpack" ? t("editor.shaderpack") : candidate.label}</strong>
+                            {candidate.kind === "jar" && candidate.version === null
+                              ? <span>{t("editor.unknownVersion")}</span>
+                              : candidate.version && <span>{candidate.version}</span>}
                             <span className="add-units-dialog__status" data-status={candidate.status.kind}>
-                              {statusLabel(candidate.status)}
+                              {candidate.status.kind === "partial"
+                                ? t(STATUS_LABELS.partial, { coverage: Math.round(candidate.status.coverage * 100) })
+                                : t(STATUS_LABELS[candidate.status.kind])}
                             </span>
                           </span>
                           <span className="add-units-dialog__filename">{candidate.fileName}</span>
@@ -339,11 +342,11 @@ export function AddUnitsDialog({
               </ul>
             ) : (
               <p className="add-units-dialog__empty">
-                {results.length === 0 ? "追加できるModやシェーダーパックがありません。" : "条件に合う項目がありません。"}
+                {results.length === 0 ? t("editor.addUnits.noneAvailable") : t("editor.addUnits.noMatches")}
               </p>
             )}
             <div className="add-units-dialog__actions">
-              <SecondaryButton onClick={() => { setResults(null); setSelectedPaths(new Set()); }}>戻る</SecondaryButton>
+              <SecondaryButton onClick={() => { setResults(null); setSelectedPaths(new Set()); }}>{t("editor.addUnits.back")}</SecondaryButton>
               <SecondaryButton
                 disabled={selectedPaths.size === 0 || busy}
                 onClick={() => {
@@ -352,13 +355,13 @@ export function AddUnitsDialog({
                   onAdd(paths);
                 }}
               >
-                {selectedPaths.size.toLocaleString("ja-JP")} 件を追加
+                {t(addCountKey, { count: formatNumber(selectedPaths.size) })}
               </SecondaryButton>
             </div>
           </>
         )}
 
-        {!results && !scanProgress && !scanJobId && <div className="add-units-dialog__actions"><SecondaryButton onClick={close}>閉じる</SecondaryButton></div>}
+        {!results && !scanProgress && !scanJobId && <div className="add-units-dialog__actions"><SecondaryButton onClick={close}>{t("editor.close")}</SecondaryButton></div>}
       </div>
     </Dialog>
   );

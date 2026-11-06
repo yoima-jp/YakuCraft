@@ -3,6 +3,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { compareText, formatNumber, lowerText, useT, useUiLanguage } from "../../i18n";
 import { DismissScopeContext, useDismiss } from "../../components/useDismiss";
 import {
   ContextMenu,
@@ -66,7 +67,6 @@ type TabPointerDrag = {
 
 type ModSort = "name" | "missing" | "progress";
 
-const NUMBER_FORMAT = new Intl.NumberFormat("ja-JP");
 let iconCacheProjectId: string | null = null;
 const iconUrls = new Map<number, string | null>();
 const iconRequests = new Map<number, Promise<string | null>>();
@@ -132,9 +132,10 @@ function ModIcon({ projectId, unit, className = "" }: {
   unit: ModUnitSummaryDto;
   className?: string;
 }) {
+  const t = useT();
   const url = useIconUrl(projectId, unit.id);
   if (unit.sourceKind === "shaderpack") return (
-    <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} role="img" aria-label="シェーダーパック">
+    <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} role="img" aria-label={t("editor.shaderpack")}>
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
         {/* 光と陰影を扱うパックであることを太陽で表す。目のアイコンは詳細欄のプレビュー切り替えと紛らわしいので使わない。 */}
         <circle cx="12" cy="12" r="4" />
@@ -145,7 +146,7 @@ function ModIcon({ projectId, unit, className = "" }: {
   if (url) return <img className={`mod-tabs__icon${className ? ` ${className}` : ""}`} src={url} alt="" />;
   return (
     <span className={`mod-tabs__icon mod-tabs__icon--fallback${className ? ` ${className}` : ""}`} aria-hidden="true">
-      {unitName(unit).slice(0, 1).toLocaleUpperCase("ja-JP")}
+      {unitName(unit).slice(0, 1).toUpperCase()}
     </span>
   );
 }
@@ -175,6 +176,8 @@ export function ModTabs({
   onSidebarWidthCommit,
   onToggleSidebarCollapsed,
 }: ModTabsProps) {
+  const t = useT();
+  const uiLanguage = useUiLanguage();
   const tabsRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const measuredSidebarCollapsedRef = useRef(sidebarCollapsed);
@@ -318,33 +321,33 @@ export function ModTabs({
   }, [panelOpen]);
 
   const filteredUnits = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase("ja-JP");
+    const normalizedQuery = lowerText(query.trim(), uiLanguage);
     return units
       .filter((unit) => !incompleteOnly || (progressById.get(unit.id)?.translated ?? unit.translated) < (progressById.get(unit.id)?.total ?? unit.total))
-      .filter((unit) => !normalizedQuery || unitName(unit).toLocaleLowerCase("ja-JP").includes(normalizedQuery))
+      .filter((unit) => !normalizedQuery || lowerText(unitName(unit), uiLanguage).includes(normalizedQuery))
       .sort((left, right) => {
         const leftProgress = progressById.get(left.id) ?? left;
         const rightProgress = progressById.get(right.id) ?? right;
         if (sort === "missing") {
           return (rightProgress.total - rightProgress.translated) - (leftProgress.total - leftProgress.translated)
-            || unitName(left).localeCompare(unitName(right), "ja");
+            || compareText(unitName(left), unitName(right), uiLanguage);
         }
         if (sort === "progress") {
           const leftRate = leftProgress.total === 0 ? 1 : leftProgress.translated / leftProgress.total;
           const rightRate = rightProgress.total === 0 ? 1 : rightProgress.translated / rightProgress.total;
-          return leftRate - rightRate || unitName(left).localeCompare(unitName(right), "ja");
+          return leftRate - rightRate || compareText(unitName(left), unitName(right), uiLanguage);
         }
-        return unitName(left).localeCompare(unitName(right), "ja");
+        return compareText(unitName(left), unitName(right), uiLanguage);
       });
-  }, [incompleteOnly, progressById, query, sort, units]);
+  }, [incompleteOnly, progressById, query, sort, uiLanguage, units]);
 
   const searchMode = query.trim().length > 0;
   const sidebarSearchUnits = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase("ja-JP");
+    const normalizedQuery = lowerText(query.trim(), uiLanguage);
     return units
-      .filter((unit) => unitName(unit).toLocaleLowerCase("ja-JP").includes(normalizedQuery))
-      .sort((left, right) => unitName(left).localeCompare(unitName(right), "ja"));
-  }, [query, units]);
+      .filter((unit) => lowerText(unitName(unit), uiLanguage).includes(normalizedQuery))
+      .sort((left, right) => compareText(unitName(left), unitName(right), uiLanguage));
+  }, [query, uiLanguage, units]);
   const pinnedUnits = useMemo(() => shownTabs.filter((unit) => pinnedIds.includes(unit.id)), [pinnedIds, shownTabs]);
   const openUnits = useMemo(() => shownTabs.filter((unit) => !pinnedIds.includes(unit.id)), [pinnedIds, shownTabs]);
   const sidebarUnits = useMemo(
@@ -355,12 +358,12 @@ export function ModTabs({
     if (searchMode) return sidebarSearchUnits.map((unit) => ({ type: "unit", id: unit.id, unit }));
     if (sidebarCollapsed) return sidebarUnits.map((unit) => ({ type: "unit", id: unit.id, unit }));
     return [
-      { type: "section", id: "pinned", label: "ピン留め" },
+      { type: "section", id: "pinned", label: t("editor.modTab.pinned") },
       ...pinnedUnits.map((unit) => ({ type: "unit" as const, id: unit.id, unit })),
-      { type: "section", id: "open", label: "開いているタブ" },
+      { type: "section", id: "open", label: t("editor.modTab.open") },
       ...openUnits.map((unit) => ({ type: "unit" as const, id: unit.id, unit })),
     ];
-  }, [openUnits, pinnedUnits, searchMode, sidebarCollapsed, sidebarSearchUnits, sidebarUnits]);
+  }, [openUnits, pinnedUnits, searchMode, sidebarCollapsed, sidebarSearchUnits, sidebarUnits, t]);
 
   const setDropTarget = (target: TabDropTarget | null) => {
     tabDropTargetRef.current = target;
@@ -614,7 +617,7 @@ export function ModTabs({
     <div className={`mod-tabs${orientation === "vertical" ? " mod-tabs--vertical" : ""}`}>
       {/* 横タブはサイドバー検索中も表示され続け、aria-describedby で常にこの要素を参照するため、検索状態に関係なく描画する。 */}
       <span id={shortcutDescriptionId} className="visually-hidden">
-        Ctrl+1〜Ctrl+8で番号のタブへ、Ctrl+9で最後へ移動。Ctrl+Shift+PageUp/PageDownでアクティブタブを移動
+        {t("editor.modTab.shortcuts")}
       </span>
       {orientation === "vertical" && (
         <>
@@ -626,7 +629,7 @@ export function ModTabs({
             <div className="mod-tabs__sidebar-header">
               {!sidebarCollapsed && (
                 <label className="mod-tabs__sidebar-search-label">
-                  <span className="visually-hidden">mod名で検索</span>
+                  <span className="visually-hidden">{t("editor.modTab.searchName")}</span>
                   <input
                     className="mod-tabs__search"
                     type="search"
@@ -636,14 +639,14 @@ export function ModTabs({
                     spellCheck={false}
                     value={query}
                     onChange={(event) => setQuery(event.currentTarget.value)}
-                    placeholder="modを検索"
+                    placeholder={t("editor.modTab.search")}
                   />
                 </label>
               )}
               <button
                 className="mod-tabs__collapse"
                 type="button"
-                aria-label={sidebarCollapsed ? "mod一覧を展開" : "mod一覧を折りたたむ"}
+                aria-label={sidebarCollapsed ? t("editor.modTab.expand") : t("editor.modTab.collapse")}
                 onClick={onToggleSidebarCollapsed}
               >
                 <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
@@ -653,7 +656,7 @@ export function ModTabs({
               className="mod-tabs__sidebar-list"
               ref={sidebarRef}
               role="tablist"
-              aria-label={searchMode ? "mod検索結果" : "開いているmod"}
+              aria-label={searchMode ? t("editor.modTab.searchResults") : t("editor.modTab.openMods")}
               aria-describedby={searchMode ? undefined : shortcutDescriptionId}
               aria-keyshortcuts={searchMode ? undefined : "Control+1 Control+2 Control+3 Control+4 Control+5 Control+6 Control+7 Control+8 Control+9 Control+Shift+PageUp Control+Shift+PageDown"}
               aria-orientation="vertical"
@@ -663,7 +666,7 @@ export function ModTabs({
               onPointerCancel={(event) => finishTabDrag(event, false)}
             >
               {sidebarRows.length === 0 ? (
-                <p className="mod-tabs__empty">modが見つかりません</p>
+                <p className="mod-tabs__empty">{t("editor.modTab.notFound")}</p>
               ) : (
                 <ul
                   className="mod-tabs__sidebar-items"
@@ -713,7 +716,12 @@ export function ModTabs({
                           type="button"
                           role="tab"
                           disabled={selectionDisabled}
-                          aria-label={`${unit.sourceKind === "shaderpack" ? "シェーダーパック、" : ""}${name}、${NUMBER_FORMAT.format(progress.translated)} / ${NUMBER_FORMAT.format(progress.total)} 翻訳済み`}
+                          aria-label={t("editor.modTab.progressAria", {
+                            kind: unit.sourceKind === "shaderpack" ? t("editor.shaderpackPrefix") : "",
+                            name,
+                            translated: formatNumber(progress.translated),
+                            total: formatNumber(progress.total),
+                          })}
                           aria-selected={selected}
                           aria-controls="translation-table-panel"
                           title={sidebarCollapsed ? name : undefined}
@@ -741,7 +749,7 @@ export function ModTabs({
                               <span style={{ inlineSize: `${rate}%` }} />
                             </span>
                             <span className="mod-tabs__unit-meta">
-                              {NUMBER_FORMAT.format(progress.translated)} / {NUMBER_FORMAT.format(progress.total)}
+                              {formatNumber(progress.translated)} / {formatNumber(progress.total)}
                             </span>
                           </span>
                         </button>
@@ -750,7 +758,7 @@ export function ModTabs({
                             className="mod-tabs__close"
                             type="button"
                             disabled={!canCloseTab || selectionDisabled}
-                            aria-label={`${name}を閉じる`}
+                            aria-label={t("editor.modTab.close", { name })}
                             onClick={() => onClose(unit.id)}
                           >
                             <span aria-hidden="true">×</span>
@@ -766,12 +774,12 @@ export function ModTabs({
           <div
             className="mod-tabs__sidebar-resize"
             role="separator"
-            aria-label="mod一覧の幅"
+            aria-label={t("editor.modTab.width")}
             aria-orientation="vertical"
             aria-valuemin={200}
             aria-valuemax={420}
             aria-valuenow={sidebarWidth}
-            aria-valuetext={`${sidebarWidth} ピクセル`}
+            aria-valuetext={t("editor.pixels", { value: formatNumber(sidebarWidth) })}
             aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
             tabIndex={0}
             onPointerDown={(event) => {
@@ -797,7 +805,7 @@ export function ModTabs({
         className="mod-tabs__strip"
         ref={tabsRef}
         role="tablist"
-        aria-label="開いているmod"
+        aria-label={t("editor.modTab.openMods")}
         aria-describedby={shortcutDescriptionId}
         aria-keyshortcuts="Control+1 Control+2 Control+3 Control+4 Control+5 Control+6 Control+7 Control+8 Control+9 Control+Shift+PageUp Control+Shift+PageDown"
         onPointerDown={beginTabDrag}
@@ -857,15 +865,15 @@ export function ModTabs({
                   <ModIcon projectId={projectId} unit={unit} />
                   <span className="mod-tabs__name">{name}</span>
                   <span className="mod-tabs__progress">
-                    {NUMBER_FORMAT.format(progress.translated)} / {NUMBER_FORMAT.format(progress.total)}
-                    <span className="visually-hidden"> 翻訳済み</span>
+                    {formatNumber(progress.translated)} / {formatNumber(progress.total)}
+                    <span className="visually-hidden"> {t("editor.progress.translated")}</span>
                   </span>
                 </button>
                 <button
                   className="mod-tabs__close"
                   type="button"
                   disabled={!canCloseTab || selectionDisabled}
-                  aria-label={`${name}を閉じる`}
+                  aria-label={t("editor.modTab.close", { name })}
                   onClick={() => onClose(unit.id)}
                 >
                   <span aria-hidden="true">×</span>
@@ -884,12 +892,12 @@ export function ModTabs({
           aria-controls={panelOpen ? "mod-tabs-all-panel" : undefined}
           onClick={() => setPanelOpen((open) => !open)}
         >
-          すべてのmod
+          {t("editor.modTab.all")}
         </button>
         {panelOpen && createPortal(
-          <dialog className="mod-tabs__panel" id="mod-tabs-all-panel" ref={panelRef} open aria-label="すべてのmod">
+          <dialog className="mod-tabs__panel" id="mod-tabs-all-panel" ref={panelRef} open aria-label={t("editor.modTab.all")}>
             <label className="mod-tabs__search-label">
-              <span className="visually-hidden">mod名で検索</span>
+              <span className="visually-hidden">{t("editor.modTab.searchName")}</span>
               <input
                 className="mod-tabs__search"
                 type="search"
@@ -900,28 +908,28 @@ export function ModTabs({
                 ref={searchRef}
                 value={query}
                 onChange={(event) => setQuery(event.currentTarget.value)}
-                placeholder="mod名で検索"
+                placeholder={t("editor.modTab.searchName")}
               />
             </label>
             <label className="mod-tabs__sort-label">
-              <span>並び替え</span>
+              <span>{t("editor.modTab.sort")}</span>
               <select value={sort} onChange={(event) => setSort(event.currentTarget.value as ModSort)}>
-                <option value="name">名前順</option>
-                <option value="missing">未翻訳が多い順</option>
-                <option value="progress">進捗が低い順</option>
+                <option value="name">{t("editor.modTab.sort.name")}</option>
+                <option value="missing">{t("editor.modTab.sort.missing")}</option>
+                <option value="progress">{t("editor.modTab.sort.progress")}</option>
               </select>
             </label>
             <label className="mod-tabs__incomplete">
               <input type="checkbox" checked={incompleteOnly} onChange={(event) => setIncompleteOnly(event.currentTarget.checked)} />
-              未完了だけ
+              {t("editor.modTab.incompleteOnly")}
             </label>
             <div className="mod-tabs__list" ref={listRef}>
               {filteredUnits.length === 0 ? (
-                <p className="mod-tabs__empty">modが見つかりません</p>
+                <p className="mod-tabs__empty">{t("editor.modTab.notFound")}</p>
               ) : (
                 <ul
                   className="mod-tabs__virtual-items"
-                  aria-label="mod一覧"
+                  aria-label={t("editor.modTab.list")}
                   style={{ height: virtualizer.getTotalSize(), position: "relative" }}
                 >
                   {virtualizer.getVirtualItems().map((item) => {
@@ -951,14 +959,14 @@ export function ModTabs({
                           <span className="mod-tabs__unit-info">
                             <span className="mod-tabs__unit-name">{name}</span>
                             <span className="mod-tabs__unit-meta">
-                              {unit.version || "バージョン不明"} · {NUMBER_FORMAT.format(progress.translated)} / {NUMBER_FORMAT.format(progress.total)} · {rate}%
+                              {unit.version || t("editor.modTab.unknownVersion")} · {formatNumber(progress.translated)} / {formatNumber(progress.total)} · {formatNumber(rate)}%
                             </span>
                           </span>
                         </button>
                         <button
                           className="mod-tabs__pin"
                           type="button"
-                          aria-label={pinned ? `${name}のピン留めを解除` : `${name}をピン留め`}
+                          aria-label={pinned ? t("editor.modTab.unpin", { name }) : t("editor.modTab.pin", { name })}
                           aria-pressed={pinned}
                           onClick={() => onTogglePin(unit.id)}
                         >
@@ -1044,23 +1052,24 @@ function ModUnitContextMenu({
   onCloseRight?: () => void;
   onRemove: () => void;
 }) {
+  const t = useT();
   return (
-    <ContextMenu label={`${name}の操作`} position={position} onClose={onClose}>
-      <ContextMenuItem disabled={actionsDisabled} onClick={onTranslate}>このmodの未翻訳をAIで翻訳</ContextMenuItem>
+    <ContextMenu label={t("editor.modTab.contextLabel", { name })} position={position} onClose={onClose}>
+      <ContextMenuItem disabled={actionsDisabled} onClick={onTranslate}>{t("editor.modTab.translateMissing")}</ContextMenuItem>
       {showRefreshModpack && (
-        <ContextMenuItem disabled={actionsDisabled} onClick={onRefreshModpack}>Modpack を再取り込み</ContextMenuItem>
+        <ContextMenuItem disabled={actionsDisabled} onClick={onRefreshModpack}>{t("editor.modTab.refreshModpack")}</ContextMenuItem>
       )}
-      <ContextMenuItem onClick={onTogglePin}>{pinned ? "ピン留めを外す" : "ピン留め"}</ContextMenuItem>
+      <ContextMenuItem onClick={onTogglePin}>{pinned ? t("editor.modTab.unpinAction") : t("editor.modTab.pinAction")}</ContextMenuItem>
       {showTabActions && (
         <>
-          <ContextMenuItem disabled={!canCloseTab || selectionDisabled} onClick={onCloseTab}>閉じる</ContextMenuItem>
-          <ContextMenuItem disabled={!canCloseOthers || selectionDisabled} onClick={onCloseOthers}>他のタブを閉じる</ContextMenuItem>
-          <ContextMenuItem disabled={!canCloseRight || selectionDisabled} onClick={onCloseRight}>右側のタブを閉じる</ContextMenuItem>
+          <ContextMenuItem disabled={!canCloseTab || selectionDisabled} onClick={onCloseTab}>{t("editor.modTab.closeAction")}</ContextMenuItem>
+          <ContextMenuItem disabled={!canCloseOthers || selectionDisabled} onClick={onCloseOthers}>{t("editor.modTab.closeOthers")}</ContextMenuItem>
+          <ContextMenuItem disabled={!canCloseRight || selectionDisabled} onClick={onCloseRight}>{t("editor.modTab.closeRight")}</ContextMenuItem>
         </>
       )}
       <ContextMenuSeparator />
       <ContextMenuItem className="context-menu__item--danger" disabled={!canRemove || actionsDisabled} onClick={onRemove}>
-        プロジェクトから外す
+        {t("editor.modTab.remove")}
       </ContextMenuItem>
     </ContextMenu>
   );
