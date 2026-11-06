@@ -5,6 +5,9 @@ import { join as joinPath } from "@tauri-apps/api/path";
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { Checkbox, Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { useDialogConfirmation } from "../../components/useDialogConfirmation";
+import { formatNumber, lowerText, t, useT } from "../../i18n";
+import { targetLanguageName } from "../../i18n/minecraftLanguages";
+import { exportMessages } from "../../i18n/messages/export";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog, saveFileDialog } from "../../lib/dialogs";
@@ -35,13 +38,19 @@ import {
 } from "./exportApi";
 import "./ExportScreen.css";
 
-const EXPORT_OPTIONS: Array<{ value: ExportKind; label: string; description: string }> = [
-  { value: "resourcePack", label: "リソースパック", description: "複数のmodを1つのZIPにまとめる" },
-  { value: "modifiedJar", label: "Mod JARに埋め込む", description: "日本語ファイルをJARに追加する" },
-  { value: "languageFile", label: "言語ファイル", description: "言語ファイルだけを書き出す" },
-  { value: "modpackFiles", label: "Modpack ファイル", description: "クエスト・KubeJS の翻訳を書き出す" },
-  { value: "shaderpackZip", label: "日本語化したシェーダーパック", description: "元パックを残して別名 ZIP を作る" },
-];
+const EXPORT_OPTIONS = [
+  { value: "resourcePack", label: "export.format.resourcePack", description: "export.option.resourcePack" },
+  { value: "modifiedJar", label: "export.format.modifiedJar", description: "export.option.modifiedJar" },
+  { value: "languageFile", label: "export.format.languageFile", description: "export.option.languageFile" },
+  { value: "modpackFiles", label: "export.format.modpackFiles", description: "export.option.modpackFiles" },
+  { value: "shaderpackZip", label: "export.format.shaderpackZip", description: "export.option.shaderpackZip" },
+] as const;
+
+const DEFAULT_OUTPUT_NAMES = {
+  modifiedJar: exportMessages.ja["export.fileName.modifiedJar"],
+  modpackFiles: exportMessages.ja["export.fileName.modpackFiles"],
+  languageFile: exportMessages.ja["export.fileName.languageFile"],
+} as const;
 
 function safeFileComponent(value: string) {
   const component = [...value]
@@ -78,7 +87,7 @@ function languageFileNameForNamespace(details: ProjectDetailsDto, namespace: str
 function errorMessage(error: unknown) {
   void logFrontendError(error, "export screen");
   if (error instanceof ExportCommandError || error instanceof AppCommandError) return error.message;
-  return "処理に失敗しました。もう一度お試しください。";
+  return t("export.error.unexpected");
 }
 
 function isProjectChangedError(error: unknown) {
@@ -89,20 +98,51 @@ function minecraftVersionEvidence(detection: MinecraftVersionDetectionDto | null
   if (!detection) return null;
   if (detection.method === "metadata") {
     return detection.rounded
-      ? `Mod の対応範囲 ${detection.originalValue ?? ""} に近いバージョン`
-      : `Mod の対応範囲 ${detection.originalValue ?? ""} から判定`;
+      ? t("export.versionEvidence.metadata.near", { value: detection.originalValue ?? "" })
+      : t("export.versionEvidence.metadata.from", { value: detection.originalValue ?? "" });
   }
   if (detection.method === "packMcmeta") {
-    return `pack.mcmeta の ${detection.originalValue ?? "値"} から判定${detection.rounded ? "（近いバージョン）" : ""}`;
+    return t(
+      detection.rounded ? "export.versionEvidence.packMcmeta.near" : "export.versionEvidence.packMcmeta.from",
+      { value: detection.originalValue ?? t("export.versionEvidence.valueFallback") },
+    );
   }
-  return `リソース構造から推定${detection.rounded ? "（近いバージョン）" : ""}`;
+  return t(detection.rounded
+    ? "export.versionEvidence.resourceStructure.near"
+    : "export.versionEvidence.resourceStructure.from");
 }
 
-function unitTitle(unit: { sourceKind?: "jar" | "modpack" | "shaderpack"; sourceFilename: string; name: string | null; version?: string | null }) {
-  if (unit.sourceKind === "modpack") return "Modpack 固有（クエスト・KubeJS）";
-  if (unit.sourceKind === "shaderpack") return `シェーダーパック: ${unit.sourceFilename}`;
+function unitTitle(
+  unit: { sourceKind?: "jar" | "modpack" | "shaderpack"; sourceFilename: string; name: string | null; version?: string | null },
+  translate: ReturnType<typeof useT>,
+) {
+  if (unit.sourceKind === "modpack") return translate("export.unit.modpack");
+  if (unit.sourceKind === "shaderpack") return translate("export.unit.shaderpack", { filename: unit.sourceFilename });
   const name = unit.name?.trim() || unit.sourceFilename;
   return unit.version?.trim() ? `${name} ${unit.version}` : name;
+}
+
+function exportOptionLabel(option: (typeof EXPORT_OPTIONS)[number], translate: ReturnType<typeof useT>, language: string) {
+  if (option.value === "shaderpackZip") return translate(option.label, { language });
+  return translate(option.label);
+}
+
+function exportOptionDescription(
+  option: (typeof EXPORT_OPTIONS)[number],
+  translate: ReturnType<typeof useT>,
+  fileName: string,
+  replaceInPlace: boolean,
+) {
+  if (option.value === "languageFile") {
+    return translate("export.option.languageFileOutput", { fileName });
+  }
+  if (option.value === "modifiedJar") {
+    return replaceInPlace
+      ? translate("export.option.modifiedJarReplace")
+      : translate("export.option.modifiedJarCopy");
+  }
+  if (option.value === "shaderpackZip") return translate("export.option.shaderpackOutput");
+  return translate(option.description);
 }
 
 function isJarUnit(unit: { sourceKind?: "jar" | "modpack" | "shaderpack" }) {
@@ -132,15 +172,16 @@ function ModUnitSelector({
   selectedIds: number[];
   onChange: (ids: number[]) => void;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
   const filteredUnits = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
+    const normalized = lowerText(query.trim());
     if (!normalized) return units;
-    return units.filter((unit) => unitTitle(unit).toLocaleLowerCase().includes(normalized)
-      || unit.sourceFilename.toLocaleLowerCase().includes(normalized));
-  }, [query, units]);
+    return units.filter((unit) => lowerText(unitTitle(unit, t)).includes(normalized)
+      || lowerText(unit.sourceFilename).includes(normalized));
+  }, [query, t, units]);
   // TanStack Virtual intentionally exposes an imperative viewport object that React Compiler cannot memoize.
   // oxlint-disable-next-line react/incompatible-library
   const virtualizer = useVirtualizer({
@@ -156,7 +197,7 @@ function ModUnitSelector({
 
   return (
     <fieldset className="export-unit-selector">
-      <legend>対象</legend>
+      <legend>{t("export.unitSelector.legend")}</legend>
       <div className="export-unit-selector__toolbar">
         <input
           type="search"
@@ -164,13 +205,13 @@ function ModUnitSelector({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          aria-label="対象を検索"
-          placeholder="名前で検索"
+          aria-label={t("export.unitSelector.searchLabel")}
+          placeholder={t("export.unitSelector.searchPlaceholder")}
           value={query}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
-        <SecondaryButton onClick={() => onChange(units.map((unit) => unit.id))}>全選択</SecondaryButton>
-        <SecondaryButton onClick={() => onChange([])}>全解除</SecondaryButton>
+        <SecondaryButton onClick={() => onChange(units.map((unit) => unit.id))}>{t("export.unitSelector.selectAll")}</SecondaryButton>
+        <SecondaryButton onClick={() => onChange([])}>{t("export.unitSelector.clearAll")}</SecondaryButton>
       </div>
       <div className="export-unit-selector__list" ref={scrollRef}>
         <div className="export-unit-selector__spacer" style={{ height: virtualizer.getTotalSize() }}>
@@ -188,13 +229,13 @@ function ModUnitSelector({
                   checked={selected.has(unit.id)}
                   onChange={(event) => toggle(unit.id, event.currentTarget.checked)}
                 />
-                <span>{unitTitle(unit)}</span>
+                <span>{unitTitle(unit, t)}</span>
               </label>
             );
           })}
         </div>
       </div>
-      <small>{selectedIds.length.toLocaleString("ja-JP")} / {units.length.toLocaleString("ja-JP")}</small>
+      <small>{formatNumber(selectedIds.length)} / {formatNumber(units.length)}</small>
     </fieldset>
   );
 }
@@ -208,10 +249,19 @@ async function chooseDirectory(defaultPath: string) {
   return Array.isArray(selected) ? selected[0] ?? null : selected;
 }
 
+const AUTO_PROJECT_NAME_PATTERNS = [
+  /^\d+ \u500b\u306e mod$/u,
+  /^\d+ mod(s)?$/,
+  /^\d+ \u4e2a\u6a21\u7ec4$/u,
+  /^\d+ \u500b\u6a21\u7d44$/u,
+  /^\ubaa8\ub4dc \d+\uac1c$/u,
+];
+
 function mergedPackName(projectName: string, instancePath: string | null) {
   const instanceName = instancePath?.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1)?.trim();
   const name = instanceName || projectName.trim();
-  return !name || /^\d+ 個の mod$/.test(name) ? "YakuCraft" : name;
+  // Rust 側の is_auto_project_name と同じ言語別書式を検出し、過去の名前も維持する。
+  return !name || AUTO_PROJECT_NAME_PATTERNS.some((pattern) => pattern.test(name)) ? "YakuCraft" : name;
 }
 
 function mergeOutputFileName(
@@ -246,6 +296,7 @@ type ValidationVirtualRow =
   };
 
 function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; label: string }) {
+  const t = useT();
   const scrollRef = useRef<HTMLDivElement>(null);
   // TanStack Virtual intentionally exposes an imperative viewport object that React Compiler cannot memoize.
   // oxlint-disable-next-line react/incompatible-library
@@ -275,7 +326,7 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
             return (
               <li className="export-validation__row export-validation__row--missing" key={row.id} style={style}>
                 <strong>{row.modName}</strong>
-                <span>{row.count.toLocaleString("ja-JP")} 件</span>
+                <span>{t(row.count === 1 ? "export.validation.missingCount_one" : "export.validation.missingCount", { count: formatNumber(row.count) })}</span>
               </li>
             );
           }
@@ -286,10 +337,10 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
               style={style}
             >
               <code className="selectable" title={row.label}>
-                <span className={row.severity === "error" ? "export-validation__error-label" : undefined}>{row.severity === "error" ? "エラー" : "注意"}</span> · {row.label}
+                <span className={row.severity === "error" ? "export-validation__error-label" : undefined}>{row.severity === "error" ? t("export.validation.error") : t("export.validation.warning")}</span> · {row.label}
               </code>
-              <p><strong>原文</strong><span className="selectable" title={row.sourceText}>{row.sourceText}</span></p>
-              <p><strong>訳文</strong><span className="selectable" title={row.targetText}>{row.targetText}</span></p>
+              <p><strong>{t("export.validation.sourceText")}</strong><span className="selectable" title={row.sourceText}>{row.sourceText}</span></p>
+              <p><strong>{t("export.validation.targetText")}</strong><span className="selectable" title={row.targetText}>{row.targetText}</span></p>
             </li>
           );
         })}
@@ -299,8 +350,10 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
 }
 
 export function ExportScreen() {
+  const t = useT();
   const { requestConfirmation, dialog: confirmationDialog } = useDialogConfirmation();
   const details = useProjectStore((state) => state.details);
+  const targetLanguage = targetLanguageName(details?.targetLocale ?? "ja_jp");
   const projectId = useProjectStore((state) => state.details?.project.id ?? null);
   const modUnits = useProjectStore((state) => state.modUnits);
   const setModUnits = useProjectStore((state) => state.setModUnits);
@@ -568,9 +621,9 @@ export function ExportScreen() {
       if (!isCurrentProject(startingProjectId)) return;
       if (outcome.status === "confirmationRequired") {
         const confirmed = await requestConfirmation({
-          title: "JARを復元しますか",
-          message: "このJARは書き出し後に変更されています。バックアップで現在のJARを上書きして元に戻しますか？",
-          confirmLabel: "上書き",
+          title: t("export.confirm.restoreJar.title"),
+          message: t("export.confirm.restoreJar.message"),
+          confirmLabel: t("export.confirm.overwrite"),
           destructive: true,
         });
         if (!confirmed) return;
@@ -612,15 +665,15 @@ export function ExportScreen() {
 
   const exportTarget = `${projectId ?? ""}:${kind}:${selectedIds.join(",")}:${deployShaderpacks}`;
   const confirmInstanceDeployment = () => requestConfirmation({
-    title: "インスタンスに配置しますか",
-    message: "Minecraft を終了してから配置してください。シェーダーパックを shaderpacks/ に配置します。既存のシェーダーパックはバックアップされ、書き出し画面から復元できます。",
-    confirmLabel: "配置",
+    title: t("export.confirm.place.title"),
+    message: t("export.confirm.place.shaderpackMessage"),
+    confirmLabel: t("export.confirm.place.action"),
     destructive: true,
   });
   const confirmModpackDeployment = () => requestConfirmation({
-    title: "インスタンスに配置しますか",
-    message: "Minecraft を終了してから配置してください。既存ファイルはバックアップされ、書き出し画面から戻せます。",
-    confirmLabel: "配置",
+    title: t("export.confirm.place.title"),
+    message: t("export.confirm.place.filesMessage"),
+    confirmLabel: t("export.confirm.place.action"),
     destructive: true,
   });
   const beginExport = async (allowedCount: number | null = null) => {
@@ -667,7 +720,7 @@ export function ExportScreen() {
           if (onlyFormatErrors) {
             setForcePermit({ target: exportTarget, count: formatErrorCount });
           } else {
-            setError("確認事項を直すと書き出せます");
+            setError(t("export.error.fixIssues"));
             focusIssue.current = "blocking";
           }
           return;
@@ -688,12 +741,12 @@ export function ExportScreen() {
           details.targetLocale,
         )
         : kind === "modifiedJar"
-          ? "改変済みmod"
+          ? DEFAULT_OUTPUT_NAMES.modifiedJar
           : kind === "modpackFiles"
-            ? "Modpack 翻訳"
+            ? DEFAULT_OUTPUT_NAMES.modpackFiles
             : kind === "shaderpackZip"
               ? `${safeFileComponent(modUnits.find((unit) => selectedShaderpackIds.includes(unit.id))?.sourceFilename ?? "shaderpack")}-${details.targetLocale.toLowerCase() === "ja_jp" ? "ja" : details.targetLocale.toLowerCase().replaceAll("-", "_")}.zip`
-              : "言語ファイル";
+              : DEFAULT_OUTPUT_NAMES.languageFile;
       const defaultPath = defaultExportDirectory
         ? await joinPath(defaultExportDirectory, defaultName)
         : defaultName;
@@ -723,9 +776,9 @@ export function ExportScreen() {
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
           const confirmed = await requestConfirmation({
-            title: "ファイルを上書きしますか",
-            message: `既存のファイルがあります。\n${displayPath(outcome.targetPath)}`,
-            confirmLabel: "上書き",
+            title: t("export.confirm.overwriteFile.title"),
+            message: t("export.confirm.overwriteFile.message", { path: displayPath(outcome.targetPath) }),
+            confirmLabel: t("export.confirm.overwrite"),
             destructive: true,
           });
           if (!confirmed) return;
@@ -758,9 +811,13 @@ export function ExportScreen() {
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
           const confirmed = await requestConfirmation({
-            title: "シェーダーパックを上書きしますか",
-            message: `上書きするシェーダーパックがあります。\n${outcome.targetPaths.map((path) => `・${displayPath(path)}`).join("\n")}`,
-            confirmLabel: "上書き",
+            title: t("export.confirm.overwriteShaderpack.title"),
+            message: t("export.confirm.overwriteShaderpack.message", {
+              paths: outcome.targetPaths
+                .map((path) => t("export.pathListItem", { path: displayPath(path) }))
+                .join("\n"),
+            }),
+            confirmLabel: t("export.confirm.overwrite"),
             destructive: true,
           });
           if (!confirmed) return;
@@ -801,9 +858,9 @@ export function ExportScreen() {
         if (!isCurrentProject(startingProjectId)) return;
         if (outcome.status === "overwriteRequired") {
           const confirmed = await requestConfirmation({
-            title: "リソースパックを上書きしますか",
-            message: "同じ名前のリソースパックがあります。",
-            confirmLabel: "上書き",
+            title: t("export.confirm.overwriteResourcePack.title"),
+            message: t("export.confirm.overwriteResourcePack.message"),
+            confirmLabel: t("export.confirm.overwrite"),
             destructive: true,
           });
           if (!confirmed) return;
@@ -852,7 +909,7 @@ export function ExportScreen() {
             : fileName;
           const outputPath = await saveFileDialog({
             defaultPath,
-            filters: [{ name: "言語ファイル", extensions: ["json", "lang"] }],
+            filters: [{ name: t("export.format.languageFile"), extensions: ["json", "lang"] }],
           });
           if (!isCurrentProject(startingProjectId)) return;
           if (!outputPath) return;
@@ -881,9 +938,13 @@ export function ExportScreen() {
           if (!isCurrentProject(startingProjectId)) return;
           if (outcome.status === "overwriteRequired") {
             const confirmed = await requestConfirmation({
-              title: "シェーダーパックを上書きしますか",
-              message: `上書きするシェーダーパックがあります。\n${outcome.targetPaths.map((path) => `・${displayPath(path)}`).join("\n")}`,
-              confirmLabel: "上書き",
+              title: t("export.confirm.overwriteShaderpack.title"),
+              message: t("export.confirm.overwriteShaderpack.message", {
+                paths: outcome.targetPaths
+                  .map((path) => t("export.pathListItem", { path: displayPath(path) }))
+                  .join("\n"),
+              }),
+              confirmLabel: t("export.confirm.overwrite"),
               destructive: true,
             });
             if (!isCurrentProject(startingProjectId)) return;
@@ -906,9 +967,14 @@ export function ExportScreen() {
             shaderpackInstalled = outcome.outputPaths.length > 0;
             const failedShaderpacks = outcome.modResults.filter((item) => item.status !== "success");
             if (failedShaderpacks.length > 0) {
-              shaderpackError = `配置できませんでした: ${failedShaderpacks
-                .map((item) => `${item.modName}: ${item.message ?? "配置できませんでした。"}`)
-                .join(" / ")}`;
+              shaderpackError = t("export.shaderpackFailure.list", {
+                items: failedShaderpacks
+                  .map((item) => t("export.shaderpackFailure.item", {
+                    name: item.modName,
+                    message: item.message ?? t("export.shaderpackFailure.itemUnavailable"),
+                  }))
+                  .join(" / "),
+              });
             }
             if (outcome.directlyInstalled) {
               try {
@@ -916,13 +982,13 @@ export function ExportScreen() {
                 if (!isCurrentProject(startingProjectId)) return;
               } catch (cause: unknown) {
                 if (isProjectChangedError(cause)) return;
-                shaderpackError ??= `配置は完了しましたが、復元状態を更新できませんでした: ${errorMessage(cause)}`;
+                shaderpackError ??= t("export.shaderpackFailure.refresh", { error: errorMessage(cause) });
               }
             }
           }
         } catch (cause: unknown) {
           if (isProjectChangedError(cause)) return;
-          shaderpackError = `配置できませんでした: ${errorMessage(cause)}`;
+          shaderpackError = t("export.shaderpackFailure.error", { error: errorMessage(cause) });
         }
       }
 
@@ -965,9 +1031,9 @@ export function ExportScreen() {
     if (checked) {
       const startingProjectId = projectId;
       const confirmed = await requestConfirmation({
-        title: "JARを直接置き換えますか",
-        message: "mods フォルダの JAR を直接書き換えます。元の JAR はプロジェクト内にバックアップし、あとで元に戻せます。ランチャーによっては Mod の更新や整合性チェックで元に戻ることがあります。Minecraft を終了してから実行してください。",
-        confirmLabel: "置き換え",
+        title: t("export.confirm.replaceJar.title"),
+        message: t("export.confirm.replaceJar.message"),
+        confirmLabel: t("export.confirm.replaceJar.action"),
         destructive: true,
       });
       if (!confirmed || !startingProjectId || !isCurrentProject(startingProjectId)) return;
@@ -986,19 +1052,25 @@ export function ExportScreen() {
       const count = issue.count ?? (Number.parseInt(issue.message, 10) || 0);
       if (count <= 0) continue;
       const id = issue.modUnitId === null ? `name:${issue.modName ?? "unknown"}` : `unit:${issue.modUnitId}`;
-      const group = grouped.get(id) ?? { modName: issue.modName ?? `mod ${issue.modUnitId ?? ""}`.trim(), count: 0 };
+      const fallbackName = issue.modUnitId === null
+        ? t("export.unit.unknownMod")
+        : t("export.unit.numberedMod", { id: formatNumber(issue.modUnitId) });
+      const group = grouped.get(id) ?? { modName: issue.modName ?? fallbackName, count: 0 };
       group.count += count;
       grouped.set(id, group);
     }
     return [...grouped].map(([id, group]) => ({ kind: "missing" as const, id, ...group }));
-  }, [displayIssues]);
+  }, [displayIssues, t]);
   const missingTotal = missingRows.reduce((total, row) => total + row.count, 0);
   const placeholderRows = useMemo(() => {
     const grouped = new Map<string, { modName: string; issues: ExportIssueDto[] }>();
     for (const issue of displayIssues) {
       if (issue.code !== "placeholderWarning" && issue.code !== "placeholderError") continue;
       const id = issue.modUnitId === null ? `name:${issue.modName ?? "unknown"}` : `unit:${issue.modUnitId}`;
-      const group = grouped.get(id) ?? { modName: issue.modName ?? `mod ${issue.modUnitId ?? ""}`.trim(), issues: [] };
+      const fallbackName = issue.modUnitId === null
+        ? t("export.unit.unknownMod")
+        : t("export.unit.numberedMod", { id: formatNumber(issue.modUnitId) });
+      const group = grouped.get(id) ?? { modName: issue.modName ?? fallbackName, issues: [] };
       group.issues.push(issue);
       grouped.set(id, group);
     }
@@ -1015,7 +1087,7 @@ export function ExportScreen() {
         targetText: issue.targetText ?? "",
       })),
     ]);
-  }, [displayIssues]);
+  }, [displayIssues, t]);
   const placeholderCount = placeholderRows.reduce(
     (count, row) => count + Number(row.kind === "placeholder"),
     0,
@@ -1032,12 +1104,14 @@ export function ExportScreen() {
   ));
   const blockingIssues = otherIssues.filter((issue) => issue.severity === "error");
   const warningIssues = otherIssues.filter((issue) => issue.severity === "warning");
-  const issueLabel = (issue: ExportIssueDto) => issue.modName ? `${issue.modName}: ${issue.message}` : issue.message;
+  const issueLabel = (issue: ExportIssueDto) => issue.modName
+    ? t("export.validation.issueLabel", { name: issue.modName, message: issue.message })
+    : issue.message;
 
   if (!details || !projectId || loadedProjectId !== projectId) {
     return (
       <section className="focus-page export-screen">
-        <output aria-live="polite">プロジェクトを読み込んでいます…</output>
+        <output aria-live="polite">{t("export.screen.loading")}</output>
         {error && <p className="status-message" role="alert">{error}</p>}
       </section>
     );
@@ -1047,15 +1121,18 @@ export function ExportScreen() {
 
   return (
     <section className="focus-page export-screen" aria-labelledby="export-title">
-      <h1 className="page-title" id="export-title">書き出し</h1>
+      <h1 className="page-title" id="export-title">{t("export.screen.title")}</h1>
       <div className="export-screen__counts">
-        <p><strong>{details.counts.translated.toLocaleString("ja-JP")} / {details.counts.total.toLocaleString("ja-JP")}</strong> 翻訳済み</p>
+        <p>
+          <strong>{formatNumber(details.counts.translated)} / {formatNumber(details.counts.total)}</strong>
+          {t("export.screen.translatedSuffix")}
+        </p>
       </div>
 
       <RadioGroup
         className="export-options"
         optionClassName="export-option"
-        legend="書き出し形式"
+        legend={t("export.option.legend")}
         name="export-kind"
         value={kind}
         onChange={(value) => {
@@ -1076,17 +1153,17 @@ export function ExportScreen() {
           .filter((option) => option.value !== "modpackFiles" || hasModpackUnit)
           .filter((option) => option.value !== "shaderpackZip" || hasShaderpackUnit)
           .map((option) => ({
-          ...option,
-          description: option.value === "languageFile"
-            ? `${languageFileNameForNamespace(details, selectedNamespace)}を書き出す`
-            : option.value === "modifiedJar"
-              ? replaceInPlace ? "mods フォルダのJARを直接上書きする" : "元のJARを変更せずコピーを書き出す"
-              : option.value === "shaderpackZip"
-                ? "元のシェーダーパックを残して別名 ZIP を書き出す"
-              : option.description,
-          id: `export-option-${option.value}`,
-          testId: option.value === "languageFile" ? "export-language-file" : undefined,
-        }))}
+            value: option.value,
+            label: exportOptionLabel(option, t, targetLanguage),
+            description: exportOptionDescription(
+              option,
+              t,
+              languageFileNameForNamespace(details, selectedNamespace),
+              replaceInPlace,
+            ),
+            id: `export-option-${option.value}`,
+            testId: option.value === "languageFile" ? "export-language-file" : undefined,
+          }))}
       />
 
       {selectableUnits.length > 1 && (
@@ -1107,7 +1184,7 @@ export function ExportScreen() {
       {kind === "resourcePack" && (
         <>
           <fieldset className="export-destination">
-            <legend>保存先</legend>
+            <legend>{t("export.destination.legend")}</legend>
             {overview?.instancePath && (
               <label>
                 <input
@@ -1117,7 +1194,7 @@ export function ExportScreen() {
                   checked={destination === "instance"}
                   onChange={() => setDestination("instance")}
                 />
-                インスタンスの resourcepacks に配置
+                {t("export.destination.instanceResourcePack")}
               </label>
             )}
             <label>
@@ -1128,13 +1205,13 @@ export function ExportScreen() {
                 checked={destination === "folder"}
                 onChange={() => setDestination("folder")}
               />
-              保存先を選ぶ
+              {t("export.destination.choose")}
             </label>
           </fieldset>
           <div className="export-screen__field">
-            <span>Minecraft バージョン</span>
+            <span>{t("export.field.minecraftVersion")}</span>
             <Select
-              aria-label="Minecraft バージョン"
+              aria-label={t("export.field.minecraftVersion")}
               value={minecraftVersion}
               onChange={(version) => {
                 setMinecraftVersion(version);
@@ -1142,7 +1219,7 @@ export function ExportScreen() {
               }}
               onBlur={() => void validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat)}
               options={[
-                { value: "", label: "選択" },
+                { value: "", label: t("export.field.choose") },
                 ...versionOptions.map((version) => ({ value: version, label: version })),
               ]}
             />
@@ -1152,9 +1229,9 @@ export function ExportScreen() {
               {minecraftVersionEvidence(details.minecraftVersionDetection)}
             </small>
           )}
-          <Disclosure className="export-screen__advanced" title="詳細設定">
+          <Disclosure className="export-screen__advanced" title={t("export.field.advancedSettings")}>
             <label className="export-screen__field">
-              表にない Minecraft バージョン
+              {t("export.field.minecraftVersionNotListed")}
               <input
                 value={manualMinecraftVersion}
                 onChange={(event) => setManualMinecraftVersion(event.currentTarget.value)}
@@ -1163,25 +1240,25 @@ export function ExportScreen() {
               />
             </label>
             <div className="export-screen__field">
-              <span>パック形式（大）</span>
+              <span>{t("export.field.packFormatMajor")}</span>
               <NumberInput
                 min="0"
                 step="1"
                 value={manualFormatMajor}
                 onChange={(event) => setManualFormatMajor(event.currentTarget.value)}
                 onBlur={() => void validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat)}
-                aria-label="パック形式（大）"
+                aria-label={t("export.field.packFormatMajor")}
               />
             </div>
             <div className="export-screen__field">
-              <span>パック形式（小）</span>
+              <span>{t("export.field.packFormatMinor")}</span>
               <NumberInput
                 min="0"
                 step="1"
                 value={manualFormatMinor}
                 onChange={(event) => setManualFormatMinor(event.currentTarget.value)}
                 onBlur={() => void validate(kind, effectiveMinecraftVersion, selectedNamespace, manualPackFormat)}
-                aria-label="パック形式（小）"
+                aria-label={t("export.field.packFormatMinor")}
               />
             </div>
           </Disclosure>
@@ -1190,7 +1267,7 @@ export function ExportScreen() {
 
       {kind === "resourcePack" && selectedFtbQuestEntries > 0 && (
         <p className="export-screen__hint">
-          FTB Quests のクエストはリソースパックに含まれません。「Modpack ファイル」から書き出してください。
+          {t("export.hint.ftbQuests")}
         </p>
       )}
 
@@ -1198,19 +1275,22 @@ export function ExportScreen() {
         && selectedShaderpackIds.length > 0
         && !showShaderpackDeploymentOption && (
         <p className="export-screen__hint">
-          シェーダーパックは{kind === "resourcePack" ? "リソースパック" : "Mod JAR"}に含まれません。「日本語化したシェーダーパック」から書き出してください。
+          {t("export.hint.shaderpackNotIncluded", {
+            format: t(kind === "resourcePack" ? "export.format.resourcePack" : "export.format.modJar"),
+            shaderpackOption: t("export.format.shaderpackZip", { language: targetLanguage }),
+          })}
         </p>
       )}
 
       {showShaderpackDeploymentOption && (
         <Checkbox checked={deployShaderpacksWithExport} onChange={setDeployShaderpacksWithExport}>
-          シェーダーパックも shaderpacks/ に配置する
+          {t("export.checkbox.deployShaderpack")}
         </Checkbox>
       )}
 
       {kind === "modpackFiles" && (
         <fieldset className="export-destination">
-          <legend>保存先</legend>
+          <legend>{t("export.destination.legend")}</legend>
           <label>
             <input
               type="radio"
@@ -1219,7 +1299,7 @@ export function ExportScreen() {
               checked={destination === "folder"}
               onChange={() => setDestination("folder")}
             />
-            ZIP に書き出す
+            {t("export.destination.zip")}
           </label>
           {overview?.instancePath && (
             <label>
@@ -1230,7 +1310,7 @@ export function ExportScreen() {
                 checked={destination === "instance"}
                 onChange={() => setDestination("instance")}
               />
-              インスタンスに直接配置
+              {t("export.destination.instance")}
             </label>
           )}
         </fieldset>
@@ -1238,7 +1318,7 @@ export function ExportScreen() {
 
       {kind === "shaderpackZip" && (
         <fieldset className="export-destination">
-          <legend>保存先</legend>
+          <legend>{t("export.destination.legend")}</legend>
           <label>
             <input
               type="radio"
@@ -1247,7 +1327,7 @@ export function ExportScreen() {
               checked={destination === "folder"}
               onChange={() => setDestination("folder")}
             />
-            ZIP に書き出す
+            {t("export.destination.zip")}
           </label>
           {overview?.instancePath && (
             <label>
@@ -1258,7 +1338,7 @@ export function ExportScreen() {
                 checked={destination === "instance"}
                 onChange={() => setDestination("instance")}
               />
-              インスタンスの shaderpacks に配置
+              {t("export.destination.instanceShaderpack")}
             </label>
           )}
         </fieldset>
@@ -1266,9 +1346,9 @@ export function ExportScreen() {
 
       {kind === "languageFile" && includedNamespaces.length > 1 && (
         <div className="export-screen__field">
-          <span>名前空間</span>
+          <span>{t("export.field.namespace")}</span>
           <Select
-            aria-label="名前空間"
+            aria-label={t("export.field.namespace")}
             value={selectedNamespace}
             onChange={setNamespace}
             options={includedNamespaces.map((item) => ({ value: item, label: item }))}
@@ -1280,20 +1360,22 @@ export function ExportScreen() {
         <>
           <label className="export-screen__advanced-check">
             <input type="checkbox" checked={replaceInPlace} onChange={(event) => void changeInPlace(event.currentTarget.checked)} />
-            mods フォルダの JAR を直接上書きする
+            {t("export.checkbox.replaceJar")}
           </label>
           {replaceInPlace && outOfScopeInPlaceUnits.length > 0 && (
             <p className="status-message" aria-live="polite">
-              {outOfScopeInPlaceUnits.map(unitTitle).join("、")}：インスタンスの mods フォルダ外のため直接置き換えできません。
+              {t("export.error.outOfScopeReplacement", {
+                units: outOfScopeInPlaceUnits.map((unit) => unitTitle(unit, t)).join(t("export.listSeparator")),
+              })}
             </p>
           )}
         </>
       )}
 
-      <section className="export-validation" aria-label="書き出しの確認" aria-live="polite">
+      <section className="export-validation" aria-label={t("export.validation.section")} aria-live="polite">
         {validationError && <p className="status-message" role="alert">{validationError}</p>}
         {!!blockingIssues.length && (
-          <ul ref={blockingIssuesRef} tabIndex={-1} className="export-issues" aria-label="書き出しできない理由">
+          <ul ref={blockingIssuesRef} tabIndex={-1} className="export-issues" aria-label={t("export.validation.blockingList")}>
             {blockingIssues.map((issue, index) => (
               <li className="export-issue export-issue--error" key={`${issue.modUnitId ?? "project"}-${issue.code}-${index}`}>
                 {issueLabel(issue)}
@@ -1303,22 +1385,25 @@ export function ExportScreen() {
         )}
         {missingTotal > 0 && (
           <details className="export-validation__details" onToggle={(event) => setMissingDetailsOpen(event.currentTarget.open)}>
-            <summary>未翻訳 合計 {missingTotal.toLocaleString("ja-JP")} 件</summary>
-            {missingDetailsOpen && <VirtualValidationList rows={missingRows} label="modごとの未翻訳件数" />}
+            <summary>{t(missingTotal === 1 ? "export.validation.missingSummary_one" : "export.validation.missingSummary", { count: formatNumber(missingTotal) })}</summary>
+            {missingDetailsOpen && <VirtualValidationList rows={missingRows} label={t("export.validation.missingList")} />}
           </details>
         )}
         {placeholderCount > 0 && (
           <details ref={placeholderDetailsRef} tabIndex={-1} className="export-validation__details" onToggle={(event) => setPlaceholderDetailsOpen(event.currentTarget.open)}>
             <summary className={placeholderErrorCount > 0 ? "export-issue--error" : undefined}>
-              書式エラー {placeholderErrorCount.toLocaleString("ja-JP")} 件・注意 {placeholderWarningCount.toLocaleString("ja-JP")} 件
+              {t("export.validation.placeholderSummary", {
+                errors: formatNumber(placeholderErrorCount),
+                warnings: formatNumber(placeholderWarningCount),
+              })}
             </summary>
             {placeholderDetailsOpen && (
-              <VirtualValidationList rows={placeholderRows} label="書式の確認事項" />
+              <VirtualValidationList rows={placeholderRows} label={t("export.validation.placeholderList")} />
             )}
           </details>
         )}
         {!!warningIssues.length && (
-          <ul className="export-issues" aria-label="その他の確認事項">
+          <ul className="export-issues" aria-label={t("export.validation.otherIssues")}>
             {warningIssues.map((issue, index) => (
               <li className="export-issue" key={`${issue.modUnitId ?? "project"}-${issue.code}-${index}`}>
                 {issueLabel(issue)}
@@ -1329,21 +1414,24 @@ export function ExportScreen() {
       </section>
       {error && <p className="status-message" role="alert">{error}</p>}
       {confirmationDialog}
-      <Dialog open={forcePermit !== null && forcePermit.target === exportTarget} title="書式エラーがあります" onClose={() => {
+      <Dialog open={forcePermit !== null && forcePermit.target === exportTarget} title={t("export.dialog.formatErrors.title")} onClose={() => {
         setForcePermit(null);
         if (placeholderDetailsRef.current) placeholderDetailsRef.current.open = true;
       }}>
-        <p>{forcePermit?.count.toLocaleString("ja-JP")} 件の訳はゲーム内で正しく表示されないことがあります。</p>
+        <p>{forcePermit && t(
+          forcePermit.count === 1 ? "export.dialog.formatErrors.message_one" : "export.dialog.formatErrors.message",
+          { count: formatNumber(forcePermit.count) },
+        )}</p>
         <div className="dialog-confirmation__actions">
           <SecondaryButton onClick={() => {
             setForcePermit(null);
             if (placeholderDetailsRef.current) placeholderDetailsRef.current.open = true;
-          }}>戻る</SecondaryButton>
-          <SecondaryButton disabled={busy} onClick={() => void beginExport(forcePermit?.count ?? null)}>このまま書き出す</SecondaryButton>
+          }}>{t("export.action.back")}</SecondaryButton>
+          <SecondaryButton disabled={busy} onClick={() => void beginExport(forcePermit?.count ?? null)}>{t("export.action.exportAnyway")}</SecondaryButton>
         </div>
       </Dialog>
       <footer className="export-screen__actions">
-        <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>戻る</SecondaryButton>
+        <SecondaryButton disabled={busy} onClick={() => void goTo("editor")}>{t("export.action.back")}</SecondaryButton>
         <PrimaryButton
           data-testid="export-start"
           disabled={busy || loadedProjectId !== projectId || selectedIds.length === 0
@@ -1352,27 +1440,29 @@ export function ExportScreen() {
             || (kind === "shaderpackZip" && selectedShaderpackIds.length === 0)}
           onClick={() => void beginExport()}
         >
-          {busy ? "書き出し中…" : "書き出す"}
+          {busy ? t("export.action.exporting") : t("export.action.export")}
         </PrimaryButton>
       </footer>
 
       {activeReplacements.length > 0 && (
         <section className="export-replacements" aria-labelledby="export-replacements-title">
-          <h2 id="export-replacements-title">上書きしたJAR</h2>
+          <h2 id="export-replacements-title">{t("export.section.replacedJars")}</h2>
           <ul>
             {activeReplacements.map((replacement) => {
               const unit = modUnits.find((candidate) => candidate.id === replacement.modUnitId);
               return (
                 <li key={replacement.id}>
                   <div>
-                    <strong>{unit ? unitTitle(unit) : `mod ${replacement.modUnitId}`}</strong>
+                    <strong>{unit
+                      ? unitTitle(unit, t)
+                      : t("export.unit.numberedMod", { id: formatNumber(replacement.modUnitId) })}</strong>
                     <span className="selectable">{displayPath(replacement.targetPath)}</span>
                   </div>
                   <SecondaryButton
                     disabled={restoringId !== null}
                     onClick={() => void restoreJar(replacement.id)}
                   >
-                    {restoringId === replacement.id ? "復元中…" : "元に戻す"}
+                    {restoringId === replacement.id ? t("export.action.restoring") : t("export.action.restore")}
                   </SecondaryButton>
                 </li>
               );
@@ -1383,7 +1473,7 @@ export function ExportScreen() {
       )}
       {!!overview?.activeFileDeployments?.length && (
         <section className="export-replacements" aria-labelledby="export-file-deployments-title">
-          <h2 id="export-file-deployments-title">配置したファイル</h2>
+          <h2 id="export-file-deployments-title">{t("export.section.deployedFiles")}</h2>
           <ul>
             {overview.activeFileDeployments.map((deployment: FileDeploymentDto) => (
               <li key={deployment.id}>
@@ -1394,7 +1484,7 @@ export function ExportScreen() {
                   disabled={restoringId !== null}
                   onClick={() => void restoreFile(deployment.id)}
                 >
-                  {restoringId === deployment.id ? "復元中…" : "元に戻す"}
+                  {restoringId === deployment.id ? t("export.action.restoring") : t("export.action.restore")}
                 </SecondaryButton>
               </li>
             ))}
