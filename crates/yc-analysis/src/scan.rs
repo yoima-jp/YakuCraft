@@ -16,8 +16,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use yc_archive::{Archive, ArchiveLimits, EntryKind, NestedDiscoveryError};
 use yc_language::{
-    LanguageArchivePath, PatchouliArchiveFile, discover_books, discover_language_files,
-    extract_entries, normalize_locale, parse_language_file,
+    DEFAULT_TARGET_LOCALE, LanguageArchivePath, PatchouliArchiveFile, discover_books,
+    discover_language_files, extract_entries, normalize_locale, parse_language_file,
 };
 use yc_metadata::{ModInfo, analyze_metadata};
 
@@ -40,7 +40,7 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
-            target_locale: "ja_jp".to_owned(),
+            target_locale: DEFAULT_TARGET_LOCALE.to_owned(),
         }
     }
 }
@@ -83,7 +83,7 @@ pub struct ShaderpackScanResult {
     pub status: ModLanguageStatus,
 }
 
-pub fn scan_shaderpack(path: &Path) -> ShaderpackScanResult {
+pub fn scan_shaderpack(path: &Path, options: &ScanOptions) -> ShaderpackScanResult {
     let file_size_bytes = fs::metadata(path)
         .ok()
         .filter(|metadata| metadata.is_file())
@@ -101,7 +101,7 @@ pub fn scan_shaderpack(path: &Path) -> ShaderpackScanResult {
     };
     let is_shaderpack = yc_shaderpack::is_shader_pack(&source).unwrap_or(false);
     let analysis = if is_shaderpack {
-        crate::analyze_shaderpack(path, &namespace)
+        crate::analyze_shaderpack_with_target_locale(path, &namespace, &options.target_locale)
     } else {
         Err(crate::AnalysisError::NoLanguageFiles)
     };

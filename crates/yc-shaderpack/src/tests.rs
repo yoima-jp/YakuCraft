@@ -73,9 +73,11 @@ fn parsed_lang_retains_the_raw_key_for_export() {
 
 #[test]
 fn filename_case() {
-    assert_eq!(japanese_filename("en_US.lang"), "ja_JP.lang");
-    assert_eq!(japanese_filename("en_us.lang"), "ja_jp.lang");
-    assert_eq!(japanese_filename("english.lang"), "ja_jp.lang");
+    assert_eq!(japanese_filename("en_US.lang", "ja_jp"), "ja_JP.lang");
+    assert_eq!(japanese_filename("en_us.lang", "ja_jp"), "ja_jp.lang");
+    assert_eq!(japanese_filename("english.lang", "ja_jp"), "ja_jp.lang");
+    assert_eq!(japanese_filename("en_US.lang", "de_de"), "de_DE.lang");
+    assert_eq!(japanese_filename("en_US.lang", "tok"), "tok.lang");
 }
 
 #[test]
@@ -102,6 +104,7 @@ fn nested_zip_replaces_both_japanese_files() -> Result<()> {
         &source,
         &output,
         "en_US.lang",
+        "ja_jp",
         &[("shader:option".into(), "あ".into())],
     )?;
     let analysis = analyze_zip(&output)?;
@@ -149,5 +152,92 @@ fn nested_zip_replaces_both_japanese_files() -> Result<()> {
         shader.read_to_end(&mut shader_bytes)?;
     }
     assert_eq!(shader_bytes, b"old");
+    Ok(())
+}
+
+#[test]
+fn japanese_shaderpack_output_keeps_source_locale_case_with_existing_target() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().join("pack.zip");
+    let output = dir.path().join("output.zip");
+    let mut zip = ZipWriter::new(File::create(&source)?);
+    for (name, contents) in [
+        (
+            "pack-main/shaders/lang/en_US.lang",
+            &b"shader\\:option=old"[..],
+        ),
+        ("pack-main/shaders/lang/ja_jp.lang", &b"old"[..]),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(contents)?;
+    }
+    zip.finish()?;
+
+    write_translated_zip(
+        &source,
+        &output,
+        "en_US.lang",
+        "ja_jp",
+        &[("shader:option".into(), "あ".into())],
+    )?;
+    let mut zip = ZipArchive::new(File::open(output)?)?;
+    assert!(zip.by_name("pack-main/shaders/lang/ja_JP.lang").is_ok());
+    assert!(zip.by_name("pack-main/shaders/lang/ja_jp.lang").is_err());
+    Ok(())
+}
+
+#[test]
+fn german_shaderpack_uses_de_de_and_english_target_keeps_untranslated_keys() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().join("pack.zip");
+    let german_output = dir.path().join("german.zip");
+    let english_output = dir.path().join("english.zip");
+    let mut zip = ZipWriter::new(File::create(&source)?);
+    for (name, contents) in [
+        (
+            "shaders/lang/en_US.lang",
+            &b"keep=Original\nchange=English\nclear=English\n"[..],
+        ),
+        ("shaders/lang/de_DE.lang", &b"keep=Alt\n"[..]),
+        ("shaders/main.fsh", &b"shader"[..]),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(contents)?;
+    }
+    zip.finish()?;
+
+    write_translated_zip(
+        &source,
+        &german_output,
+        "en_US.lang",
+        "de_de",
+        &[("keep".into(), "Neu".into())],
+    )?;
+    let mut german_zip = ZipArchive::new(File::open(&german_output)?)?;
+    let mut german_bytes = Vec::new();
+    german_zip
+        .by_name("shaders/lang/de_DE.lang")?
+        .read_to_end(&mut german_bytes)?;
+    assert_eq!(german_bytes, b"keep=Neu\n");
+
+    write_translated_zip(
+        &source,
+        &english_output,
+        "de_DE.lang",
+        "en_us",
+        &[
+            ("change".into(), "Changed".into()),
+            ("clear".into(), String::new()),
+        ],
+    )?;
+    let mut english_zip = ZipArchive::new(File::open(&english_output)?)?;
+    let mut english_bytes = Vec::new();
+    english_zip
+        .by_name("shaders/lang/en_US.lang")?
+        .read_to_end(&mut english_bytes)?;
+    assert_eq!(
+        english_bytes,
+        b"keep=Original\nchange=Changed\nclear=English\n"
+    );
     Ok(())
 }

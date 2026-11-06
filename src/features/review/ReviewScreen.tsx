@@ -19,7 +19,7 @@ import type {
 } from "../../types/project";
 import "./ReviewScreen.css";
 
-type ReviewStep = "mod" | "sourceLanguage" | "existingJapanese" | "missingKeys" | "assets";
+type ReviewStep = "mod" | "sourceLanguage" | "existingTarget" | "missingKeys" | "assets";
 
 const EMPTY_ASSET_SUMMARY: ProjectAssetSummaryDto = {
   total: 0,
@@ -74,8 +74,8 @@ export function ReviewScreen() {
   const modListRef = useRef<HTMLUListElement>(null);
   const sourceLocale = useProjectStore((state) => state.sourceLocale);
   const setSourceLocale = useProjectStore((state) => state.setSourceLocale);
-  const preserveJapanese = useProjectStore((state) => state.preserveJapanese);
-  const setPreserveJapanese = useProjectStore((state) => state.setPreserveJapanese);
+  const preserveTarget = useProjectStore((state) => state.preserveTarget);
+  const setPreserveTarget = useProjectStore((state) => state.setPreserveTarget);
   const fillMissingSourceKeys = useProjectStore((state) => state.fillMissingSourceKeys);
   const setFillMissingSourceKeys = useProjectStore((state) => state.setFillMissingSourceKeys);
   const includedNamespaces = useProjectStore((state) => state.includedNamespaces);
@@ -165,7 +165,8 @@ export function ReviewScreen() {
     if (!details) return null;
     if (persistedSelectionsMatch) {
       return {
-        existingJapaneseTranslationCount: details.existingJapaneseTranslationCount,
+        existingTargetTranslationCount: details.existingTargetTranslationCount,
+        sameLanguageEntryCount: 0,
         missingSourceKeysCount: details.missingSourceKeysCount,
         assets: details.assetSummary ?? EMPTY_ASSET_SUMMARY,
       };
@@ -173,14 +174,15 @@ export function ReviewScreen() {
     return reviewSummaryState?.key === currentSelectionKey ? reviewSummaryState.summary : null;
   }, [currentSelectionKey, details, persistedSelectionsMatch, reviewSummaryState]);
   const displayedReviewSummary = useMemo(() => currentReviewSummary ?? (details ? {
-    existingJapaneseTranslationCount: details.existingJapaneseTranslationCount,
+    existingTargetTranslationCount: details.existingTargetTranslationCount,
+    sameLanguageEntryCount: 0,
     missingSourceKeysCount: details.missingSourceKeysCount,
     assets: details.assetSummary ?? EMPTY_ASSET_SUMMARY,
   } : null), [currentReviewSummary, details]);
   const visibleSteps = useMemo<ReviewStep[]>(() => {
     const steps: ReviewStep[] = ["mod", "sourceLanguage"];
-    if ((displayedReviewSummary?.existingJapaneseTranslationCount ?? 0) > 0) {
-      steps.push("existingJapanese");
+    if ((displayedReviewSummary?.existingTargetTranslationCount ?? 0) > 0) {
+      steps.push("existingTarget");
     }
     if ((displayedReviewSummary?.missingSourceKeysCount ?? 0) > 0) {
       steps.push("missingKeys");
@@ -221,9 +223,14 @@ export function ReviewScreen() {
       return;
     }
     const recommendedLocale = details?.recommendedSourceLocale?.toLowerCase();
-    const fallback = sourceLocales.find(([locale]) => locale.toLowerCase() === recommendedLocale) ?? sourceLocales[0];
+    const nonTargetLocales = sourceLocales.filter(
+      ([locale]) => locale.toLowerCase() !== details?.targetLocale.toLowerCase(),
+    );
+    const fallback = nonTargetLocales.find(([locale]) => locale.toLowerCase() === recommendedLocale)
+      ?? nonTargetLocales[0]
+      ?? sourceLocales[0];
     setSourceLocale(fallback[0]);
-  }, [details?.recommendedSourceLocale, setSourceLocale, sourceLocale, sourceLocales]);
+  }, [details?.recommendedSourceLocale, details?.targetLocale, setSourceLocale, sourceLocale, sourceLocales]);
 
   useEffect(() => {
     if (!details || persistedSelectionsMatch || reviewSummaryState?.key === currentSelectionKey) return;
@@ -232,7 +239,7 @@ export function ReviewScreen() {
     void getReviewAssetSummary({
       sourceLocale,
       fallbackPriority: details.fallbackPriority,
-      preserveExistingJapanese: details.preserveExistingJapanese,
+      preserveExistingTarget: details.preserveExistingTarget,
       fillMissingFromOtherLanguages: details.fillMissingFromOtherLanguages,
       includedNamespaces: [...includedNamespaces],
     }, (progress) => {
@@ -291,7 +298,7 @@ export function ReviewScreen() {
         sourceLocale,
         fallbackPriority: details.fallbackPriority,
         // 0件で画面を省いても、Preserveの既定選択を設定として維持する。
-        preserveExistingJapanese: preserveJapanese,
+        preserveExistingTarget: preserveTarget,
         fillMissingFromOtherLanguages: missingSourceKeysCount === 0 || fillMissingSourceKeys,
         includedNamespaces: [...includedNamespaces],
       }, setOperationProgress);
@@ -505,21 +512,21 @@ export function ReviewScreen() {
         </>
       );
       break;
-    case "existingJapanese":
+    case "existingTarget":
       content = (
         <>
           <h1 className="page-title">既存の日本語訳を引き継ぎますか？</h1>
           <p className="review-description">
             {modUnits.length > 1 && "全対象合計で "}
-            {currentReviewSummary?.existingJapaneseTranslationCount.toLocaleString("ja-JP") ?? "0"} 件見つかりました
+            {currentReviewSummary?.existingTargetTranslationCount.toLocaleString("ja-JP") ?? "0"} 件見つかりました
           </p>
           <RadioGroup
             className="review-options"
             optionClassName="review-option"
             legend="既存の日本語訳"
             name="preserve-japanese"
-            value={preserveJapanese ? "preserve" : "clear"}
-            onChange={(value) => setPreserveJapanese(value === "preserve")}
+            value={preserveTarget ? "preserve" : "clear"}
+            onChange={(value) => setPreserveTarget(value === "preserve")}
             options={[
               { value: "preserve", label: "そのまま引き継ぐ" },
               { value: "clear", label: "すべて新しく翻訳する" },

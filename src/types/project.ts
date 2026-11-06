@@ -76,6 +76,7 @@ export interface ProjectAssetSummaryDto {
 
 export interface ProjectDetailsDto {
   project: ProjectSummaryDto;
+  targetLocale: string;
   mods: ModSummaryDto[];
   namespaces: NamespaceSummaryDto[];
   languages: LanguageSummaryDto[];
@@ -83,11 +84,11 @@ export interface ProjectDetailsDto {
   recommendedSourceLocale: string | null;
   sourceLocale: string;
   fallbackPriority: string[];
-  preserveExistingJapanese: boolean;
+  preserveExistingTarget: boolean;
   fillMissingFromOtherLanguages: boolean;
   includedNamespaces: IncludedNamespaceDto[];
   setupCompleted: boolean;
-  existingJapaneseTranslationCount: number;
+  existingTargetTranslationCount: number;
   missingSourceKeysCount: number;
   counts: ProjectCountsDto;
   targetLanguageFileName: string;
@@ -100,7 +101,8 @@ export interface ProjectDetailsDto {
 }
 
 export interface ReviewSetupSummaryDto {
-  existingJapaneseTranslationCount: number;
+  existingTargetTranslationCount: number;
+  sameLanguageEntryCount: number;
   missingSourceKeysCount: number;
   assets: ProjectAssetSummaryDto;
 }
@@ -122,7 +124,7 @@ export interface RecentProjectDto {
 export interface ReviewSettingsDto {
   sourceLocale: string;
   fallbackPriority: string[];
-  preserveExistingJapanese: boolean;
+  preserveExistingTarget: boolean;
   fillMissingFromOtherLanguages: boolean;
   includedNamespaces: IncludedNamespaceDto[];
 }

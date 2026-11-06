@@ -6,7 +6,11 @@ use std::{
 };
 
 use yc_archive::normalize_archive_path;
-use yc_language::{language_export_filename, write_language_file};
+use yc_language::{
+    DiscoveredLanguageFile, EntryFlag, LanguageFileFormat, TranslationEntry, TranslationOrigin,
+    language_export_filename, parse_language_file, write_language_file,
+    write_language_file_preserving_empty,
+};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
@@ -17,9 +21,18 @@ use crate::{
 };
 
 /// Modified JARの標準名を元JARのbasenameから作る。
-pub fn modified_jar_filename(original_jar_path: impl AsRef<Path>) -> Option<String> {
+pub fn modified_jar_filename(
+    original_jar_path: impl AsRef<Path>,
+    target_locale: &str,
+) -> Option<String> {
     let stem = original_jar_path.as_ref().file_stem()?.to_str()?;
-    Some(format!("{stem}-ja.jar"))
+    let suffix =
+        if yc_language::normalize_locale(target_locale) == yc_language::DEFAULT_TARGET_LOCALE {
+            "ja".to_owned()
+        } else {
+            yc_language::normalize_locale(target_locale)
+        };
+    Some(format!("{stem}-{suffix}.jar"))
 }
 
 /// Source JARの他entryを圧縮データのまま複製して、翻訳entryだけ置き換える。
@@ -58,6 +71,97 @@ pub(crate) fn validate_modified_jar_input(
     Ok(())
 }
 
+fn write_english_based_language_file(
+    input: &ExportInput<'_>,
+    original_jar_path: &Path,
+    namespace: &str,
+    file_name: &str,
+    format: LanguageFileFormat,
+) -> Result<Vec<u8>, ExportError> {
+    let original_file = input
+        .language_files
+        .iter()
+        .find(|file| {
+            file.namespace == namespace
+                && file.normalized_locale == "en_us"
+                && file.format == format
+                && file.file_name.eq_ignore_ascii_case(file_name)
+        })
+        .or_else(|| {
+            input
+                .language_files
+                .iter()
+                .find(|file| file.namespace == namespace && file.normalized_locale == "en_us")
+        });
+    let mut entries = if let Some(original_file) = original_file {
+        let bytes = read_language_file_from_jar(original_jar_path, original_file)?;
+        let parsed = parse_language_file(original_file.clone(), &bytes)?;
+        parsed
+            .entries
+            .into_iter()
+            .enumerate()
+            .map(|(sort_index, (key, value))| TranslationEntry {
+                namespace: namespace.to_owned(),
+                key,
+                source_text: None,
+                source_locale: Some(original_file.locale.clone()),
+                target_text: value.text.unwrap_or_default(),
+                target_original_text: None,
+                translated_source_text: None,
+                origin: TranslationOrigin::Existing,
+                flags: Vec::<EntryFlag>::new(),
+                sort_index,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let mut next_sort_index = entries.len();
+    for translation in input.entries.iter().filter(|entry| {
+        entry.namespace == namespace && !yc_language::is_empty_translation(&entry.target_text)
+    }) {
+        if let Some(original) = entries
+            .iter_mut()
+            .find(|entry| entry.key == translation.key)
+        {
+            original.target_text.clone_from(&translation.target_text);
+        } else {
+            let mut translation = translation.clone();
+            translation.sort_index = next_sort_index;
+            next_sort_index += 1;
+            entries.push(translation);
+        }
+    }
+
+    Ok(write_language_file_preserving_empty(
+        namespace,
+        &entries,
+        format,
+        writer_options_for_namespace(input, namespace),
+    )?)
+}
+
+fn read_language_file_from_jar(
+    jar_path: &Path,
+    file: &DiscoveredLanguageFile,
+) -> Result<Vec<u8>, ExportError> {
+    let mut jar = ZipArchive::new(File::open(jar_path)?)?;
+    let mut bytes = Vec::new();
+    if file.container_path.is_empty() {
+        jar.by_name(&file.archive_path)?.read_to_end(&mut bytes)?;
+    } else {
+        let mut nested_bytes = Vec::new();
+        jar.by_name(&file.container_path)?
+            .read_to_end(&mut nested_bytes)?;
+        let mut nested = ZipArchive::new(Cursor::new(nested_bytes))?;
+        nested
+            .by_name(&file.archive_path)?
+            .read_to_end(&mut bytes)?;
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn export_modified_jar_validated(
     input: &ExportInput<'_>,
     original_jar_path: &Path,
@@ -89,6 +193,7 @@ pub(crate) fn export_modified_jar_validated(
             input.language_files,
             &namespace.namespace,
             input.source_locale,
+            input.target_locale,
         )
         .ok_or_else(|| ExportError::UnsupportedLanguageFileFormat {
             namespace: namespace.namespace.clone(),
@@ -102,12 +207,22 @@ pub(crate) fn export_modified_jar_validated(
         if normalize_archive_path(&target_path).as_deref() != Ok(target_path.as_str()) {
             return Err(ExportError::UnsafeArchivePath(target_path));
         }
-        let bytes = write_language_file(
-            &namespace.namespace,
-            input.entries,
-            format,
-            writer_options_for_namespace(input, &namespace.namespace),
-        )?;
+        let bytes = if yc_language::normalize_locale(input.target_locale) == "en_us" {
+            write_english_based_language_file(
+                input,
+                original_jar_path,
+                &namespace.namespace,
+                &file_name,
+                format,
+            )?
+        } else {
+            write_language_file(
+                &namespace.namespace,
+                input.entries,
+                format,
+                writer_options_for_namespace(input, &namespace.namespace),
+            )?
+        };
         if generated.insert(target_path.clone(), bytes).is_some() {
             return Err(ExportError::DuplicateTargetEntry(target_path));
         }

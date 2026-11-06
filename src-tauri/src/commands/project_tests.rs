@@ -7,14 +7,15 @@ use std::{
 };
 
 use super::{
-    ReviewSettingsInput, add_project_sources_core, create_project_core,
-    create_project_from_sources_core, deployment_path_keys, is_existing_instance_candidate,
-    merge_for_review, modpack_document_entries, preserve_saved_translations, project_analysis_data,
+    ReviewSettingsInput, add_project_sources_core, configured_target_locale, create_project_core,
+    create_project_from_source_inputs_with_target_locale_core, create_project_from_sources_core,
+    deployment_path_keys, is_existing_instance_candidate, merge_for_review,
+    modpack_document_entries, preserve_saved_translations, project_analysis_data,
     project_delete_error, project_details_core, project_details_core_with_analysis,
-    project_details_from_stored_data, refresh_modpack_unit_core, review_asset_summary_core,
-    review_asset_summary_core_with_index_and_progress, save_review_settings_core,
-    save_review_settings_core_with_cached_asset_index, scan_project_instance_sources_core,
-    truncate_recent_projects,
+    project_details_from_stored_data, refresh_modpack_unit_core, resolve_source_locale,
+    review_asset_summary_core, review_asset_summary_core_with_index_and_progress,
+    save_review_settings_core, save_review_settings_core_with_cached_asset_index,
+    scan_project_instance_sources_core, truncate_recent_projects,
 };
 use crate::{
     commands::{
@@ -32,8 +33,9 @@ use yc_language::ReviewSettings;
 use yc_project::{
     AppSettings, EntryUpdate, FileDeploymentRecord, GlossaryTermInput, IncludedNamespace,
     ModUnitSourceKind, NamespaceRecord, OpenedProject, ProjectError, ProjectReviewSettings,
-    RecentProject, RecentProjects, TranslationProgress, UpdateOrigin, load_recent_projects,
-    open_project as open_project_file, save_recent_projects, save_settings as save_app_settings,
+    ProjectSource, RecentProject, RecentProjects, TranslationProgress, UpdateOrigin,
+    load_recent_projects, open_project as open_project_file, save_recent_projects,
+    save_settings as save_app_settings,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -70,6 +72,91 @@ fn first_mod_unit_id(opened: &OpenedProject) -> i64 {
         .id
 }
 
+#[test]
+fn project_creation_reads_the_configured_target_once_and_reopens_with_the_saved_value() {
+    let temporary = TemporaryDirectory::create();
+    let paths = AppPaths::create(temporary.0.join("app-data")).unwrap();
+    let source = temporary.0.join("source.jar");
+    write_fixture_jar(&source);
+
+    let mut settings = yc_project::AppSettings::new();
+    save_app_settings(&paths.settings_file, &settings).unwrap();
+    assert_eq!(
+        configured_target_locale(&paths).unwrap(),
+        yc_language::DEFAULT_TARGET_LOCALE
+    );
+    settings
+        .values
+        .insert("language.targetLocale".to_owned(), serde_json::json!("   "));
+    save_app_settings(&paths.settings_file, &settings).unwrap();
+    assert_eq!(
+        configured_target_locale(&paths).unwrap(),
+        yc_language::DEFAULT_TARGET_LOCALE
+    );
+    settings.values.insert(
+        "language.targetLocale".to_owned(),
+        serde_json::json!("de-DE"),
+    );
+    save_app_settings(&paths.settings_file, &settings).unwrap();
+    let target_locale = configured_target_locale(&paths).unwrap();
+    assert_eq!(target_locale, "de_de");
+
+    let created = create_project_from_source_inputs_with_target_locale_core(
+        &paths,
+        &[ProjectSource {
+            path: source,
+            kind: ModUnitSourceKind::Jar,
+        }],
+        None,
+        false,
+        &target_locale,
+        &CancellationToken::default(),
+        |_, _, _, _| {},
+    )
+    .expect("create project with the configured target");
+    let project_id = created.opened.summary().id.clone();
+    assert_eq!(
+        created.opened.repository().target_locale().unwrap(),
+        "de_de"
+    );
+    drop(created);
+
+    settings.values.insert(
+        "language.targetLocale".to_owned(),
+        serde_json::json!("fr_FR"),
+    );
+    save_app_settings(&paths.settings_file, &settings).unwrap();
+    assert_eq!(configured_target_locale(&paths).unwrap(), "fr_fr");
+
+    let reopened = open_project_file(
+        &paths.projects_dir,
+        project_id.parse().expect("created project UUID"),
+    )
+    .expect("reopen project after settings changed");
+    assert_eq!(reopened.repository().target_locale().unwrap(), "de_de");
+}
+
+#[test]
+fn automatic_source_selection_excludes_the_target_but_keeps_explicit_choice() {
+    let temporary = TemporaryDirectory::create();
+    let source = temporary.0.join("source.jar");
+    write_fixture_jar(&source);
+    let analysis = yc_analysis::analyze_jar_with_target_locale(
+        &source,
+        "en_us",
+        &CancellationToken::default(),
+        |_| {},
+    )
+    .expect("analyze English-target JAR");
+
+    assert_eq!(
+        analysis.result.recommended_source_locale.as_deref(),
+        Some("ja_jp")
+    );
+    assert_eq!(resolve_source_locale(&analysis, ""), "ja_jp");
+    assert_eq!(resolve_source_locale(&analysis, "en_us"), "en_us");
+}
+
 fn create_addition_fixture() -> (TemporaryDirectory, OpenedProject) {
     let temporary = TemporaryDirectory::create();
     let first = temporary.0.join("first.jar");
@@ -95,9 +182,10 @@ fn create_addition_fixture() -> (TemporaryDirectory, OpenedProject) {
         .save_review_settings(
             1,
             ReviewSettings {
+                target_locale: yc_language::DEFAULT_TARGET_LOCALE.to_owned(),
                 source_locale: "en_us".to_owned(),
                 fallback_priority: vec!["en_us".to_owned()],
-                preserve_existing_japanese: true,
+                preserve_existing_target: true,
                 fill_missing_from_other_languages: false,
                 included_namespaces: vec!["fixture".to_owned()],
             },
@@ -2597,7 +2685,7 @@ fn exports_skip_asset_only_namespaces_and_keep_each_language_format() {
         &ProjectReviewSettings {
             source_locale: Some("en_us".to_owned()),
             fallback_priority: Vec::new(),
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: true,
             setup_completed: true,
             included_namespaces: vec![
@@ -2868,7 +2956,7 @@ fn project_review_edit_and_language_export_use_the_sqlite_data() {
         &ReviewSettingsInput {
             source_locale: "en_us".to_owned(),
             fallback_priority: Vec::new(),
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: true,
             included_namespaces: vec![included_namespace(mod_unit_id, "fixture")],
         },
@@ -2878,7 +2966,7 @@ fn project_review_edit_and_language_export_use_the_sqlite_data() {
     let review_settings = ReviewSettingsInput {
         source_locale: "en_us".to_owned(),
         fallback_priority: Vec::new(),
-        preserve_existing_japanese: true,
+        preserve_existing_target: true,
         fill_missing_from_other_languages: true,
         included_namespaces: vec![included_namespace(mod_unit_id, "fixture")],
     };
@@ -3040,7 +3128,7 @@ fn opening_legacy_project_restores_patchouli_validation_for_edit_and_export() {
         &ReviewSettingsInput {
             source_locale: "en_us".to_owned(),
             fallback_priority: Vec::new(),
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: true,
             included_namespaces: vec![included_namespace(mod_unit_id, "fixture")],
         },
@@ -3137,7 +3225,7 @@ fn review_settings_include_a_namespace_from_a_nested_jar() {
     let settings = ReviewSettingsInput {
         source_locale: "en_us".to_owned(),
         fallback_priority: Vec::new(),
-        preserve_existing_japanese: true,
+        preserve_existing_target: true,
         fill_missing_from_other_languages: true,
         included_namespaces: nested
             .included_namespaces
@@ -3264,7 +3352,7 @@ fn imports_edits_and_exports_patchouli_documents_without_changing_other_json() {
         &ReviewSettingsInput {
             source_locale: stored_details.source_locale.clone(),
             fallback_priority: stored_details.fallback_priority.clone(),
-            preserve_existing_japanese: stored_details.preserve_existing_japanese,
+            preserve_existing_target: stored_details.preserve_existing_target,
             fill_missing_from_other_languages: stored_details.fill_missing_from_other_languages,
             included_namespaces: stored_details.included_namespaces.clone(),
         },
@@ -3298,7 +3386,7 @@ fn imports_edits_and_exports_patchouli_documents_without_changing_other_json() {
         &ReviewSettingsInput {
             source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
             fallback_priority: settings.fallback_priority,
-            preserve_existing_japanese: false,
+            preserve_existing_target: false,
             fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
             included_namespaces: settings.included_namespaces,
         },
@@ -3350,7 +3438,7 @@ fn imports_edits_and_exports_patchouli_documents_without_changing_other_json() {
         &ReviewSettingsInput {
             source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
             fallback_priority: settings.fallback_priority,
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
             included_namespaces: settings.included_namespaces,
         },
@@ -3387,7 +3475,7 @@ fn imports_edits_and_exports_patchouli_documents_without_changing_other_json() {
         &ReviewSettingsInput {
             source_locale: settings.source_locale.unwrap_or_else(|| "en_us".to_owned()),
             fallback_priority: settings.fallback_priority,
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
             included_namespaces: settings.included_namespaces,
         },
@@ -3631,7 +3719,7 @@ fn benchmark_create_mod_review_and_recent_open() {
     let review_settings = ReviewSettingsInput {
         source_locale: details.source_locale,
         fallback_priority: details.fallback_priority,
-        preserve_existing_japanese: details.preserve_existing_japanese,
+        preserve_existing_target: details.preserve_existing_target,
         fill_missing_from_other_languages: details.fill_missing_from_other_languages,
         included_namespaces,
     };
@@ -3673,7 +3761,7 @@ fn benchmark_create_mod_review_and_recent_open() {
     let mut saved_details =
         project_details_from_stored_data(&opened, saved_review, Some(analysis.result.is_signed))
             .expect("saved Project details should load");
-    saved_details.existing_japanese_translation_count = merge_counts.0;
+    saved_details.existing_target_translation_count = merge_counts.0;
     saved_details.missing_source_keys_count = merge_counts.1;
     println!(
         "save_review_settings details response: {:.3}s",

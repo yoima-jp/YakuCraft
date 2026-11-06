@@ -8,6 +8,9 @@ pub use parse_error::parse_error_detail;
 mod patchouli;
 mod writer;
 
+/// 設定未指定時に使う翻訳先ロケール。
+pub const DEFAULT_TARGET_LOCALE: &str = "ja_jp";
+
 pub use discovery::{LanguageArchivePath, discover_language_files, normalize_locale};
 pub use error::LanguageError;
 pub use merge::{merge_languages, recommend_source_locale, source_language_recommendation};
@@ -30,7 +33,7 @@ pub use patchouli::{
 pub use writer::{
     compare_minecraft_versions, is_empty_translation, language_export_filename,
     language_export_source_file, resource_pack_language_filename, write_json_language,
-    write_language_file, write_legacy_language,
+    write_language_file, write_language_file_preserving_empty, write_legacy_language,
 };
 
 #[cfg(test)]

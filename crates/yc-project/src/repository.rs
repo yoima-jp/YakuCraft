@@ -53,6 +53,16 @@ impl Repository {
         list_glossary_terms(&connection)
     }
 
+    pub fn target_locale(&self) -> Result<String> {
+        let connection = open_read_connection(&self.database_path)?;
+        let locale: String = connection.query_row(
+            "SELECT target_locale FROM project_meta LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(yc_language::normalize_locale(&locale))
+    }
+
     pub fn review_settings(&self) -> Result<ProjectReviewSettings> {
         let connection = open_read_connection(&self.database_path)?;
         let (settings_json, setup_completed): (Option<String>, i64) = connection.query_row(
@@ -85,7 +95,7 @@ impl Repository {
         Ok(ProjectReviewSettings {
             source_locale: (!settings.source_locale.is_empty()).then_some(settings.source_locale),
             fallback_priority: settings.fallback_priority,
-            preserve_existing_japanese: settings.preserve_existing_japanese,
+            preserve_existing_target: settings.preserve_existing_target,
             fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
             setup_completed: setup_completed != 0,
             included_namespaces,
@@ -449,7 +459,7 @@ impl Repository {
                     COALESCE(SUM(EXISTS(SELECT 1 FROM entry_flags WHERE entry_id = translation_entries.id AND flag IN ('asset_missing', 'asset_ambiguous'))), 0)
              FROM translation_entries {filter}"
         );
-        let (total, translated, needs_review, existing_japanese, unresolved_assets): (
+        let (total, translated, needs_review, existing_target, unresolved_assets): (
             i64,
             i64,
             i64,
@@ -483,7 +493,7 @@ impl Repository {
             total: to_usize(total)?,
             translated: to_usize(translated)?,
             needs_review: to_usize(needs_review)?,
-            existing_japanese: to_usize(existing_japanese)?,
+            existing_target: to_usize(existing_target)?,
             unresolved_assets: to_usize(unresolved_assets)?,
         })
     }

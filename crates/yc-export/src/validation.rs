@@ -148,8 +148,11 @@ pub fn validate_export(request: &ExportValidationRequest<'_>) -> Vec<ValidationI
                 .iter()
                 .any(|translation| !is_empty_translation(&translation.target_text))
     }) {
-        let target =
-            yc_language::patchouli_target_document_path(&document.source_path, "en_us", "ja_jp");
+        let target = yc_language::patchouli_target_document_path(
+            &document.source_path,
+            "en_us",
+            request.input.target_locale,
+        );
         if target.as_deref() != Some(document.target_path.as_str())
             || yc_archive::normalize_archive_path(&document.target_path).as_deref()
                 != Ok(document.target_path.as_str())
@@ -218,6 +221,7 @@ pub fn validate_export(request: &ExportValidationRequest<'_>) -> Vec<ValidationI
                 request.input.language_files,
                 &namespace.namespace,
                 request.input.source_locale,
+                request.input.target_locale,
             );
             if filename.is_none() {
                 issues.push(issue(
@@ -254,7 +258,9 @@ pub fn validate_export(request: &ExportValidationRequest<'_>) -> Vec<ValidationI
                 "Minecraft version is required for a Resource Pack".to_owned(),
             )),
             Some(version) => {
-                if resource_pack_language_filename(Some(version)).is_none() {
+                if resource_pack_language_filename(Some(version), request.input.target_locale)
+                    .is_none()
+                {
                     issues.push(issue(
                         ValidationSeverity::Error,
                         ValidationIssueCode::UnsupportedTargetFormat,
@@ -351,6 +357,7 @@ fn validate_modified_jar(
                 request.input.language_files,
                 namespace,
                 request.input.source_locale,
+                request.input.target_locale,
             ) else {
                 continue;
             };

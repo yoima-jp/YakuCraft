@@ -14,8 +14,9 @@ use yc_language::{
 
 use crate::{
     AnalysisData, EntryUpdate, GlossaryTermInput, JarReplacementRecord, LanguageRecord, LockRecord,
-    ModRecord, NamespaceRecord, NestedArchiveRecord, ProjectError, ProjectLock, RecentProject,
-    RecentProjects, TranslationProgress, UpdateOrigin, create_project, database::open_database,
+    ModRecord, ModUnitSourceKind, NamespaceRecord, NestedArchiveRecord, ProjectError, ProjectLock,
+    ProjectSource, RecentProject, RecentProjects, TranslationProgress, UpdateOrigin,
+    create_project, create_project_with_sources_and_target_locale, database::open_database,
     delete_project, list_projects, load_settings, normalize_project_name, open_project,
     save_settings,
 };
@@ -87,6 +88,81 @@ fn project_creation_copies_source_and_matches_schema_versions() {
     )
     .expect("delete Project");
     assert!(!project_directory.exists());
+}
+
+#[test]
+fn project_target_locale_is_saved_and_does_not_follow_later_project_defaults() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("sample.jar");
+    fs::write(&source_jar, b"source jar bytes").expect("write source fixture");
+    let source = [ProjectSource {
+        path: source_jar,
+        kind: ModUnitSourceKind::Jar,
+    }];
+
+    let german =
+        create_project_with_sources_and_target_locale(&projects_root, &source, None, None, "de-DE")
+            .expect("create a German target project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&german.id).expect("German project UUID"),
+    )
+    .expect("reopen German project");
+    assert_eq!(opened.repository().target_locale().unwrap(), "de_de");
+    drop(opened);
+
+    let english =
+        create_project_with_sources_and_target_locale(&projects_root, &source, None, None, "en_us")
+            .expect("create a project using the later default");
+    let reopened_german = open_project(
+        &projects_root,
+        Uuid::parse_str(&german.id).expect("German project UUID"),
+    )
+    .expect("reopen the original project after changing the default");
+    assert_eq!(
+        reopened_german.repository().target_locale().unwrap(),
+        "de_de"
+    );
+    assert_ne!(german.id, english.id);
+}
+
+#[test]
+fn persisted_review_settings_accept_the_previous_japanese_field_name() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("sample.jar");
+    fs::write(&source_jar, b"source jar bytes").expect("write source fixture");
+    let project = create_project(&projects_root, &[source_jar], None).expect("create Project");
+    let database_path = projects_root.join(&project.id).join("project.sqlite");
+    let unit_id = crate::Repository::new(&database_path)
+        .list_mod_units()
+        .expect("list mod units")
+        .remove(0)
+        .id;
+    let legacy = serde_json::json!({
+        "sourceLocale": "en_us",
+        "fallbackPriority": [],
+        "preserveExistingJapanese": false,
+        "fillMissingFromOtherLanguages": true,
+        "includedNamespaces": []
+    });
+    let connection = Connection::open(&database_path).expect("open Project database");
+    connection
+        .execute(
+            "UPDATE mod_units SET review_settings_json = ?1 WHERE id = ?2",
+            rusqlite::params![legacy.to_string(), unit_id],
+        )
+        .expect("store legacy review settings");
+    drop(connection);
+
+    let settings = crate::Repository::new(database_path)
+        .review_settings_for_unit(unit_id)
+        .expect("read persisted legacy review settings");
+    assert!(!settings.preserve_existing_target);
+    let current = serde_json::to_value(settings).expect("serialize current review settings");
+    assert_eq!(current["preserveExistingTarget"], false);
+    assert!(current.get("preserveExistingJapanese").is_none());
 }
 
 #[test]
@@ -407,7 +483,7 @@ fn entry_summary_does_not_count_whitespace_only_targets_as_translated() {
         .expect("read entry summary");
     assert_eq!(summary.total, 3);
     assert_eq!(summary.translated, 1);
-    assert_eq!(summary.existing_japanese, 0);
+    assert_eq!(summary.existing_target, 0);
 }
 
 #[test]

@@ -71,6 +71,7 @@ fn input<'a>(
         language_files,
         legacy_parse_escapes_namespaces: &[],
         source_locale,
+        target_locale: "ja_jp",
         writer_options: WriterOptions::default(),
         malformed_translation_files: malformed,
         placeholder_warnings: placeholders,
@@ -248,6 +249,53 @@ fn resource_pack_language_paths_and_filename_follow_version_boundaries() {
 }
 
 #[test]
+fn resource_pack_writes_the_generic_target_locale_path_and_neutral_description() {
+    let directory = temporary_directory();
+    let entries = [translation("mod", "key", "Übersetzt", 0)];
+    let namespaces = [NamespaceExport {
+        namespace: "mod".to_owned(),
+        included: true,
+    }];
+    let files = [discovered(
+        "mod",
+        "en_us",
+        LanguageFileFormat::Json,
+        "",
+        "en_us.json",
+    )];
+    let mut project = input(&entries, &namespaces, &files, &[], &[], "en_us");
+    project.target_locale = "de_de";
+    let mods = [ResourcePackMod {
+        name: Some("Mod".to_owned()),
+        version: Some("1.0".to_owned()),
+    }];
+
+    let output = export_resource_pack(
+        &project,
+        ResourcePackOptions {
+            mods: &mods,
+            source_jar_filename: "mod.jar",
+            minecraft_version: Some("1.13"),
+            manual_format: None,
+        },
+        &directory,
+        false,
+    )
+    .unwrap();
+    assert_eq!(output.file_name().unwrap(), "Mod-1.0-DE_DE_EX.zip");
+    let translated: serde_json::Value =
+        serde_json::from_slice(&read_entry(&output, "assets/mod/lang/de_de.json")).unwrap();
+    assert_eq!(translated["key"], "Übersetzt");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&read_entry(&output, "pack.mcmeta")).unwrap();
+    assert_eq!(
+        metadata["pack"]["description"],
+        "Mod translation (de_de, 1 mods)"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn pack_metadata_changes_shape_at_1_21_9() {
     let directory = temporary_directory();
     let entries = [translation("mod", "key", "訳", 0)];
@@ -374,7 +422,7 @@ fn resource_pack_filename_uses_first_mod_and_sanitizes_windows_components() {
         version: Some("6.0.10".to_owned()),
     }];
     assert_eq!(
-        resource_pack_filename(&normal_mods, "source.jar"),
+        resource_pack_filename(&normal_mods, "source.jar", "ja_jp"),
         "Create-6.0.10-JP_EX.zip"
     );
 
@@ -383,7 +431,7 @@ fn resource_pack_filename_uses_first_mod_and_sanitizes_windows_components() {
         version: Some("1.21.1-1.3.4".to_owned()),
     }];
     assert_eq!(
-        resource_pack_filename(&invalid_name_mods, "source.jar"),
+        resource_pack_filename(&invalid_name_mods, "source.jar", "ja_jp"),
         "Bad_________-1.21.1-1.3.4-JP_EX.zip"
     );
 
@@ -392,7 +440,7 @@ fn resource_pack_filename_uses_first_mod_and_sanitizes_windows_components() {
         version: Some("1.0".to_owned()),
     }];
     assert_eq!(
-        resource_pack_filename(&missing_name_mods, "Example Mod.jar"),
+        resource_pack_filename(&missing_name_mods, "Example Mod.jar", "ja_jp"),
         "Example Mod-1.0-JP_EX.zip"
     );
 
@@ -401,7 +449,7 @@ fn resource_pack_filename_uses_first_mod_and_sanitizes_windows_components() {
         version: None,
     }];
     assert_eq!(
-        resource_pack_filename(&missing_version_mods, "source.jar"),
+        resource_pack_filename(&missing_version_mods, "source.jar", "ja_jp"),
         "Create-JP_EX.zip"
     );
 
@@ -416,7 +464,7 @@ fn resource_pack_filename_uses_first_mod_and_sanitizes_windows_components() {
         },
     ];
     assert_eq!(
-        resource_pack_filename(&multiple_mods, "source.jar"),
+        resource_pack_filename(&multiple_mods, "source.jar", "ja_jp"),
         "First Mod-1.2-JP_EX.zip"
     );
 }
@@ -427,9 +475,67 @@ fn newest_confirmed_pack_format_and_default_jar_filename_are_available() {
     assert_eq!((format.major, format.minor), (97, 1));
     assert_eq!(format.metadata, crate::PackMetadataFormat::FormatRange);
     assert_eq!(
-        modified_jar_filename("example-1.2.jar").as_deref(),
+        modified_jar_filename("example-1.2.jar", "ja_jp").as_deref(),
         Some("example-1.2-ja.jar")
     );
+    assert_eq!(
+        modified_jar_filename("example-1.2.jar", "de_de").as_deref(),
+        Some("example-1.2-de_de.jar")
+    );
+}
+
+#[test]
+fn modified_jar_uses_generic_target_path_and_preserves_english_keys_for_en_us() {
+    let directory = temporary_directory();
+    let source_path = directory.join("mod.jar");
+    let de_output_path = directory.join("mod-de_de.jar");
+    let en_output_path = directory.join("mod-en_us.jar");
+    fs::write(
+        &source_path,
+        zip_bytes(&[
+            (
+                "assets/mod/lang/en_gb.json",
+                br#"{"change":"English GB"}"#,
+                CompressionMethod::Stored,
+            ),
+            (
+                "assets/mod/lang/en_us.json",
+                br#"{"keep":"Original","change":"English","clear":"English"}"#,
+                CompressionMethod::Stored,
+            ),
+        ]),
+    )
+    .unwrap();
+    let entries = [
+        translation("mod", "keep", "Behalten", 0),
+        translation("mod", "change", "Geändert", 1),
+        translation("mod", "clear", "", 2),
+    ];
+    let namespaces = [NamespaceExport {
+        namespace: "mod".to_owned(),
+        included: true,
+    }];
+    let files = [
+        discovered("mod", "en_gb", LanguageFileFormat::Json, "", "en_gb.json"),
+        discovered("mod", "en_us", LanguageFileFormat::Json, "", "en_us.json"),
+    ];
+    let mut project = input(&entries, &namespaces, &files, &[], &[], "en_gb");
+    project.target_locale = "de_de";
+    let output = create_language_files(&project).unwrap();
+    assert_eq!(output[0].file_name, "de_de.json");
+    export_modified_jar(&project, &source_path, &de_output_path, false).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&read_entry(&de_output_path, "assets/mod/lang/de_de.json")).unwrap();
+    assert_eq!(written["keep"], "Behalten");
+
+    project.target_locale = "en_us";
+    export_modified_jar(&project, &source_path, &en_output_path, false).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&read_entry(&en_output_path, "assets/mod/lang/en_us.json")).unwrap();
+    assert_eq!(written["keep"], "Behalten");
+    assert_eq!(written["change"], "Geändert");
+    assert_eq!(written["clear"], "English");
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -1031,7 +1137,7 @@ fn merged_resource_pack_merges_namespaces_and_keeps_the_first_translation() {
     }];
     assert_eq!(
         merged_resource_pack_filename(&single, "Ignored for one mod"),
-        resource_pack_filename(&[single[0].info.clone()], single[0].label)
+        resource_pack_filename(&[single[0].info.clone()], single[0].label, "ja_jp")
     );
     fs::remove_dir_all(directory).unwrap();
 }

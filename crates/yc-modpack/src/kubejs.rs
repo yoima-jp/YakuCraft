@@ -45,11 +45,16 @@ pub(crate) fn add_kubejs_entries(entries: &mut Vec<ModpackEntry>, document: &Kub
 pub(crate) fn write_kubejs_outputs(
     data: &ModpackData,
     translations: &BTreeMap<String, String>,
+    target_locale: &str,
 ) -> Result<Vec<OutputFile>, ModpackError> {
     data.kubejs_documents
         .iter()
         .map(|document| {
-            let mut translated = IndexMap::new();
+            let mut translated = if yc_language::normalize_locale(target_locale) == "en_us" {
+                document.source.entries.clone()
+            } else {
+                IndexMap::new()
+            };
             for key in document.source.entries.keys() {
                 let entry_key = format!("kubejs:{}#{key}", document.namespace);
                 let translation = translations.get(&entry_key);

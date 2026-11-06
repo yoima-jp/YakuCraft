@@ -58,18 +58,21 @@ function safeFileComponent(value: string) {
 
 function languageFileNameForNamespace(details: ProjectDetailsDto, namespace: string) {
   const languages = details.languages.filter((language) => language.namespace === namespace);
-  const japanese = languages.find((language) => language.locale.toLowerCase() === "ja_jp");
-  if (japanese) return japanese.archivePath.split(/[\\/]/).at(-1) ?? "ja_jp.json";
+  const targetLocale = details.targetLocale.toLowerCase().replaceAll("-", "_");
+  const target = languages.find((language) => language.locale.toLowerCase().replaceAll("-", "_") === targetLocale);
+  if (target) return target.archivePath.split(/[\\/]/).at(-1) ?? `${targetLocale}.json`;
 
   const source = languages.find((language) => language.locale.toLowerCase() === details.sourceLocale.toLowerCase());
-  if (!source) return "ja_jp.json";
+  if (!source) return `${targetLocale}.json`;
   const sourceName = source.archivePath.split(/[\\/]/).at(-1) ?? "en_us.json";
   const dot = sourceName.lastIndexOf(".");
-  if (dot < 0) return "ja_jp.json";
+  if (dot < 0) return `${targetLocale}.json`;
   const stem = sourceName.slice(0, dot);
-  const region = stem.slice(stem.lastIndexOf("_") + 1);
-  const upperRegion = region.length > 0 && !/[a-z]/.test(region);
-  return `ja_${upperRegion ? "JP" : "jp"}${sourceName.slice(dot)}`;
+  const sourceRegion = stem.slice(stem.lastIndexOf("_") + 1);
+  const upperRegion = sourceRegion.length > 0 && !/[a-z]/.test(sourceRegion);
+  const [language, region] = targetLocale.split("_");
+  const targetName = region && upperRegion ? `${language}_${region.toUpperCase()}` : targetLocale;
+  return `${targetName}${sourceName.slice(dot)}`;
 }
 
 function errorMessage(error: unknown) {
@@ -216,13 +219,16 @@ function mergeOutputFileName(
   selectedIds: number[],
   projectName: string,
   instancePath: string | null,
+  targetLocale: string,
 ) {
-  if (selectedIds.length > 1) return `${safeFileComponent(mergedPackName(projectName, instancePath))}-JP_EX.zip`;
+  const normalizedTarget = targetLocale.toLowerCase().replaceAll("-", "_");
+  const suffix = normalizedTarget === "ja_jp" ? "JP_EX" : `${normalizedTarget.toUpperCase()}_EX`;
+  if (selectedIds.length > 1) return `${safeFileComponent(mergedPackName(projectName, instancePath))}-${suffix}.zip`;
   const unit = units.find((candidate) => candidate.id === selectedIds[0]);
   const sourceStem = (unit?.sourceFilename ?? "mod.jar").replace(/\.jar$/i, "");
   const name = safeFileComponent(unit?.name?.trim() || sourceStem);
   const version = unit?.version?.trim();
-  return `${name}${version ? `-${safeFileComponent(version)}` : ""}-JP_EX.zip`;
+  return `${name}${version ? `-${safeFileComponent(version)}` : ""}-${suffix}.zip`;
 }
 
 type ValidationVirtualRow =
@@ -679,13 +685,14 @@ export function ExportScreen() {
           selectedIds.filter((id) => details.includedNamespaces.some((item) => item.modUnitId === id)),
           details.project.displayName,
           overview?.instancePath ?? null,
+          details.targetLocale,
         )
         : kind === "modifiedJar"
           ? "改変済みmod"
           : kind === "modpackFiles"
             ? "Modpack 翻訳"
             : kind === "shaderpackZip"
-              ? `${safeFileComponent(modUnits.find((unit) => selectedShaderpackIds.includes(unit.id))?.sourceFilename ?? "shaderpack")}-ja.zip`
+              ? `${safeFileComponent(modUnits.find((unit) => selectedShaderpackIds.includes(unit.id))?.sourceFilename ?? "shaderpack")}-${details.targetLocale.toLowerCase() === "ja_jp" ? "ja" : details.targetLocale.toLowerCase().replaceAll("-", "_")}.zip`
               : "言語ファイル";
       const defaultPath = defaultExportDirectory
         ? await joinPath(defaultExportDirectory, defaultName)

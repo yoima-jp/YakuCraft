@@ -261,24 +261,31 @@ pub fn write_lang_file(path: &Path, entries: &[(String, String)]) -> Result<()> 
     fs::write(path, write_lang(entries))?;
     Ok(())
 }
-pub fn japanese_filename(source: &str) -> &'static str {
+pub fn japanese_filename(source: &str, target_locale: &str) -> String {
+    let locale = yc_language::normalize_locale(target_locale);
     let stem = source
         .rsplit_once('.')
         .filter(|(_, extension)| extension.eq_ignore_ascii_case("lang"))
         .map(|(stem, _)| stem)
         .unwrap_or("");
-    let Some((language, region)) = stem.split_once('_') else {
-        return "ja_jp.lang";
-    };
-    if language.len() == 2
-        && region.len() == 2
-        && language.bytes().all(|c| c.is_ascii_lowercase())
-        && region.bytes().all(|c| c.is_ascii_uppercase())
-    {
-        "ja_JP.lang"
-    } else {
-        "ja_jp.lang"
-    }
+    let upper_region = stem.rsplit_once('_').is_some_and(|(_, region)| {
+        region.len() == 2 && region.bytes().all(|c| c.is_ascii_uppercase())
+    });
+    let locale = locale
+        .split_once('_')
+        .map(|(language, region)| {
+            if upper_region {
+                format!(
+                    "{}_{}",
+                    language.to_ascii_lowercase(),
+                    region.to_ascii_uppercase()
+                )
+            } else {
+                locale.clone()
+            }
+        })
+        .unwrap_or(locale);
+    format!("{locale}.lang")
 }
 fn atomic_zip<F>(output: &Path, f: F) -> Result<()>
 where
@@ -297,13 +304,89 @@ pub fn write_translated_zip(
     source: &Path,
     output: &Path,
     source_filename: &str,
+    target_locale: &str,
     entries: &[(String, String)],
 ) -> Result<()> {
     let mut zip = ZipArchive::new(File::open(source)?)?;
     let root = archive_root(&mut zip)?.ok_or("shaders directory not found")?;
     let prefix = format!("{root}shaders/lang/");
     let source_lang_path = format!("{prefix}{source_filename}");
-    let raw_keys = raw_keys_from_archive(&mut zip, &source_lang_path)?;
+    let target_locale = yc_language::normalize_locale(target_locale);
+    let mut target_paths = Vec::new();
+    let mut english_path = None;
+    for index in 0..zip.len() {
+        if let Ok(entry) = zip.by_index_raw(index)
+            && let Ok(name) = entry.name()
+            && let Some(file_name) = name.strip_prefix(&prefix)
+        {
+            let Some((locale, extension)) = file_name.rsplit_once('.') else {
+                continue;
+            };
+            if !extension.eq_ignore_ascii_case("lang") {
+                continue;
+            }
+            let normalized_locale = yc_language::normalize_locale(locale);
+            if normalized_locale == target_locale {
+                target_paths.push(name.to_string());
+            }
+            if normalized_locale == "en_us" && english_path.is_none() {
+                english_path = Some(name.to_string());
+            }
+        }
+    }
+    let target_path = if target_locale == yc_language::DEFAULT_TARGET_LOCALE {
+        format!(
+            "{prefix}{}",
+            japanese_filename(source_filename, &target_locale)
+        )
+    } else {
+        target_paths.first().cloned().unwrap_or_else(|| {
+            format!(
+                "{prefix}{}",
+                japanese_filename(source_filename, &target_locale)
+            )
+        })
+    };
+    let baseline_path = if target_locale == "en_us" {
+        target_paths
+            .first()
+            .or(english_path.as_ref())
+            .map(String::as_str)
+            .unwrap_or(&source_lang_path)
+    } else {
+        &source_lang_path
+    };
+    let raw_keys = raw_keys_from_archive(&mut zip, baseline_path)?;
+    let output_entries = if target_locale == "en_us" {
+        let mut base = if let Some(path) = target_paths.first().or(english_path.as_ref()) {
+            let mut entry = zip.by_name(path)?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            parse_lang(&bytes).entries
+        } else {
+            Vec::new()
+        };
+        for (key, value) in entries {
+            if value.trim().is_empty() {
+                continue;
+            }
+            if let Some((_, existing)) = base.iter_mut().find(|(existing, _)| existing == key) {
+                *existing = value.clone();
+            } else {
+                base.push((key.clone(), value.clone()));
+            }
+        }
+        base
+    } else {
+        entries.to_vec()
+    };
+    let mut replaced_paths = target_paths.clone();
+    if target_locale == "en_us"
+        && let Some(path) = &english_path
+        && !replaced_paths.contains(path)
+    {
+        replaced_paths.push(path.clone());
+    }
     atomic_zip(output, |file| {
         let mut writer = ZipWriter::new(file);
         let mut has_shaders_directory = false;
@@ -316,10 +399,7 @@ pub fn write_translated_zip(
             }
             has_shaders_directory |= name == format!("{root}shaders/");
             has_lang_directory |= name == prefix;
-            if name
-                .strip_prefix(&prefix)
-                .is_some_and(|n| n.eq_ignore_ascii_case("ja_jp.lang"))
-            {
+            if replaced_paths.iter().any(|path| path == &name) {
                 continue;
             }
             writer.raw_copy_file(entry)?;
@@ -332,11 +412,8 @@ pub fn write_translated_zip(
                 writer.add_directory(prefix.clone(), SimpleFileOptions::default())?;
             }
         }
-        writer.start_file(
-            format!("{prefix}{}", japanese_filename(source_filename)),
-            SimpleFileOptions::default(),
-        )?;
-        writer.write_all(&write_lang_with_raw_keys(entries, &raw_keys))?;
+        writer.start_file(&target_path, SimpleFileOptions::default())?;
+        writer.write_all(&write_lang_with_raw_keys(&output_entries, &raw_keys))?;
         writer.finish()?;
         Ok(())
     })

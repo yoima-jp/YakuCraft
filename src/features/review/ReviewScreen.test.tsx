@@ -30,6 +30,7 @@ function details(): ProjectDetailsDto {
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z",
     },
+    targetLocale: "ja_jp",
     mods: [{ modUnitId: 1, modId: "fixture", name: "Fixture", version: "1.0", loader: "Fabric", minecraftVersion: "1.21.1" }],
     namespaces: [
       { modUnitId: 1, namespace: "fixture", containerPath: "", included: true, entryCount: 2 },
@@ -44,11 +45,11 @@ function details(): ProjectDetailsDto {
     recommendedSourceLocale: "en_us",
     sourceLocale: "en_us",
     fallbackPriority: [],
-    preserveExistingJapanese: true,
+    preserveExistingTarget: true,
     fillMissingFromOtherLanguages: true,
     includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }],
     setupCompleted: false,
-    existingJapaneseTranslationCount: 1,
+    existingTargetTranslationCount: 1,
     missingSourceKeysCount: 1,
     counts: { total: 2, translated: 1, missing: 1, needsReview: 0 },
     targetLanguageFileName: "ja_jp.json",
@@ -92,7 +93,8 @@ beforeEach(() => {
   vi.mocked(saveReviewSettings).mockResolvedValue(details());
   vi.mocked(listEntries).mockResolvedValue([]);
   vi.mocked(getReviewAssetSummary).mockResolvedValue({
-    existingJapaneseTranslationCount: 1,
+    existingTargetTranslationCount: 1,
+    sameLanguageEntryCount: 0,
     missingSourceKeysCount: 1,
     assets: details().assetSummary!,
   });
@@ -121,7 +123,7 @@ describe("Review setup flow", () => {
     expect(screen.getByText("プレビューに使えるアセットを 6 件見つけました")).toBeTruthy();
     expect(getReviewAssetSummary).toHaveBeenCalledWith(expect.objectContaining({
       includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }, { modUnitId: 1, namespace: "library" }],
-      preserveExistingJapanese: true,
+      preserveExistingTarget: true,
     }), expect.any(Function));
     expect(screen.queryByText("プレビューは準備中です")).toBeNull();
     expect(screen.getByText("ブロックモデル")).toBeTruthy();
@@ -130,7 +132,7 @@ describe("Review setup flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "翻訳を始める" }));
     await waitFor(() => expect(saveReviewSettings).toHaveBeenCalledWith(expect.objectContaining({
       sourceLocale: "en_us",
-      preserveExistingJapanese: false,
+      preserveExistingTarget: false,
       includedNamespaces: [{ modUnitId: 1, namespace: "fixture" }, { modUnitId: 1, namespace: "library" }],
     }), expect.any(Function)));
     await waitFor(() => expect(useAppStore.getState().route).toBe("editor"));
@@ -139,7 +141,7 @@ describe("Review setup flow", () => {
   it("0件の段階を省き、既定値を保存する", async () => {
     const emptyDetails = details();
     emptyDetails.languages = emptyDetails.languages.filter((language) => language.locale === "en_us");
-    emptyDetails.existingJapaneseTranslationCount = 0;
+    emptyDetails.existingTargetTranslationCount = 0;
     emptyDetails.missingSourceKeysCount = 0;
     emptyDetails.assetCount = 0;
     emptyDetails.assetSummary = {
@@ -164,14 +166,14 @@ describe("Review setup flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "翻訳を始める" }));
 
     await waitFor(() => expect(saveReviewSettings).toHaveBeenCalledWith(expect.objectContaining({
-      preserveExistingJapanese: true,
+      preserveExistingTarget: true,
       fillMissingFromOtherLanguages: true,
     }), expect.any(Function)));
   });
 
   it("戻る操作でも0件で省いた段階に入らない", () => {
     const partialDetails = details();
-    partialDetails.existingJapaneseTranslationCount = 0;
+    partialDetails.existingTargetTranslationCount = 0;
     partialDetails.missingSourceKeysCount = 2;
     partialDetails.assetCount = 0;
     partialDetails.assetSummary = { ...partialDetails.assetSummary!, total: 0 };
@@ -191,7 +193,8 @@ describe("Review setup flow", () => {
 
   it("Namespaceを変えた後の件数から表示段階を決める", async () => {
     vi.mocked(getReviewAssetSummary).mockResolvedValue({
-      existingJapaneseTranslationCount: 0,
+      existingTargetTranslationCount: 0,
+      sameLanguageEntryCount: 0,
       missingSourceKeysCount: 0,
       assets: {
         total: 0,
@@ -231,7 +234,8 @@ describe("Review setup flow", () => {
     patchouliDetails.includedNamespaces = [{ modUnitId: 1, namespace: "fixture" }];
     useProjectStore.getState().setProjectDetails(patchouliDetails);
     vi.mocked(getReviewAssetSummary).mockResolvedValue({
-      existingJapaneseTranslationCount: 0,
+      existingTargetTranslationCount: 0,
+      sameLanguageEntryCount: 0,
       missingSourceKeysCount: 0,
       assets: {
         total: 0,

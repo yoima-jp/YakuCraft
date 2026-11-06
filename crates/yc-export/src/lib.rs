@@ -53,6 +53,7 @@ pub struct ExportInput<'a> {
     /// Namespaces whose selected source `.lang` file uses Forge's `#PARSE_ESCAPES` mode.
     pub legacy_parse_escapes_namespaces: &'a [String],
     pub source_locale: &'a str,
+    pub target_locale: &'a str,
     pub writer_options: WriterOptions,
     /// 解析側ですでに検出した不正ファイル。書き出し側で内容を推測しない。
     pub malformed_translation_files: &'a [String],
@@ -151,7 +152,7 @@ pub fn create_patchouli_document_files(
             )));
         }
         let target_path =
-            patchouli_target_document_path(&document.source_path, "en_us", "ja_jp")
+            patchouli_target_document_path(&document.source_path, "en_us", input.target_locale)
                 .ok_or_else(|| ExportError::UnsafeArchivePath(document.target_path.clone()))?;
         if target_path != document.target_path
             || yc_archive::normalize_archive_path(&target_path).as_deref()
@@ -265,6 +266,7 @@ pub fn create_language_files(
             input.language_files,
             &namespace.namespace,
             input.source_locale,
+            input.target_locale,
         )
         .ok_or_else(|| ExportError::UnsupportedLanguageFileFormat {
             namespace: namespace.namespace.clone(),

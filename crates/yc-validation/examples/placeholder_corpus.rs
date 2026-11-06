@@ -9,7 +9,8 @@ use std::{
 use serde::Serialize;
 use yc_archive::{Archive, EntryKind};
 use yc_language::{
-    LanguageArchivePath, ParsedLanguageFile, discover_language_files, parse_language_file,
+    DEFAULT_TARGET_LOCALE, LanguageArchivePath, ParsedLanguageFile, discover_language_files,
+    parse_language_file,
 };
 use yc_validation::{PlaceholderDifference, PlaceholderSeverity, compare_placeholders};
 
@@ -175,7 +176,9 @@ fn scan_archive<R: Read + Seek>(
         .collect();
     let languages: Vec<_> = discover_language_files(&paths)
         .into_iter()
-        .filter(|file| matches!(file.normalized_locale.as_str(), "en_us" | "ja_jp"))
+        .filter(|file| {
+            file.normalized_locale == "en_us" || file.normalized_locale == DEFAULT_TARGET_LOCALE
+        })
         .collect();
 
     let mut files = HashMap::<(String, String), HashMap<String, ParsedLanguageFile>>::new();
@@ -209,7 +212,9 @@ fn scan_archive<R: Read + Seek>(
     }
 
     for ((container, namespace), locales) in files {
-        let (Some(source), Some(translation)) = (locales.get("en_us"), locales.get("ja_jp")) else {
+        let (Some(source), Some(translation)) =
+            (locales.get("en_us"), locales.get(DEFAULT_TARGET_LOCALE))
+        else {
             continue;
         };
         summary.paired_languages += 1;

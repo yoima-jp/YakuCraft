@@ -76,7 +76,7 @@ pub fn discover_language_files(paths: &[LanguageArchivePath]) -> Vec<DiscoveredL
 
 /// Minecraft localeは表記を保持し、比較時だけASCII小文字へ正規化する。
 pub fn normalize_locale(locale: &str) -> String {
-    locale.to_ascii_lowercase()
+    locale.replace('-', "_").to_ascii_lowercase()
 }
 
 pub(crate) fn file_priority(file: &DiscoveredLanguageFile) -> (bool, &str, &str, &str, &str) {
