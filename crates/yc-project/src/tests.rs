@@ -437,6 +437,49 @@ fn review_resave_updates_automatic_name_but_preserves_a_user_name() {
 }
 
 #[test]
+fn multi_mod_review_resave_preserves_a_user_name_when_project_name_is_not_preserved() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let first_source = temporary.path().join("first.jar");
+    let second_source = temporary.path().join("second.jar");
+    fs::write(&first_source, b"first source jar").expect("write first source");
+    fs::write(&second_source, b"second source jar").expect("write second source");
+    let created = create_project(&projects_root, &[first_source, second_source], None)
+        .expect("create multi-mod Project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&created.id).expect("Project UUID"),
+    )
+    .expect("open Project");
+
+    opened
+        .writer()
+        .save_analysis(1, analysis_with_entries(Vec::new()))
+        .expect("save initial analysis");
+    opened
+        .writer()
+        .save_review_settings(1, ReviewSettings::default(), false)
+        .expect("leave Review setup incomplete");
+    opened
+        .repository()
+        .rename_project("My multi-mod project")
+        .expect("rename Project");
+
+    opened
+        .writer()
+        .save_analysis(1, analysis_with_entries(Vec::new()))
+        .expect("resave analysis without preserving project name");
+
+    let current_name = list_projects(&projects_root)
+        .expect("list Projects")
+        .into_iter()
+        .find(|project| project.id == created.id)
+        .expect("find Project")
+        .display_name;
+    assert_eq!(current_name, "My multi-mod project");
+}
+
+#[test]
 fn entry_summary_does_not_count_whitespace_only_targets_as_translated() {
     let temporary = TestDirectory::new();
     let projects_root = temporary.path().join("projects");

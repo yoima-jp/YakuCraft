@@ -548,7 +548,11 @@ fn collect_matching_files(
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) => {
-            issues.push(format!("{}: {error}", directory.display()));
+            issues.push(yc_locale::t!(
+                "packaging.modpack_scan_error",
+                path = directory.display(),
+                error = error
+            ));
             return;
         }
     };
@@ -556,14 +560,22 @@ fn collect_matching_files(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                issues.push(format!("{}: {error}", directory.display()));
+                issues.push(yc_locale::t!(
+                    "packaging.modpack_scan_error",
+                    path = directory.display(),
+                    error = error
+                ));
                 continue;
             }
         };
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(error) => {
-                issues.push(format!("{}: {error}", entry.path().display()));
+                issues.push(yc_locale::t!(
+                    "packaging.modpack_scan_error",
+                    path = entry.path().display(),
+                    error = error
+                ));
                 continue;
             }
         };
@@ -585,7 +597,11 @@ fn collect_matching_files(
                 Ok(bytes) => {
                     files.insert(relative_path, bytes);
                 }
-                Err(error) => issues.push(format!("{}: {error}", full_path.display())),
+                Err(error) => issues.push(yc_locale::t!(
+                    "packaging.modpack_scan_error",
+                    path = full_path.display(),
+                    error = error
+                )),
             }
         }
     }
@@ -601,7 +617,11 @@ fn collect_kubejs_language_files(
         Ok(namespaces) => namespaces,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
         Err(error) => {
-            issues.push(format!("{}: {error}", assets.display()));
+            issues.push(yc_locale::t!(
+                "packaging.modpack_scan_error",
+                path = assets.display(),
+                error = error
+            ));
             return;
         }
     };
@@ -609,7 +629,11 @@ fn collect_kubejs_language_files(
         let namespace = match namespace {
             Ok(namespace) => namespace,
             Err(error) => {
-                issues.push(format!("{}: {error}", assets.display()));
+                issues.push(yc_locale::t!(
+                    "packaging.modpack_scan_error",
+                    path = assets.display(),
+                    error = error
+                ));
                 continue;
             }
         };

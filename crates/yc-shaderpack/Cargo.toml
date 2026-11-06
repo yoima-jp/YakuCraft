@@ -9,3 +9,4 @@ license.workspace = true
 yc-language = { path = "../yc-language" }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tempfile = "3"
+yc-locale = { path = "../yc-locale" }

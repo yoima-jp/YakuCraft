@@ -297,9 +297,7 @@ fn nested_language_entry_with_forged_actual_size_is_rejected() {
     assert!(data.result.warnings.iter().any(|warning| {
         warning.container_path == "META-INF/jars/lib.jar"
             && warning.path == oversized_path
-            && warning
-                .message
-                .contains("言語ファイルを読み取れませんでした")
+            && warning.kind == AnalysisWarningKind::ReadFailure
     }));
 }
 

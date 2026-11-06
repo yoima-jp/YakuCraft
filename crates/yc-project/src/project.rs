@@ -13,6 +13,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 use yc_archive::{Archive, EntryKind};
 use yc_language::{PatchouliArchiveFile, discover_books, extract_i18n_keys};
+use yc_locale::auto_project_name;
 
 use crate::{
     ProjectError, ProjectLock, ProjectSummary, Repository, Result,
@@ -186,14 +187,14 @@ impl OpenedProject {
 pub fn normalize_project_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 100 {
-        return Err(ProjectError::InvalidProjectName(
-            "プロジェクト名は1〜100文字で入力してください。".to_owned(),
-        ));
+        return Err(ProjectError::InvalidProjectName(yc_locale::t!(
+            "storage.project_name_length"
+        )));
     }
     if name.chars().any(char::is_control) {
-        return Err(ProjectError::InvalidProjectName(
-            "プロジェクト名に制御文字は使えません。".to_owned(),
-        ));
+        return Err(ProjectError::InvalidProjectName(yc_locale::t!(
+            "storage.project_name_control_characters"
+        )));
     }
     Ok(name.to_owned())
 }
@@ -287,7 +288,7 @@ pub fn create_project_with_sources_and_target_locale(
                 .and_then(Path::file_name)
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| format!("{} 個の mod", sources.len()))
+                .unwrap_or_else(|| auto_project_name(sources.len()))
         };
         let target_locale = yc_language::normalize_locale(target_locale.trim());
         let target_locale = if target_locale.is_empty() {

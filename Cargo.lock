@@ -6126,6 +6126,7 @@ dependencies = [
  "tracing",
  "yc-archive",
  "yc-language",
+ "yc-locale",
  "yc-metadata",
  "yc-shaderpack",
  "zip 9.1.2",
@@ -6164,6 +6165,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "yc-archive",
  "yc-language",
+ "yc-locale",
  "yc-validation",
  "zip 9.1.2",
 ]
@@ -6178,6 +6180,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "yc-locale",
 ]
 
 [[package]]
@@ -6198,6 +6201,7 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "yc-locale",
 ]
 
 [[package]]
@@ -6209,6 +6213,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "yc-language",
+ "yc-locale",
 ]
 
 [[package]]
@@ -6226,6 +6231,7 @@ dependencies = [
  "uuid",
  "yc-archive",
  "yc-language",
+ "yc-locale",
  "yc-metadata",
  "yc-shaderpack",
  "yc-validation",
@@ -6238,6 +6244,7 @@ version = "1.2.0"
 dependencies = [
  "tempfile",
  "yc-language",
+ "yc-locale",
  "zip 9.1.2",
 ]
 

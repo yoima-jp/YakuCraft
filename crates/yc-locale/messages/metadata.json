@@ -1,1 +1,30 @@
-{}
+{
+  "metadata.continuation_without_attribute": {
+    "ja": "行 {line}: 継続行の前に属性がありません",
+    "en": "Line {line}: continuation line has no preceding attribute",
+    "zh-Hans": "第 {line} 行：续行前没有属性",
+    "zh-Hant": "第 {line} 行：續行前沒有屬性",
+    "ko": "{line}행: 이어지는 줄 앞에 속성이 없습니다"
+  },
+  "metadata.attribute_missing_colon": {
+    "ja": "行 {line}: 属性行に `:` がありません",
+    "en": "Line {line}: attribute line is missing `:`",
+    "zh-Hans": "第 {line} 行：属性行缺少 `:`",
+    "zh-Hant": "第 {line} 行：屬性行缺少 `:`",
+    "ko": "{line}행: 속성 줄에 `:`가 없습니다"
+  },
+  "metadata.empty_attribute_name": {
+    "ja": "行 {line}: 属性名が空です",
+    "en": "Line {line}: attribute name is empty",
+    "zh-Hans": "第 {line} 行：属性名为空",
+    "zh-Hant": "第 {line} 行：屬性名稱為空",
+    "ko": "{line}행: 속성 이름이 비어 있습니다"
+  },
+  "metadata.archive_read_failed": {
+    "ja": "アーカイブからファイルを読み取れませんでした",
+    "en": "Could not read file from archive",
+    "zh-Hans": "无法从归档中读取文件",
+    "zh-Hant": "無法從封存檔讀取檔案",
+    "ko": "아카이브에서 파일을 읽을 수 없습니다"
+  }
+}

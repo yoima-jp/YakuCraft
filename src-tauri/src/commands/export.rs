@@ -3502,12 +3502,11 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .warnings
         .iter()
         .filter(|warning| {
-            warning
-                .message
-                .starts_with("言語ファイルを解析できませんでした")
-                || warning
-                    .message
-                    .starts_with("言語ファイルを読み取れませんでした")
+            matches!(
+                warning.kind,
+                yc_analysis::AnalysisWarningKind::ParseFailure
+                    | yc_analysis::AnalysisWarningKind::ReadFailure
+            )
         })
         .map(|warning| warning.path.clone())
         .collect();
@@ -3517,7 +3516,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .warnings
         .iter()
         .filter(|warning| {
-            warning.message.starts_with("重複キー")
+            warning.kind == yc_analysis::AnalysisWarningKind::DuplicateKey
                 && language_files.iter().any(|file| {
                     file.archive_path == warning.path
                         && (file.normalized_locale == normalize_locale(&source_locale)
@@ -5206,9 +5205,7 @@ mod export_path_regression_tests {
         let analysis = &created.analyses[&mod_unit_id];
         assert!(analysis.result.warnings.iter().any(|warning| {
             warning.path == "assets/excluded/lang/en_us.lang"
-                && warning
-                    .message
-                    .starts_with("言語ファイルを読み取れませんでした")
+                && warning.kind == yc_analysis::AnalysisWarningKind::ReadFailure
         }));
         let settings = analysis.default_review_settings();
         assert_eq!(settings.included_namespaces, ["fixture"]);

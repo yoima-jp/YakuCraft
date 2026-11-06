@@ -107,7 +107,7 @@ pub fn analyze_metadata<A: ArchiveLookup + ?Sized>(archive: &A) -> MetadataAnaly
                 add_warning(
                     &mut result,
                     manifest_path,
-                    "アーカイブからファイルを読み取れませんでした".to_owned(),
+                    yc_locale::t!("metadata.archive_read_failed"),
                 );
                 None
             }
@@ -124,7 +124,7 @@ pub fn analyze_metadata<A: ArchiveLookup + ?Sized>(archive: &A) -> MetadataAnaly
             add_warning(
                 &mut result,
                 path,
-                "アーカイブからファイルを読み取れませんでした".to_owned(),
+                yc_locale::t!("metadata.archive_read_failed"),
             );
             continue;
         };
@@ -158,7 +158,7 @@ pub fn analyze_metadata<A: ArchiveLookup + ?Sized>(archive: &A) -> MetadataAnaly
             None => add_warning(
                 &mut result,
                 jarjar_path,
-                "アーカイブからファイルを読み取れませんでした".to_owned(),
+                yc_locale::t!("metadata.archive_read_failed"),
             ),
         }
     }

@@ -335,7 +335,7 @@ pub fn rebuild_document_with_warnings(
             push_warning(
                 &mut warnings,
                 "<document>",
-                format!("JSON serialization failed: {reason}"),
+                yc_locale::t!("language.patchouli_json_serialize_failed", reason = reason),
             );
             return PatchouliRebuild {
                 bytes: source_json_bytes.to_vec(),
@@ -382,14 +382,15 @@ fn parse_book_config(
     bytes: &[u8],
     is_data_declaration: bool,
 ) -> Result<PatchouliBookConfig, String> {
-    let raw = parse_json(bytes).map_err(|reason| format!("invalid book.json: {reason}"))?;
+    let raw = parse_json(bytes)
+        .map_err(|reason| yc_locale::t!("language.patchouli_invalid_book_json", reason = reason))?;
     let object = raw
         .as_object()
-        .ok_or_else(|| "book.json root must be an object".to_owned())?;
+        .ok_or_else(|| yc_locale::t!("language.patchouli_book_json_root_object"))?;
     let i18n = match object.get("i18n") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        Some(_) => return Err("book.json `i18n` must be a boolean".to_owned()),
+        Some(_) => return Err(yc_locale::t!("language.patchouli_i18n_boolean")),
     };
     let name = optional_string(object, "name")?;
     let landing_text = optional_string(object, "landing_text")?;
@@ -413,7 +414,10 @@ fn optional_string(
     match object.get(field) {
         None => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(format!("book.json `{field}` must be a string")),
+        Some(_) => Err(yc_locale::t!(
+            "language.patchouli_book_field_string",
+            field = field
+        )),
     }
 }
 
@@ -509,7 +513,7 @@ fn parse_document<'a>(
             push_warning(
                 warnings,
                 &document.path,
-                format!("invalid document JSON: {reason}"),
+                yc_locale::t!("language.patchouli_invalid_document_json", reason = reason),
             );
             None
         }
@@ -522,7 +526,7 @@ fn collect_translatable_strings(
 ) -> Result<Vec<(String, String)>, String> {
     let object = json
         .as_object()
-        .ok_or_else(|| "document root must be an object".to_owned())?;
+        .ok_or_else(|| yc_locale::t!("language.patchouli_document_root_object"))?;
     let mut strings = Vec::new();
 
     match kind {
@@ -535,15 +539,16 @@ fn collect_translatable_strings(
             let pages = object
                 .get("pages")
                 .and_then(Value::as_array)
-                .ok_or_else(|| "entry `pages` must be an array".to_owned())?;
+                .ok_or_else(|| yc_locale::t!("language.patchouli_entry_pages_array"))?;
             for (index, page) in pages.iter().enumerate() {
                 let pointer = format!("/pages/{index}");
                 match page {
                     Value::String(text) => strings.push((pointer, text.clone())),
                     Value::Object(page) => collect_page_strings(page, &pointer, &mut strings)?,
                     _ => {
-                        return Err(format!(
-                            "entry page at index {index} must be a string or object"
+                        return Err(yc_locale::t!(
+                            "language.patchouli_entry_page_type",
+                            index = index
                         ));
                     }
                 }
@@ -553,22 +558,32 @@ fn collect_translatable_strings(
             let components = object
                 .get("components")
                 .and_then(Value::as_array)
-                .ok_or_else(|| "template `components` must be an array".to_owned())?;
+                .ok_or_else(|| yc_locale::t!("language.patchouli_template_components_array"))?;
             for (index, component) in components.iter().enumerate() {
                 let component = component.as_object().ok_or_else(|| {
-                    format!("template component at index {index} must be an object")
+                    yc_locale::t!(
+                        "language.patchouli_template_component_object",
+                        index = index
+                    )
                 })?;
                 let Some(component_type) = component.get("type") else {
-                    return Err(format!("template component at index {index} has no `type`"));
+                    return Err(yc_locale::t!(
+                        "language.patchouli_template_component_type_missing",
+                        index = index
+                    ));
                 };
                 let component_type = component_type.as_str().ok_or_else(|| {
-                    format!("template component at index {index} has a non-string `type`")
+                    yc_locale::t!(
+                        "language.patchouli_template_component_type_string",
+                        index = index
+                    )
                 })?;
                 if matches!(component_type, "patchouli:text" | "patchouli:header") {
                     let pointer = format!("/components/{index}");
                     let Some(Value::String(text)) = component.get("text") else {
-                        return Err(format!(
-                            "template text component at index {index} has no string `text`"
+                        return Err(yc_locale::t!(
+                            "language.patchouli_template_text_missing",
+                            index = index
                         ));
                     };
                     // Template variables are preserved by the Patchouli placeholder profile.
@@ -577,14 +592,16 @@ fn collect_translatable_strings(
                     // Tooltip components render each tooltip string as user-facing text.
                     // Their array shape is documented by Patchouli's built-in template component.
                     let Some(Value::Array(tooltip)) = component.get("tooltip") else {
-                        return Err(format!(
-                            "template tooltip component at index {index} has no array `tooltip`"
+                        return Err(yc_locale::t!(
+                            "language.patchouli_template_tooltip_array",
+                            index = index
                         ));
                     };
                     for (tooltip_index, value) in tooltip.iter().enumerate() {
                         let Some(text) = value.as_str() else {
-                            return Err(format!(
-                                "template tooltip at index {index} has a non-string value"
+                            return Err(yc_locale::t!(
+                                "language.patchouli_template_tooltip_string",
+                                index = index
                             ));
                         };
                         strings.push((
@@ -607,8 +624,18 @@ fn collect_page_strings(
 ) -> Result<(), String> {
     let page_type = match page.get("type") {
         Some(Value::String(page_type)) => page_type.as_str(),
-        Some(_) => return Err(format!("page at `{pointer}` has a non-string `type`")),
-        None => return Err(format!("page at `{pointer}` has no `type`")),
+        Some(_) => {
+            return Err(yc_locale::t!(
+                "language.patchouli_page_type_string",
+                pointer = pointer
+            ));
+        }
+        None => {
+            return Err(yc_locale::t!(
+                "language.patchouli_page_type_missing",
+                pointer = pointer
+            ));
+        }
     };
 
     // These are the display fields documented by Patchouli's built-in page types. Resource
@@ -639,7 +666,10 @@ fn collect_required_string(
     strings: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let Some(Value::String(text)) = object.get(field) else {
-        return Err(format!("`{field}` must be a string"));
+        return Err(yc_locale::t!(
+            "language.patchouli_field_string",
+            field = field
+        ));
     };
     strings.push((join_pointer(parent_pointer, field), text.clone()));
     Ok(())
@@ -657,7 +687,11 @@ fn collect_optional_string(
             strings.push((join_pointer(parent_pointer, field), text.clone()));
             Ok(())
         }
-        Some(_) => Err(format!("`{field}` at `{parent_pointer}` must be a string")),
+        Some(_) => Err(yc_locale::t!(
+            "language.patchouli_nested_field_string",
+            field = field,
+            pointer = parent_pointer
+        )),
     }
 }
 

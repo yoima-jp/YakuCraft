@@ -211,7 +211,7 @@ fn pack_metadata_format(bytes: &[u8]) -> Option<((u32, u32), String)> {
         "pack_format {}{}{}",
         pack.get("pack_format")
             .and_then(value_as_text)
-            .unwrap_or_else(|| "不明".to_owned()),
+            .unwrap_or_else(|| yc_locale::t!("packaging.unknown_value")),
         min_format
             .map(|format| format!(" (min_format {})", format_text(format)))
             .unwrap_or_default(),

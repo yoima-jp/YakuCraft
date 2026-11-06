@@ -1,1 +1,275 @@
-{}
+{
+  "analysis.hash_io": {
+    "ja": "JARのSHA-256を読み取れません: {error}",
+    "en": "Could not read the JAR SHA-256: {error}",
+    "zh-Hans": "无法读取 JAR 的 SHA-256：{error}",
+    "zh-Hant": "無法讀取 JAR 的 SHA-256：{error}",
+    "ko": "JAR의 SHA-256을 읽을 수 없습니다: {error}"
+  },
+  "analysis.no_language_files": {
+    "ja": "言語ファイルが見つかりません",
+    "en": "No language files were found",
+    "zh-Hans": "未找到语言文件",
+    "zh-Hant": "找不到語言檔案",
+    "ko": "언어 파일을 찾을 수 없습니다"
+  },
+  "analysis.scan_folder_io": {
+    "ja": "modsフォルダを読み取れません: {path}: {error}",
+    "en": "Could not read the mods folder: {path}: {error}",
+    "zh-Hans": "无法读取 mods 文件夹：{path}：{error}",
+    "zh-Hant": "無法讀取 mods 資料夾：{path}：{error}",
+    "ko": "mods 폴더를 읽을 수 없습니다: {path}: {error}"
+  },
+  "analysis.shaderpack_error": {
+    "ja": "シェーダーパックを解析できません: {error}",
+    "en": "Could not analyze the shader pack: {error}",
+    "zh-Hans": "无法解析光影包：{error}",
+    "zh-Hant": "無法解析光影包：{error}",
+    "ko": "셰이더 팩을 분석할 수 없습니다: {error}"
+  },
+  "analysis.cancelled": {
+    "ja": "解析はキャンセルされました",
+    "en": "Analysis was cancelled",
+    "zh-Hans": "分析已取消",
+    "zh-Hant": "分析已取消",
+    "ko": "분석이 취소되었습니다"
+  },
+  "analysis.shaderpack_lang_limit": {
+    "ja": "langファイルの読み込み上限（{limit} bytes）を超えています: {path}",
+    "en": "The lang file exceeds the {limit}-byte read limit: {path}",
+    "zh-Hans": "lang 文件超过读取上限（{limit} bytes）：{path}",
+    "zh-Hant": "lang 檔案超過讀取上限（{limit} bytes）：{path}",
+    "ko": "lang 파일이 읽기 제한({limit} bytes)을 초과했습니다: {path}"
+  },
+  "analysis.progress_validate_jar": {
+    "ja": "JARを検証しています",
+    "en": "Validating JAR",
+    "zh-Hans": "正在验证 JAR",
+    "zh-Hant": "正在驗證 JAR",
+    "ko": "JAR 확인 중"
+  },
+  "analysis.progress_validate_jar_done": {
+    "ja": "JARを検証しました",
+    "en": "JAR validated",
+    "zh-Hans": "已验证 JAR",
+    "zh-Hant": "已驗證 JAR",
+    "ko": "JAR 확인 완료"
+  },
+  "analysis.progress_scan_zip_paths": {
+    "ja": "ZIP内のパスを調べています",
+    "en": "Scanning ZIP paths",
+    "zh-Hans": "正在扫描 ZIP 中的路径",
+    "zh-Hant": "正在掃描 ZIP 中的路徑",
+    "ko": "ZIP 경로 검색 중"
+  },
+  "analysis.progress_scan_zip_paths_done": {
+    "ja": "ZIP内のパスを調べました",
+    "en": "ZIP paths scanned",
+    "zh-Hans": "已扫描 ZIP 中的路径",
+    "zh-Hant": "已掃描 ZIP 中的路徑",
+    "ko": "ZIP 경로 검색 완료"
+  },
+  "analysis.progress_parse_metadata": {
+    "ja": "Mod情報を解析しています",
+    "en": "Analyzing Mod metadata",
+    "zh-Hans": "正在解析 Mod 信息",
+    "zh-Hant": "正在解析 Mod 資訊",
+    "ko": "모드 메타데이터 분석 중"
+  },
+  "analysis.progress_parse_metadata_done": {
+    "ja": "Mod情報を解析しました",
+    "en": "Mod metadata analyzed",
+    "zh-Hans": "已解析 Mod 信息",
+    "zh-Hant": "已解析 Mod 資訊",
+    "ko": "모드 메타데이터 분석 완료"
+  },
+  "analysis.progress_scan_nested_jars": {
+    "ja": "同梱JARを調べています",
+    "en": "Scanning nested JARs",
+    "zh-Hans": "正在检查内置 JAR",
+    "zh-Hant": "正在檢查內嵌 JAR",
+    "ko": "포함된 JAR 검색 중"
+  },
+  "analysis.progress_scan_nested_jars_done": {
+    "ja": "同梱JARを調べました",
+    "en": "Nested JARs scanned",
+    "zh-Hans": "已检查内置 JAR",
+    "zh-Hant": "已檢查內嵌 JAR",
+    "ko": "포함된 JAR 검색 완료"
+  },
+  "analysis.progress_discover_namespaces": {
+    "ja": "namespaceを調べています",
+    "en": "Discovering namespaces",
+    "zh-Hans": "正在查找命名空间",
+    "zh-Hant": "正在尋找命名空間",
+    "ko": "네임스페이스 찾는 중"
+  },
+  "analysis.progress_discover_namespaces_done": {
+    "ja": "namespaceを調べました",
+    "en": "Namespaces discovered",
+    "zh-Hans": "已查找命名空间",
+    "zh-Hant": "已找到命名空間",
+    "ko": "네임스페이스 찾기 완료"
+  },
+  "analysis.progress_parse_languages": {
+    "ja": "言語ファイルを解析しています",
+    "en": "Analyzing language files",
+    "zh-Hans": "正在解析语言文件",
+    "zh-Hant": "正在解析語言檔案",
+    "ko": "언어 파일 분석 중"
+  },
+  "analysis.progress_no_language_files": {
+    "ja": "言語ファイルがありません",
+    "en": "No language files",
+    "zh-Hans": "没有语言文件",
+    "zh-Hant": "沒有語言檔案",
+    "ko": "언어 파일이 없습니다"
+  },
+  "analysis.progress_parse_languages_done": {
+    "ja": "言語ファイルを解析しました",
+    "en": "Language files analyzed",
+    "zh-Hans": "已解析语言文件",
+    "zh-Hant": "已解析語言檔案",
+    "ko": "언어 파일 분석 완료"
+  },
+  "analysis.progress_detect_source_language": {
+    "ja": "翻訳元と言語の件数を調べています",
+    "en": "Counting source languages and entries",
+    "zh-Hans": "正在统计源语言和条目数量",
+    "zh-Hant": "正在統計來源語言和項目數量",
+    "ko": "원본 언어와 항목 수 계산 중"
+  },
+  "analysis.progress_recommended_source_language": {
+    "ja": "翻訳元を推奨しました",
+    "en": "Source language recommended",
+    "zh-Hans": "已推荐源语言",
+    "zh-Hant": "已建議來源語言",
+    "ko": "원본 언어 추천 완료"
+  },
+  "analysis.progress_counted_existing_target": {
+    "ja": "既存の日本語訳を数えました",
+    "en": "Counted existing Japanese translations",
+    "zh-Hans": "已统计现有日语译文",
+    "zh-Hant": "已統計現有日文譯文",
+    "ko": "기존 일본어 번역 수 계산 완료"
+  },
+  "analysis.progress_counted_missing_source_keys": {
+    "ja": "翻訳元にないキーを数えました",
+    "en": "Counted keys missing from the source language",
+    "zh-Hans": "已统计源语言中缺少的键",
+    "zh-Hant": "已統計來源語言中缺少的鍵",
+    "ko": "원본 언어에 없는 키 계산 완료"
+  },
+  "analysis.progress_detect_source_language_done": {
+    "ja": "翻訳元と言語の件数を調べました",
+    "en": "Source languages and entries counted",
+    "zh-Hans": "已统计源语言和条目数量",
+    "zh-Hant": "已統計來源語言和項目數量",
+    "ko": "원본 언어와 항목 수 계산 완료"
+  },
+  "analysis.nested_archive_skipped": {
+    "ja": "同梱JARを解析しませんでした: {reason}",
+    "en": "Skipped nested JAR analysis: {reason}",
+    "zh-Hans": "未解析内置 JAR：{reason}",
+    "zh-Hant": "未解析內嵌 JAR：{reason}",
+    "ko": "포함된 JAR을 분석하지 않았습니다: {reason}"
+  },
+  "analysis.language_file_parse_failed": {
+    "ja": "言語ファイルを解析できませんでした: {error}",
+    "en": "Could not parse the language file: {error}",
+    "zh-Hans": "无法解析语言文件：{error}",
+    "zh-Hant": "無法解析語言檔案：{error}",
+    "ko": "언어 파일을 분석할 수 없습니다: {error}"
+  },
+  "analysis.language_file_read_failed": {
+    "ja": "言語ファイルを読み取れませんでした: {error}",
+    "en": "Could not read the language file: {error}",
+    "zh-Hans": "无法读取语言文件：{error}",
+    "zh-Hant": "無法讀取語言檔案：{error}",
+    "ko": "언어 파일을 읽을 수 없습니다: {error}"
+  },
+  "analysis.patchouli_document_read_failed": {
+    "ja": "Patchouli文書を読み取れませんでした: {error}",
+    "en": "Could not read the Patchouli document: {error}",
+    "zh-Hans": "无法读取 Patchouli 文档：{error}",
+    "zh-Hant": "無法讀取 Patchouli 文件：{error}",
+    "ko": "Patchouli 문서를 읽을 수 없습니다: {error}"
+  },
+  "analysis.patchouli_parse_continued": {
+    "ja": "Patchouliの解析を続けられませんでした: {reason}",
+    "en": "Could not continue analyzing Patchouli: {reason}",
+    "zh-Hans": "无法继续解析 Patchouli：{reason}",
+    "zh-Hant": "無法繼續解析 Patchouli：{reason}",
+    "ko": "Patchouli 분석을 계속할 수 없습니다: {reason}"
+  },
+  "analysis.excluded_entries": {
+    "ja": "安全制限により{count}件のEntryを除外しました（{label}）",
+    "en": "Excluded {count} entries due to a safety limit ({label})",
+    "zh-Hans": "因安全限制排除了 {count} 个条目（{label}）",
+    "zh-Hant": "因安全限制排除了 {count} 個項目（{label}）",
+    "ko": "안전 제한으로 항목 {count}개를 제외했습니다({label})"
+  },
+  "analysis.loader_unknown": {
+    "ja": "Mod Loaderを特定できませんでした。言語ファイルの解析は続行します",
+    "en": "Could not identify the Mod Loader. Language file analysis will continue",
+    "zh-Hans": "无法确定 Mod 加载器。将继续解析语言文件",
+    "zh-Hant": "無法判斷 Mod 載入器。將繼續解析語言檔案",
+    "ko": "모드 로더를 확인할 수 없습니다. 언어 파일 분석을 계속합니다"
+  },
+  "analysis.minecraft_version_unknown": {
+    "ja": "Minecraft versionを特定できませんでした",
+    "en": "Could not identify the Minecraft version",
+    "zh-Hans": "无法确定 Minecraft 版本",
+    "zh-Hant": "無法判斷 Minecraft 版本",
+    "ko": "Minecraft 버전을 확인할 수 없습니다"
+  },
+  "analysis.duplicate_key": {
+    "ja": "重複キー「{key}」は最後の値を使用しました",
+    "en": "Duplicate key “{key}”; the last value was used",
+    "zh-Hans": "键“{key}”重复，已使用最后一个值",
+    "zh-Hant": "鍵「{key}」重複，已使用最後一個值",
+    "ko": "중복 키 “{key}”의 마지막 값을 사용했습니다"
+  },
+  "analysis.encoding_fallback": {
+    "ja": "UTF-8以外のため{encoding}として読み込みました",
+    "en": "Read as {encoding} because the file is not UTF-8",
+    "zh-Hans": "文件不是 UTF-8，已按 {encoding} 编码读取",
+    "zh-Hant": "檔案不是 UTF-8，已依 {encoding} 編碼讀取",
+    "ko": "UTF-8이 아니어서 {encoding}으로 읽었습니다"
+  },
+  "analysis.nested_jar_open_failed": {
+    "ja": "Nested JARを開けませんでした",
+    "en": "Could not open the nested JAR",
+    "zh-Hans": "无法打开内置 JAR",
+    "zh-Hant": "無法開啟內嵌 JAR",
+    "ko": "포함된 JAR을 열 수 없습니다"
+  },
+  "analysis.progress_scan_nested_archive": {
+    "ja": "同梱JAR内を調べています: {path}",
+    "en": "Scanning nested JAR: {path}",
+    "zh-Hans": "正在检查内置 JAR：{path}",
+    "zh-Hant": "正在檢查內嵌 JAR：{path}",
+    "ko": "포함된 JAR 검색 중: {path}"
+  },
+  "analysis.nested_jar_not_found": {
+    "ja": "Nested JARが見つかりません: {path}",
+    "en": "Nested JAR not found: {path}",
+    "zh-Hans": "未找到内置 JAR：{path}",
+    "zh-Hant": "找不到內嵌 JAR：{path}",
+    "ko": "포함된 JAR을 찾을 수 없습니다: {path}"
+  },
+  "analysis.progress_hash": {
+    "ja": "SHA-256を計算しています",
+    "en": "Calculating SHA-256",
+    "zh-Hans": "正在计算 SHA-256",
+    "zh-Hant": "正在計算 SHA-256",
+    "ko": "SHA-256 계산 중"
+  },
+  "analysis.progress_hash_done": {
+    "ja": "SHA-256を計算しました",
+    "en": "SHA-256 calculated",
+    "zh-Hans": "已计算 SHA-256",
+    "zh-Hant": "已計算 SHA-256",
+    "ko": "SHA-256 계산 완료"
+  }
+}

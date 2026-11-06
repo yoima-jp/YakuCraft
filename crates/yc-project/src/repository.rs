@@ -8,6 +8,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use yc_language::{EntryFlag, LanguageFileFormat, ReviewSettings};
+use yc_locale::{auto_project_name, is_auto_project_name};
 use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
 use crate::{
@@ -1220,7 +1221,7 @@ pub(crate) fn save_analysis(
         .and_then(|path| Path::new(path).file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| format!("{unit_count} 個の mod"));
+        .unwrap_or_else(|| auto_project_name(unit_count as usize));
     let previous_automatic_name = if unit_count == 1 {
         previous_unit_name
             .filter(|name| !name.trim().is_empty())
@@ -1249,9 +1250,11 @@ pub(crate) fn save_analysis(
             mod_unit_id
         ],
     )?;
-    // 既存スキーマでは自動名と手動名を分けて記録しないため、保存前の自動名と
-    // 現在名が一致するときだけ追解析後のMod名へ更新し、ユーザーの改名を保護する。
-    if !preserve_project_name && current_display_name == previous_automatic_name {
+    // 既存スキーマでは自動名と手動名を分けて記録しないため、旧自動名または
+    // いずれかのUI言語の自動Mod名と一致するときだけ更新し、ユーザーの改名を保護する。
+    let current_name_is_automatic = current_display_name == previous_automatic_name
+        || (unit_count > 1 && is_auto_project_name(&current_display_name));
+    if !preserve_project_name && current_name_is_automatic {
         transaction.execute(
             "UPDATE project_meta SET display_name = ?1 WHERE id = (SELECT id FROM project_meta LIMIT 1)",
             [&next_automatic_name],
@@ -1528,7 +1531,7 @@ pub(crate) fn remove_mod_unit(
                 .and_then(|path| Path::new(path).file_name())
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| format!("{count} 個の mod")),
+                .unwrap_or_else(|| auto_project_name(count as usize)),
         };
         transaction.execute(
             "UPDATE project_meta SET display_name = ?1, updated_at = ?2",

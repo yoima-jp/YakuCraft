@@ -1,1 +1,149 @@
-{}
+{
+  "language.json_parse_failed": {
+    "ja": "言語JSONを解析できません: {error}",
+    "en": "Could not parse language JSON: {error}",
+    "zh-Hans": "无法解析语言 JSON：{error}",
+    "zh-Hant": "無法解析語言 JSON：{error}",
+    "ko": "언어 JSON을 분석할 수 없습니다: {error}"
+  },
+  "language.patchouli_json_serialize_failed": {
+    "ja": "JSON serialization failed: {reason}",
+    "en": "JSON serialization failed: {reason}",
+    "zh-Hans": "JSON 序列化失败：{reason}",
+    "zh-Hant": "JSON 序列化失敗：{reason}",
+    "ko": "JSON 직렬화에 실패했습니다: {reason}"
+  },
+  "language.patchouli_invalid_book_json": {
+    "ja": "invalid book.json: {reason}",
+    "en": "invalid book.json: {reason}",
+    "zh-Hans": "book.json 无效：{reason}",
+    "zh-Hant": "book.json 無效：{reason}",
+    "ko": "book.json이 올바르지 않습니다: {reason}"
+  },
+  "language.patchouli_book_json_root_object": {
+    "ja": "book.json root must be an object",
+    "en": "book.json root must be an object",
+    "zh-Hans": "book.json 的根节点必须是对象",
+    "zh-Hant": "book.json 的根節點必須是物件",
+    "ko": "book.json의 루트는 객체여야 합니다"
+  },
+  "language.patchouli_i18n_boolean": {
+    "ja": "book.json `i18n` must be a boolean",
+    "en": "book.json `i18n` must be a boolean",
+    "zh-Hans": "book.json 中的 `i18n` 必须是布尔值",
+    "zh-Hant": "book.json 中的 `i18n` 必須是布林值",
+    "ko": "book.json의 `i18n`은 불리언이어야 합니다"
+  },
+  "language.patchouli_book_field_string": {
+    "ja": "book.json `{field}` must be a string",
+    "en": "book.json `{field}` must be a string",
+    "zh-Hans": "book.json 中的 `{field}` 必须是字符串",
+    "zh-Hant": "book.json 中的 `{field}` 必須是字串",
+    "ko": "book.json의 `{field}`은 문자열이어야 합니다"
+  },
+  "language.patchouli_invalid_document_json": {
+    "ja": "invalid document JSON: {reason}",
+    "en": "invalid document JSON: {reason}",
+    "zh-Hans": "文档 JSON 无效：{reason}",
+    "zh-Hant": "文件 JSON 無效：{reason}",
+    "ko": "문서 JSON이 올바르지 않습니다: {reason}"
+  },
+  "language.patchouli_document_root_object": {
+    "ja": "document root must be an object",
+    "en": "document root must be an object",
+    "zh-Hans": "文档的根节点必须是对象",
+    "zh-Hant": "文件的根節點必須是物件",
+    "ko": "문서의 루트는 객체여야 합니다"
+  },
+  "language.patchouli_entry_pages_array": {
+    "ja": "entry `pages` must be an array",
+    "en": "entry `pages` must be an array",
+    "zh-Hans": "entry 的 `pages` 必须是数组",
+    "zh-Hant": "entry 的 `pages` 必須是陣列",
+    "ko": "entry의 `pages`는 배열이어야 합니다"
+  },
+  "language.patchouli_entry_page_type": {
+    "ja": "entry page at index {index} must be a string or object",
+    "en": "entry page at index {index} must be a string or object",
+    "zh-Hans": "entry 的第 {index} 个页面必须是字符串或对象",
+    "zh-Hant": "entry 的第 {index} 個頁面必須是字串或物件",
+    "ko": "entry의 {index}번째 페이지는 문자열 또는 객체여야 합니다"
+  },
+  "language.patchouli_template_components_array": {
+    "ja": "template `components` must be an array",
+    "en": "template `components` must be an array",
+    "zh-Hans": "template 的 `components` 必须是数组",
+    "zh-Hant": "template 的 `components` 必須是陣列",
+    "ko": "template의 `components`는 배열이어야 합니다"
+  },
+  "language.patchouli_template_component_object": {
+    "ja": "template component at index {index} must be an object",
+    "en": "template component at index {index} must be an object",
+    "zh-Hans": "template 的第 {index} 个组件必须是对象",
+    "zh-Hant": "template 的第 {index} 個元件必須是物件",
+    "ko": "template의 {index}번째 구성 요소는 객체여야 합니다"
+  },
+  "language.patchouli_template_component_type_missing": {
+    "ja": "template component at index {index} has no `type`",
+    "en": "template component at index {index} has no `type`",
+    "zh-Hans": "template 的第 {index} 个组件缺少 `type`",
+    "zh-Hant": "template 的第 {index} 個元件缺少 `type`",
+    "ko": "template의 {index}번째 구성 요소에 `type`이 없습니다"
+  },
+  "language.patchouli_template_component_type_string": {
+    "ja": "template component at index {index} has a non-string `type`",
+    "en": "template component at index {index} has a non-string `type`",
+    "zh-Hans": "template 的第 {index} 个组件的 `type` 必须是字符串",
+    "zh-Hant": "template 的第 {index} 個元件的 `type` 必須是字串",
+    "ko": "template의 {index}번째 구성 요소의 `type`은 문자열이어야 합니다"
+  },
+  "language.patchouli_template_text_missing": {
+    "ja": "template text component at index {index} has no string `text`",
+    "en": "template text component at index {index} has no string `text`",
+    "zh-Hans": "template 的第 {index} 个文本组件缺少字符串类型的 `text`",
+    "zh-Hant": "template 的第 {index} 個文字元件缺少字串型別的 `text`",
+    "ko": "template의 {index}번째 텍스트 구성 요소에 문자열 `text`가 없습니다"
+  },
+  "language.patchouli_template_tooltip_array": {
+    "ja": "template tooltip component at index {index} has no array `tooltip`",
+    "en": "template tooltip component at index {index} has no array `tooltip`",
+    "zh-Hans": "template 的第 {index} 个 tooltip 组件的 `tooltip` 必须是数组",
+    "zh-Hant": "template 的第 {index} 個 tooltip 元件的 `tooltip` 必須是陣列",
+    "ko": "template의 {index}번째 tooltip 구성 요소의 `tooltip`은 배열이어야 합니다"
+  },
+  "language.patchouli_template_tooltip_string": {
+    "ja": "template tooltip at index {index} has a non-string value",
+    "en": "template tooltip at index {index} has a non-string value",
+    "zh-Hans": "template 的第 {index} 个 tooltip 包含非字符串值",
+    "zh-Hant": "template 的第 {index} 個 tooltip 含有非字串值",
+    "ko": "template의 {index}번째 tooltip에 문자열이 아닌 값이 있습니다"
+  },
+  "language.patchouli_page_type_string": {
+    "ja": "page at `{pointer}` has a non-string `type`",
+    "en": "page at `{pointer}` has a non-string `type`",
+    "zh-Hans": "page `{pointer}` 中的 `type` 必须是字符串",
+    "zh-Hant": "page `{pointer}` 中的 `type` 必須是字串",
+    "ko": "page `{pointer}`의 `type`은 문자열이어야 합니다"
+  },
+  "language.patchouli_page_type_missing": {
+    "ja": "page at `{pointer}` has no `type`",
+    "en": "page at `{pointer}` has no `type`",
+    "zh-Hans": "page `{pointer}` 缺少 `type`",
+    "zh-Hant": "page `{pointer}` 缺少 `type`",
+    "ko": "page `{pointer}`에 `type`이 없습니다"
+  },
+  "language.patchouli_field_string": {
+    "ja": "`{field}` must be a string",
+    "en": "`{field}` must be a string",
+    "zh-Hans": "`{field}` 必须是字符串",
+    "zh-Hant": "`{field}` 必須是字串",
+    "ko": "`{field}`은 문자열이어야 합니다"
+  },
+  "language.patchouli_nested_field_string": {
+    "ja": "`{field}` at `{pointer}` must be a string",
+    "en": "`{field}` at `{pointer}` must be a string",
+    "zh-Hans": "`{pointer}` 中的 `{field}` 必须是字符串",
+    "zh-Hant": "`{pointer}` 中的 `{field}` 必須是字串",
+    "ko": "`{pointer}`의 `{field}`은 문자열이어야 합니다"
+  }
+}

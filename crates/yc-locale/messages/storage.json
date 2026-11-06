@@ -1,0 +1,198 @@
+{
+  "storage.io": {
+    "ja": "ファイル操作に失敗しました: {error}",
+    "en": "File operation failed: {error}",
+    "zh-Hans": "文件操作失败：{error}",
+    "zh-Hant": "檔案操作失敗：{error}",
+    "ko": "파일 작업에 실패했습니다: {error}"
+  },
+  "storage.sqlite": {
+    "ja": "SQLite操作に失敗しました: {error}",
+    "en": "SQLite operation failed: {error}",
+    "zh-Hans": "SQLite 操作失败：{error}",
+    "zh-Hant": "SQLite 操作失敗：{error}",
+    "ko": "SQLite 작업에 실패했습니다: {error}"
+  },
+  "storage.json_read_write": {
+    "ja": "JSONを読み書きできません: {detail}",
+    "en": "Could not read or write JSON: {detail}",
+    "zh-Hans": "无法读写 JSON：{detail}",
+    "zh-Hant": "無法讀寫 JSON：{detail}",
+    "ko": "JSON을 읽거나 쓸 수 없습니다: {detail}"
+  },
+  "storage.glossary_csv": {
+    "ja": "用語集CSVを読み書きできません: {error}",
+    "en": "Could not read or write the glossary CSV: {error}",
+    "zh-Hans": "无法读写术语表 CSV：{error}",
+    "zh-Hant": "無法讀寫詞彙表 CSV：{error}",
+    "ko": "용어집 CSV를 읽거나 쓸 수 없습니다: {error}"
+  },
+  "storage.time_format": {
+    "ja": "時刻を処理できません: {error}",
+    "en": "Could not format the time: {error}",
+    "zh-Hans": "无法格式化时间：{error}",
+    "zh-Hant": "無法格式化時間：{error}",
+    "ko": "시간 형식을 지정할 수 없습니다: {error}"
+  },
+  "storage.time_parse": {
+    "ja": "時刻を解析できません: {error}",
+    "en": "Could not parse the time: {error}",
+    "zh-Hans": "无法解析时间：{error}",
+    "zh-Hant": "無法解析時間：{error}",
+    "ko": "시간을 분석할 수 없습니다: {error}"
+  },
+  "storage.source_jar_hash": {
+    "ja": "source JARのSHA-256を計算できません: {error}",
+    "en": "Could not calculate the source JAR SHA-256: {error}",
+    "zh-Hans": "无法计算源 JAR 的 SHA-256：{error}",
+    "zh-Hant": "無法計算來源 JAR 的 SHA-256：{error}",
+    "ko": "원본 JAR의 SHA-256을 계산할 수 없습니다: {error}"
+  },
+  "storage.invalid_project_id": {
+    "ja": "Project IDがUUIDではありません: {id}",
+    "en": "Project ID is not a UUID: {id}",
+    "zh-Hans": "Project ID 不是 UUID：{id}",
+    "zh-Hant": "Project ID 不是 UUID：{id}",
+    "ko": "Project ID가 UUID가 아닙니다: {id}"
+  },
+  "storage.project_not_found": {
+    "ja": "Projectが見つかりません: {path}",
+    "en": "Project not found: {path}",
+    "zh-Hans": "找不到项目：{path}",
+    "zh-Hant": "找不到專案：{path}",
+    "ko": "프로젝트를 찾을 수 없습니다: {path}"
+  },
+  "storage.project_delete_rename": {
+    "ja": "Projectを削除用フォルダーへ移動できません: {error}",
+    "en": "Could not move Project to the deletion folder: {error}",
+    "zh-Hans": "无法将项目移至待删除文件夹：{error}",
+    "zh-Hant": "無法將專案移至待刪除資料夾：{error}",
+    "ko": "프로젝트를 삭제 폴더로 이동할 수 없습니다: {error}"
+  },
+  "storage.project_already_open": {
+    "ja": "Projectは別プロセスですでに開かれています",
+    "en": "Project is already open in another process",
+    "zh-Hans": "项目已在另一个进程中打开",
+    "zh-Hant": "專案已在另一個程序中開啟",
+    "ko": "프로젝트가 다른 프로세스에서 이미 열려 있습니다"
+  },
+  "storage.last_mod_unit": {
+    "ja": "最後のmodはプロジェクトから外せません。",
+    "en": "The last mod cannot be removed from the Project.",
+    "zh-Hans": "无法从项目中移除最后一个 Mod。",
+    "zh-Hant": "無法從專案中移除最後一個 Mod。",
+    "ko": "프로젝트에서 마지막 모드는 제거할 수 없습니다."
+  },
+  "storage.invalid_lock_record": {
+    "ja": "project.lockの内容を読み取れません",
+    "en": "Could not read the project.lock contents",
+    "zh-Hans": "无法读取 project.lock 的内容",
+    "zh-Hant": "無法讀取 project.lock 的內容",
+    "ko": "project.lock 내용을 읽을 수 없습니다"
+  },
+  "storage.unsupported_schema_version": {
+    "ja": "DBのschema version {current}はこのアプリでは扱えません (最大 {maximum})",
+    "en": "This app cannot handle DB schema version {current} (maximum {maximum})",
+    "zh-Hans": "此应用无法处理 DB 架构版本 {current}（最高 {maximum}）",
+    "zh-Hant": "此應用程式無法處理 DB 結構描述版本 {current}（最高 {maximum}）",
+    "ko": "이 앱은 DB 스키마 버전 {current}을 처리할 수 없습니다(최대 {maximum})"
+  },
+  "storage.migration_failed": {
+    "ja": "migration {migration} を適用できません: {error}",
+    "en": "Could not apply migration {migration}: {error}",
+    "zh-Hans": "无法应用迁移 {migration}：{error}",
+    "zh-Hant": "無法套用移轉 {migration}：{error}",
+    "ko": "마이그레이션 {migration}을 적용할 수 없습니다: {error}"
+  },
+  "storage.invalid_database_value": {
+    "ja": "DBの値が不正です: {value}",
+    "en": "Invalid DB value: {value}",
+    "zh-Hans": "DB 值无效：{value}",
+    "zh-Hant": "DB 值無效：{value}",
+    "ko": "DB 값이 올바르지 않습니다: {value}"
+  },
+  "storage.entry_not_found": {
+    "ja": "translation entryが見つかりません: {id}",
+    "en": "Translation entry not found: {id}",
+    "zh-Hans": "找不到翻译条目：{id}",
+    "zh-Hant": "找不到翻譯項目：{id}",
+    "ko": "번역 항목을 찾을 수 없습니다: {id}"
+  },
+  "storage.writer_startup": {
+    "ja": "Project writer threadを開始できません: {error}",
+    "en": "Could not start the Project writer thread: {error}",
+    "zh-Hans": "无法启动项目写入线程：{error}",
+    "zh-Hant": "無法啟動專案寫入執行緒：{error}",
+    "ko": "프로젝트 작성 스레드를 시작할 수 없습니다: {error}"
+  },
+  "storage.writer_stopped": {
+    "ja": "Project writer threadが停止しています",
+    "en": "Project writer thread has stopped",
+    "zh-Hans": "项目写入线程已停止",
+    "zh-Hant": "專案寫入執行緒已停止",
+    "ko": "프로젝트 작성 스레드가 중지되었습니다"
+  },
+  "storage.project_name_length": {
+    "ja": "プロジェクト名は1〜100文字で入力してください。",
+    "en": "Project name must be 1 to 100 characters.",
+    "zh-Hans": "项目名称须为 1 到 100 个字符。",
+    "zh-Hant": "專案名稱須為 1 到 100 個字元。",
+    "ko": "프로젝트 이름은 1~100자로 입력하세요."
+  },
+  "storage.project_name_control_characters": {
+    "ja": "プロジェクト名に制御文字は使えません。",
+    "en": "Project name cannot contain control characters.",
+    "zh-Hans": "项目名称不能包含控制字符。",
+    "zh-Hant": "專案名稱不能包含控制字元。",
+    "ko": "프로젝트 이름에는 제어 문자를 사용할 수 없습니다."
+  },
+  "storage.glossary_column_count": {
+    "ja": "glossary row {row} must have two to four columns",
+    "en": "glossary row {row} must have two to four columns",
+    "zh-Hans": "术语表第 {row} 行必须有两到四列",
+    "zh-Hant": "詞彙表第 {row} 行必須有兩到四欄",
+    "ko": "용어집 {row}행에는 열이 2~4개 있어야 합니다"
+  },
+  "storage.glossary_empty_term": {
+    "ja": "glossary row {row} has an empty term",
+    "en": "glossary row {row} has an empty term",
+    "zh-Hans": "术语表第 {row} 行包含空术语",
+    "zh-Hant": "詞彙表第 {row} 行包含空白術語",
+    "ko": "용어집 {row}행에 빈 용어가 있습니다"
+  },
+  "storage.glossary_case_sensitivity": {
+    "ja": "glossary row {row} case sensitivity must be true or false",
+    "en": "glossary row {row} case sensitivity must be true or false",
+    "zh-Hans": "术语表第 {row} 行的大小写区分必须为 true 或 false",
+    "zh-Hant": "詞彙表第 {row} 行的大小寫區分必須為 true 或 false",
+    "ko": "용어집 {row}행의 대소문자 구분은 true 또는 false여야 합니다"
+  },
+  "storage.glossary_header_source": {
+    "ja": "原文",
+    "en": "Source term",
+    "zh-Hans": "源文本",
+    "zh-Hant": "原文",
+    "ko": "원문"
+  },
+  "storage.glossary_header_target": {
+    "ja": "訳語",
+    "en": "Target term",
+    "zh-Hans": "译文",
+    "zh-Hant": "譯文",
+    "ko": "번역"
+  },
+  "storage.glossary_header_note": {
+    "ja": "メモ",
+    "en": "Note",
+    "zh-Hans": "备注",
+    "zh-Hant": "備註",
+    "ko": "메모"
+  },
+  "storage.glossary_header_case_sensitive": {
+    "ja": "大小区別",
+    "en": "Case sensitive",
+    "zh-Hans": "区分大小写",
+    "zh-Hant": "區分大小寫",
+    "ko": "대소문자 구분"
+  }
+}

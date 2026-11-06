@@ -27,21 +27,27 @@ pub(crate) fn parse_manifest(bytes: &[u8]) -> (ManifestAttributes, Vec<String>) 
                         .and_modify(|value| value.push_str(continuation));
                 }
             } else {
-                diagnostics.push(format!(
-                    "行 {}: 継続行の前に属性がありません",
-                    line_index + 1
+                diagnostics.push(yc_locale::t!(
+                    "metadata.continuation_without_attribute",
+                    line = line_index + 1
                 ));
             }
             continue;
         }
         let Some((key, value)) = line.split_once(':') else {
-            diagnostics.push(format!("行 {}: 属性行に `:` がありません", line_index + 1));
+            diagnostics.push(yc_locale::t!(
+                "metadata.attribute_missing_colon",
+                line = line_index + 1
+            ));
             current_key = None;
             continue;
         };
         let key = key.trim().to_ascii_lowercase();
         if key.is_empty() {
-            diagnostics.push(format!("行 {}: 属性名が空です", line_index + 1));
+            diagnostics.push(yc_locale::t!(
+                "metadata.empty_attribute_name",
+                line = line_index + 1
+            ));
             current_key = None;
             continue;
         }
