@@ -69,6 +69,7 @@ fn input<'a>(
         entries,
         namespaces,
         language_files,
+        source_archive_path: None,
         legacy_parse_escapes_namespaces: &[],
         source_locale,
         target_locale: "ja_jp",
@@ -290,7 +291,7 @@ fn resource_pack_writes_the_generic_target_locale_path_and_neutral_description()
         serde_json::from_slice(&read_entry(&output, "pack.mcmeta")).unwrap();
     assert_eq!(
         metadata["pack"]["description"],
-        "Mod translation (de_de, 1 mods)"
+        "Mod translation (de_de, 1 mod)"
     );
     fs::remove_dir_all(directory).unwrap();
 }
@@ -535,6 +536,52 @@ fn modified_jar_uses_generic_target_path_and_preserves_english_keys_for_en_us() 
     assert_eq!(written["keep"], "Behalten");
     assert_eq!(written["change"], "Geändert");
     assert_eq!(written["clear"], "English");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn language_file_export_overlays_english_translations_and_preserves_empty_source_keys() {
+    let directory = temporary_directory();
+    let source_path = directory.join("mod.jar");
+    fs::write(
+        &source_path,
+        zip_bytes(&[
+            (
+                "assets/mod/lang/en_us.json",
+                br#"{"keep":"Original","change":"English","empty":""}"#,
+                CompressionMethod::Stored,
+            ),
+            (
+                "assets/mod/lang/de_de.json",
+                br#"{"keep":"Deutsch","change":"Deutsch"}"#,
+                CompressionMethod::Stored,
+            ),
+        ]),
+    )
+    .unwrap();
+    let entries = [
+        translation("mod", "keep", "", 0),
+        translation("mod", "change", "Translated", 1),
+        translation("mod", "empty", "", 2),
+    ];
+    let namespaces = [NamespaceExport {
+        namespace: "mod".to_owned(),
+        included: true,
+    }];
+    let files = [
+        discovered("mod", "de_de", LanguageFileFormat::Json, "", "de_de.json"),
+        discovered("mod", "en_us", LanguageFileFormat::Json, "", "en_us.json"),
+    ];
+    let mut project = input(&entries, &namespaces, &files, &[], &[], "de_de");
+    project.target_locale = "en_us";
+    project.source_archive_path = Some(&source_path);
+
+    let artifacts = create_language_files(&project).unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&artifacts[0].bytes).unwrap();
+    assert_eq!(artifacts[0].file_name, "en_us.json");
+    assert_eq!(written["keep"], "Original");
+    assert_eq!(written["change"], "Translated");
+    assert_eq!(written["empty"], "");
     fs::remove_dir_all(directory).unwrap();
 }
 

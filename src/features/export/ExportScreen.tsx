@@ -5,7 +5,7 @@ import { join as joinPath } from "@tauri-apps/api/path";
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
 import { Checkbox, Dialog, Disclosure, NumberInput, RadioGroup, Select } from "../../components/Controls";
 import { useDialogConfirmation } from "../../components/useDialogConfirmation";
-import { formatNumber, lowerText, t, useT } from "../../i18n";
+import { formatNumber, lowerText, t, useT, useUiLanguage } from "../../i18n";
 import { targetLanguageName } from "../../i18n/minecraftLanguages";
 import { exportMessages } from "../../i18n/messages/export";
 import { AppCommandError, getProjectSummary, listModUnits } from "../../lib/tauri";
@@ -351,6 +351,7 @@ function VirtualValidationList({ rows, label }: { rows: ValidationVirtualRow[]; 
 
 export function ExportScreen() {
   const t = useT();
+  const uiLanguage = useUiLanguage();
   const { requestConfirmation, dialog: confirmationDialog } = useDialogConfirmation();
   const details = useProjectStore((state) => state.details);
   const targetLanguage = targetLanguageName(details?.targetLocale ?? "ja_jp");
@@ -602,7 +603,7 @@ export function ExportScreen() {
       active = false;
       if (requestId === latestValidationRequest.current) latestValidationRequest.current += 1;
     };
-  }, [effectiveMinecraftVersion, isCurrentProject, kind, loadedProjectId, manualPackFormat, projectId, selectedIds, selectedNamespace]);
+  }, [effectiveMinecraftVersion, isCurrentProject, kind, loadedProjectId, manualPackFormat, projectId, selectedIds, selectedNamespace, uiLanguage]);
 
   const refreshOverview = useCallback(async (expectedProjectId: string) => {
     const nextOverview = await getExportOverview(expectedProjectId);

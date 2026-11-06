@@ -476,7 +476,7 @@ fn scan_mod_jar_inner(
     }
 
     for (namespace, locale_keys) in &keys_by_namespace {
-        let Some(source_keys) = select_source_keys(locale_keys) else {
+        let Some(source_keys) = select_source_keys(locale_keys, &target_locale) else {
             continue;
         };
         result.source_key_count += source_keys.len();
@@ -599,18 +599,35 @@ fn is_patchouli_json_candidate(path: &str) -> bool {
         && path.contains("/patchouli_books/")
 }
 
-fn select_source_keys(locale_keys: &BTreeMap<String, HashSet<String>>) -> Option<&HashSet<String>> {
-    locale_keys.get("en_us").or_else(|| {
-        locale_keys
-            .iter()
-            .min_by(|(left_locale, left_keys), (right_locale, right_keys)| {
-                right_keys
-                    .len()
-                    .cmp(&left_keys.len())
-                    .then_with(|| left_locale.cmp(right_locale))
-            })
-            .map(|(_, keys)| keys)
-    })
+fn select_source_keys<'a>(
+    locale_keys: &'a BTreeMap<String, HashSet<String>>,
+    target_locale: &str,
+) -> Option<&'a HashSet<String>> {
+    let largest_non_target = locale_keys
+        .iter()
+        .filter(|(locale, _)| locale.as_str() != target_locale)
+        .min_by(|(left_locale, left_keys), (right_locale, right_keys)| {
+            right_keys
+                .len()
+                .cmp(&left_keys.len())
+                .then_with(|| left_locale.cmp(right_locale))
+        })
+        .map(|(_, keys)| keys);
+    let largest = locale_keys
+        .iter()
+        .min_by(|(left_locale, left_keys), (right_locale, right_keys)| {
+            right_keys
+                .len()
+                .cmp(&left_keys.len())
+                .then_with(|| left_locale.cmp(right_locale))
+        })
+        .map(|(_, keys)| keys);
+
+    locale_keys
+        .get("en_us")
+        .filter(|_| target_locale != "en_us")
+        .or(largest_non_target)
+        .or(largest)
 }
 
 fn scan_archive_limits() -> ArchiveLimits {

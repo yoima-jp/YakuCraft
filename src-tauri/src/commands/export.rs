@@ -245,6 +245,7 @@ impl ExportContext {
             entries: &self.entries,
             namespaces: &self.namespaces,
             language_files: &self.language_files,
+            source_archive_path: Some(&self.source_jar),
             legacy_parse_escapes_namespaces: &self.legacy_parse_escapes_namespaces,
             source_locale: &self.source_locale,
             target_locale: &self.target_locale,
@@ -1178,9 +1179,14 @@ fn export_selected_merged_resource_pack_core(
     {
         format!("{pack_name} の日本語訳（{} mod）", merged_mods.len())
     } else {
+        let mod_label = if merged_mods.len() == 1 {
+            "mod"
+        } else {
+            "mods"
+        };
         format!(
-            "{pack_name} translation ({target_locale}, {} mods)",
-            merged_mods.len()
+            "{pack_name} translation ({target_locale}, {} {mod_label})",
+            merged_mods.len(),
         )
     };
     let result = (|| {

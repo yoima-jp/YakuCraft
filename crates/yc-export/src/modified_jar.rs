@@ -71,7 +71,7 @@ pub(crate) fn validate_modified_jar_input(
     Ok(())
 }
 
-fn write_english_based_language_file(
+pub(crate) fn write_english_based_language_file(
     input: &ExportInput<'_>,
     original_jar_path: &Path,
     namespace: &str,

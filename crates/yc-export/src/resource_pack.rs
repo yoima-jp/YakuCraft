@@ -240,10 +240,15 @@ pub fn export_resource_pack(
     {
         format!("{pack_name} Japanese Expansion Pack")
     } else {
+        let mod_label = if options.mods.len() == 1 {
+            "mod"
+        } else {
+            "mods"
+        };
         format!(
-            "{pack_name} translation ({}, {} mods)",
+            "{pack_name} translation ({}, {} {mod_label})",
             yc_language::normalize_locale(input.target_locale),
-            options.mods.len()
+            options.mods.len(),
         )
     };
     let metadata = pack_metadata(pack_format, &description)?;
@@ -443,7 +448,11 @@ pub fn export_merged_resource_pack(
                 .first()
                 .map(|mod_data| mod_data.label)
                 .unwrap_or("YakuCraft");
-            format!("{name} translation ({target_locale}, {} mods)", mods.len())
+            let mod_label = if mods.len() == 1 { "mod" } else { "mods" };
+            format!(
+                "{name} translation ({target_locale}, {} {mod_label})",
+                mods.len()
+            )
         };
     let metadata = pack_metadata(
         pack_format,

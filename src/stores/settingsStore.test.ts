@@ -45,4 +45,74 @@ describe("editor mod tab settings", () => {
     expect(saveSettings).toHaveBeenNthCalledWith(2, { "editor.modTabPosition": "top" });
     expect(readModTabPreferences(projectId, validIds)).toEqual(tabPreferences);
   });
+
+  it("無効な翻訳先をOS言語に補正して一度保存する", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      schemaVersion: 1,
+      "language.targetLocale": "not_a_locale",
+    });
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().settings["language.targetLocale"]).toBe("ja_jp");
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    expect(saveSettings).toHaveBeenCalledWith({ "language.targetLocale": "ja_jp" });
+  });
+
+  it("大文字やハイフンを含む有効な翻訳先は正規化して使う", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      schemaVersion: 1,
+      "language.targetLocale": "DE-DE",
+    });
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().settings["language.targetLocale"]).toBe("de_de");
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("オンボーディング中は無効な翻訳先を保存しない", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      schemaVersion: 1,
+      "language.targetLocale": "not_a_locale",
+      "onboarding.completed": false,
+    });
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().settings["language.targetLocale"]).toBe("ja_jp");
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("翻訳先の設定が未設定なら補正値を保存する", async () => {
+    vi.mocked(getSettings).mockResolvedValue({ schemaVersion: 1 });
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().settings["language.targetLocale"]).toBe("ja_jp");
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    expect(saveSettings).toHaveBeenCalledWith({ "language.targetLocale": "ja_jp" });
+  });
+
+  it("補正値の保存失敗でも読み込んだ設定を使う", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      schemaVersion: 1,
+      "language.targetLocale": "not_a_locale",
+    });
+    vi.mocked(saveSettings).mockRejectedValue(new Error("write failed"));
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().loaded).toBe(true);
+    expect(useSettingsStore.getState().error).toBeNull();
+    expect(useSettingsStore.getState().settings["language.targetLocale"]).toBe("ja_jp");
+  });
+
+  it("設定の読み込みに失敗した場合は保存しない", async () => {
+    vi.mocked(getSettings).mockRejectedValue(new Error("read failed"));
+
+    await useSettingsStore.getState().load();
+
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
 });

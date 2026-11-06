@@ -597,6 +597,43 @@ fn lightweight_scan_and_analysis_ignore_blank_japanese_values() {
 }
 
 #[test]
+fn lightweight_scan_uses_a_non_target_source_when_english_is_the_target() {
+    let jar = temporary_jar(&[
+        ("assets/sample/lang/en_us.json", br#"{"common":"English"}"#),
+        (
+            "assets/sample/lang/de_de.json",
+            br#"{"common":"Deutsch","only.de":"Nur Deutsch"}"#,
+        ),
+    ]);
+
+    let english_target = scan_mod_jar(
+        &jar.0,
+        &ScanOptions {
+            target_locale: "en_us".to_owned(),
+        },
+    );
+    assert_eq!(english_target.source_key_count, 2);
+    assert_eq!(english_target.translated_key_count, 1);
+    assert!(matches!(
+        english_target.status,
+        ModLanguageStatus::Partial { coverage } if coverage == 0.5
+    ));
+
+    let japanese_target = scan_mod_jar(
+        &jar.0,
+        &ScanOptions {
+            target_locale: "ja_jp".to_owned(),
+        },
+    );
+    assert_eq!(japanese_target.source_key_count, 1);
+    assert_eq!(japanese_target.translated_key_count, 0);
+    assert!(matches!(
+        japanese_target.status,
+        ModLanguageStatus::Untranslated
+    ));
+}
+
+#[test]
 fn lightweight_scan_reports_no_language_files_and_broken_archives() {
     let no_languages = temporary_jar(&[("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")]);
     let broken = temporary_jar(&[]);
