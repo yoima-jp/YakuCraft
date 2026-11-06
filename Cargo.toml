@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "crates/yc-modpack", "src-tauri"]
+exclude = ["crates/yc-locale"]
 
 [workspace.package]
 version = "1.2.0"

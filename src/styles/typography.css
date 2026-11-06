@@ -10,6 +10,21 @@
   color: var(--color-text-primary);
 }
 
+:lang(ko) {
+  font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif;
+}
+
+:lang(zh-Hans),
+:lang(zh-CN) {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+
+:lang(zh-Hant),
+:lang(zh-TW),
+:lang(zh-HK) {
+  font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", sans-serif;
+}
+
 code,
 kbd,
 pre {

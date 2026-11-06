@@ -30,6 +30,7 @@ vi.mock("../../lib/tauri", () => ({
   getAppInfo: vi.fn(),
   getMinecraftJarSetting: vi.fn(),
   getSettings: vi.fn(),
+  getSystemLocale: vi.fn().mockResolvedValue("ja-JP"),
   listAiModels: vi.fn().mockResolvedValue([]),
   logoutChatgpt: vi.fn(),
   saveAiProvider: vi.fn(),

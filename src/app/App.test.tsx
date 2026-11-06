@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setUiLanguage } from "../i18n";
 import { useAppStore } from "../stores/appStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { App } from "./App";
@@ -31,10 +32,29 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useSettingsStore.setState(initialSettings);
+  setUiLanguage("ja");
   vi.unstubAllGlobals();
 });
 
 describe("App file shortcut", () => {
+  it("onboarding.completedがfalseならシェルの代わりにオンボーディングを表示する", () => {
+    setUiLanguage("en");
+    useSettingsStore.setState((state) => ({
+      settings: { ...state.settings, "language.uiLanguage": "en", "onboarding.completed": false },
+    }));
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Welcome to YakuCraft" })).toBeTruthy();
+    expect(screen.queryByRole("banner")).toBeNull();
+  });
+
+  it("onboarding.completedが未設定ならオンボーディングを表示しない", () => {
+    render(<App />);
+
+    expect(screen.getByRole("banner")).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: "English" })).toBeNull();
+  });
+
   it("モーダルの未保存入力をCtrl+Oで失わない", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "用語集" }));

@@ -1,0 +1,85 @@
+.target-language-picker {
+  position: relative;
+  min-inline-size: 0;
+}
+
+.target-language-picker__input {
+  inline-size: 100%;
+  min-block-size: var(--size-click-target);
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: 500;
+  user-select: text;
+}
+
+.target-language-picker__input:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.target-language-picker__list {
+  position: absolute;
+  z-index: var(--z-popover);
+  inset-block-start: calc(100% + var(--spacing-xs));
+  inset-inline: 0;
+  max-block-size: min(20rem, 50vh);
+  overflow: auto;
+  margin: 0;
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-xs);
+  background: var(--color-surface-raised);
+  box-shadow: 0 4px 0 var(--color-border-strong);
+  list-style: none;
+  scrollbar-color: var(--color-border-strong) var(--color-surface);
+  scrollbar-width: thin;
+}
+
+.target-language-picker__option {
+  display: grid;
+  min-block-size: var(--size-click-target);
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto;
+  align-items: center;
+  gap: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.target-language-picker__option:hover,
+.target-language-picker__option[data-active="true"],
+.target-language-picker__option[aria-selected="true"] {
+  background: var(--color-selection-surface);
+  color: var(--color-selection-text);
+}
+
+.target-language-picker__name,
+.target-language-picker__region {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-language-picker__region {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.target-language-picker__option code {
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.target-language-picker__empty {
+  display: block;
+  padding: var(--spacing-md);
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}

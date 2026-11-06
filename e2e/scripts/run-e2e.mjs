@@ -126,14 +126,18 @@ async function main() {
   };
 
   try {
-    if (process.env.APPIMAGE) {
-      await mkdir(dataDirectory, { recursive: true });
-      await writeFile(
-        path.join(dataDirectory, "settings.json"),
-        JSON.stringify({ schemaVersion: 1, "updates.checkOnStartup": false }),
-        "utf8",
-      );
-    }
+    await mkdir(dataDirectory, { recursive: true });
+    await writeFile(
+      path.join(dataDirectory, "settings.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        "updates.checkOnStartup": false,
+        "onboarding.completed": true,
+        "language.uiLanguage": "ja",
+        "language.targetLocale": "ja_jp",
+      }),
+      "utf8",
+    );
 
     await run(cargoCommand, ["run", "-p", "yc-analysis", "--example", "make_fixture", "--", fixturePath]);
     await run(cargoCommand, ["run", "-p", "yc-analysis", "--example", "make_fixture", "--", largeFixturePath, "--keys", "500"]);

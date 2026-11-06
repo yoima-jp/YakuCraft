@@ -12,12 +12,15 @@ import { checkForUpdate, loadUpdateSupport, useUpdaterStore } from "../updater/u
 import type { AiProviderId, AiSettingsDto } from "../../types/ai";
 import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
+import { TargetLanguagePicker } from "../../components/TargetLanguagePicker";
+import { UI_LANGUAGES, UI_LANGUAGE_INFO, isUiLanguage, useT, useUiLanguage, setUiLanguage } from "../../i18n";
 import "./SettingsScreen.css";
 
-type SettingsCategory = "general" | "ai" | "editor" | "appearance" | "advanced" | "logs";
+type SettingsCategory = "general" | "language" | "ai" | "editor" | "appearance" | "advanced" | "logs";
 
 const CATEGORIES: Array<[SettingsCategory, string]> = [
   ["general", "一般"],
+  ["language", "言語"],
   ["ai", "AI翻訳"],
   ["editor", "エディター"],
   ["appearance", "表示"],
@@ -137,6 +140,8 @@ function LogViewer() {
 }
 
 export function SettingsScreen() {
+  const translate = useT();
+  const uiLanguage = useUiLanguage();
   const category = useAppStore((state) => state.settingsCategory);
   const closeSettings = useAppStore((state) => state.closeSettings);
   const settings = useSettingsStore((state) => state.settings);
@@ -382,7 +387,9 @@ export function SettingsScreen() {
     }
   };
 
-  const categoryLabel = CATEGORIES.find(([key]) => key === category)?.[1] ?? "一般";
+  const categoryLabel = category === "language"
+    ? translate("settings.languageCategory")
+    : CATEGORIES.find(([key]) => key === category)?.[1] ?? "一般";
 
   return (
     <section className="settings-screen" aria-labelledby="settings-title">
@@ -397,12 +404,42 @@ export function SettingsScreen() {
               key={key}
               onClick={() => useAppStore.setState({ settingsCategory: key })}
             >
-              {label}
+              {key === "language" ? translate("settings.languageCategory") : label}
             </button>
           ))}
         </nav>
         <section className="settings-content" aria-labelledby="settings-category-title">
           <h2 id="settings-category-title">{categoryLabel}</h2>
+          {category === "language" && (
+            <div className="settings-fields">
+              <div className="settings-field">
+                <span>{translate("settings.uiLanguage")}</span>
+                <Select
+                  aria-label={translate("settings.uiLanguage")}
+                  value={uiLanguage}
+                  onChange={(value) => {
+                    if (!isUiLanguage(value)) return;
+                    setUiLanguage(value);
+                    void persist({ "language.uiLanguage": value });
+                  }}
+                  options={UI_LANGUAGES.map((value) => ({ value, label: UI_LANGUAGE_INFO[value].nativeName }))}
+                />
+              </div>
+              <label className="settings-field" htmlFor="settings-target-language">
+                {translate("settings.targetLanguage")}
+                <TargetLanguagePicker
+                  id="settings-target-language"
+                  aria-label={translate("settings.targetLanguage")}
+                  value={stringSetting(settings, "language.targetLocale", String(SETTING_DEFAULTS["language.targetLocale"]))}
+                  onChange={(value) => void persist({ "language.targetLocale": value })}
+                />
+                <span className="settings-field__hint">{translate("settings.targetLanguageHelp")}</span>
+                {stringSetting(settings, "language.targetLocale", "en_us").toLowerCase() === "en_us" && (
+                  <span className="settings-field__hint">{translate("settings.englishTargetWarning")}</span>
+                )}
+              </label>
+            </div>
+          )}
           {category === "general" && (
             <div className="settings-fields">
               <label className="settings-field" htmlFor="recent-project-count">

@@ -15,6 +15,8 @@ import { IconButton, TertiaryButton } from "../components/button/Buttons";
 import { useContextMenuPolicy } from "../components/ContextMenu";
 import { Tooltip } from "../components/Controls";
 import { TranslationScreen } from "../features/translation/TranslationScreen";
+import { OnboardingScreen } from "../features/onboarding/OnboardingScreen";
+import { useUiLanguage } from "../i18n";
 import "./App.css";
 
 export function App() {
@@ -25,6 +27,8 @@ export function App() {
   const openSettings = useAppStore((state) => state.openSettings);
   const loadSettings = useSettingsStore((state) => state.load);
   const settingsLoaded = useSettingsStore((state) => state.loaded);
+  const onboardingRequired = useSettingsStore((state) => state.settings["onboarding.completed"] === false);
+  const activeUiLanguage = useUiLanguage();
   const appearance = useSettingsStore((state) => state.settings["appearance.theme"]);
   const homeDisabled = route === "home" || route === "loading";
   const goHome = () => {
@@ -36,11 +40,12 @@ export function App() {
   }, [loadSettings]);
 
   useEffect(() => {
-    if (settingsLoaded) checkForUpdateOnStartup();
-  }, [settingsLoaded]);
+    if (settingsLoaded && !onboardingRequired) checkForUpdateOnStartup();
+  }, [onboardingRequired, settingsLoaded]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
+      if (onboardingRequired) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "o") return;
       event.preventDefault();
       // 用語集や確認ダイアログの入力・判断を、背面の画面遷移で失わないようにする。
@@ -54,7 +59,13 @@ export function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [goTo]);
+  }, [goTo, onboardingRequired]);
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.lang = activeUiLanguage;
+    root.dir = "ltr";
+  }, [activeUiLanguage]);
 
   useLayoutEffect(() => {
     if (!settingsLoaded) return;
@@ -72,6 +83,7 @@ export function App() {
 
   // 初回起動ではcacheが未作成の場合があるため、DBの保存テーマ確定前は画面を描画しない。
   if (!settingsLoaded) return null;
+  if (onboardingRequired) return <OnboardingScreen />;
 
   const displayRoute = route === "settings" ? settingsReturnRoute : route;
   const showExportCompletion = displayRoute === "exportComplete";
