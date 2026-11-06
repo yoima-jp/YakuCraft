@@ -13,15 +13,15 @@ pub enum AiError {
     Network,
     #[error("Provider authentication failed")]
     ProviderAuth,
-    #[error("ChatGPTに再ログインしてください。")]
+    #[error("{}", yc_locale::t!("ai.chatgptReauthenticationRequired"))]
     ChatGptReauthenticationRequired,
-    #[error("ChatGPTログインに使うポート1455が使用中です。使用中のアプリを閉じてください。")]
+    #[error("{}", yc_locale::t!("ai.chatgptCallbackPortInUse"))]
     ChatGptCallbackPortInUse,
-    #[error("ChatGPTログインをキャンセルしました。")]
+    #[error("{}", yc_locale::t!("ai.chatgptLoginCancelled"))]
     ChatGptLoginCancelled,
-    #[error("ChatGPTログインの有効期限が切れました。もう一度お試しください。")]
+    #[error("{}", yc_locale::t!("ai.chatgptLoginTimedOut"))]
     ChatGptLoginTimedOut,
-    #[error("ChatGPTにログインできませんでした。もう一度お試しください。")]
+    #[error("{}", yc_locale::t!("ai.chatgptLoginFailed"))]
     ChatGptLoginFailed,
     #[error("Provider rate limit was reached")]
     ProviderRateLimit { retry_after: Option<Duration> },
@@ -29,6 +29,8 @@ pub enum AiError {
     ProviderResponse { status: u16 },
     #[error("Provider returned an invalid response")]
     InvalidProviderResponse,
+    #[error("{}", yc_locale::t!("ai.deeplTargetUnsupported"))]
+    UnsupportedTargetLanguage,
     #[error("Credential store operation failed")]
     CredentialStore,
     #[error("A translation job is already running")]

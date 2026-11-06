@@ -6111,6 +6111,7 @@ dependencies = [
  "uuid",
  "windows-native-keyring-store",
  "wiremock",
+ "yc-locale",
  "yc-validation",
  "zbus-secret-service-keyring-store",
 ]

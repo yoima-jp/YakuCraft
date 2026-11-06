@@ -130,6 +130,20 @@ pub struct AiSettings {
     pub custom_prompt: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AiTargetSupportLevel {
+    Supported,
+    Limited,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTargetSupport {
+    level: AiTargetSupportLevel,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveAiProviderInput {
@@ -254,6 +268,32 @@ pub async fn get_ai_settings(
 }
 
 #[tauri::command]
+pub async fn get_ai_target_support(
+    target_locale: String,
+    state: State<'_, AppState>,
+) -> Result<AiTargetSupport, AppError> {
+    let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
+    let provider = provider_from_settings(&settings)?;
+    let deepl_supported = if provider != ProviderId::DeepL
+        || yc_ai::deepl::deepl_target_languages(&target_locale).is_none()
+    {
+        None
+    } else if let Ok(Some(api_key)) =
+        load_provider_credential(state.credentials.as_deref(), provider).await
+    {
+        match DeepLProvider::new(api_key) {
+            Ok(client) => client.target_locale_support(&target_locale).await,
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    Ok(AiTargetSupport {
+        level: target_support_level(provider, &target_locale, deepl_supported),
+    })
+}
+
+#[tauri::command]
 pub async fn start_chatgpt_login(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -285,7 +325,7 @@ pub async fn start_chatgpt_login(
         .map_err(|_| {
             AppError::simple(
                 "chatgpt_browser_open_failed",
-                "既定のブラウザを開けませんでした。",
+                &yc_locale::t!("ai.browserOpenFailed"),
             )
         })?;
     let account = login.wait().await.map_err(chatgpt_login_error)?;
@@ -338,7 +378,7 @@ impl Drop for ChatGptLoginAttemptGuard<'_> {
 fn chatgpt_login_cancelled_error() -> AppError {
     AppError::simple(
         "chatgpt_login_cancelled",
-        "ChatGPTログインをキャンセルしました。",
+        &yc_locale::t!("ai.chatgptLoginCancelled"),
     )
 }
 
@@ -347,15 +387,15 @@ fn chatgpt_login_error(error: AiError) -> AppError {
         AiError::ChatGptLoginCancelled | AiError::Cancelled => chatgpt_login_cancelled_error(),
         AiError::ChatGptCallbackPortInUse => AppError::simple(
             "chatgpt_callback_port_in_use",
-            "ChatGPTログインに使うポート1455が使用中です。使用中のアプリを閉じてください。",
+            &yc_locale::t!("ai.chatgptCallbackPortInUse"),
         ),
         AiError::ChatGptLoginTimedOut => AppError::simple(
             "chatgpt_login_timed_out",
-            "ChatGPTログインの有効期限が切れました。もう一度お試しください。",
+            &yc_locale::t!("ai.chatgptLoginTimedOut"),
         ),
         _ => AppError::simple(
             "chatgpt_login_failed",
-            "ChatGPTにログインできませんでした。もう一度お試しください。",
+            &yc_locale::t!("ai.chatgptLoginFailed"),
         ),
     }
 }
@@ -374,7 +414,7 @@ pub async fn save_ai_provider(
     {
         return Err(AppError::simple(
             "invalid_ai_settings",
-            "ChatGPTはログインしてください。",
+            &yc_locale::t!("ai.chatgptMustLogin"),
         ));
     }
 
@@ -592,7 +632,7 @@ pub async fn start_ai_job(
     if selected_ids.is_empty() {
         return Err(AppError::simple(
             "empty_ai_selection",
-            "翻訳する項目がありません。",
+            &yc_locale::t!("ai.noEntries"),
         ));
     }
 
@@ -603,7 +643,7 @@ pub async fn start_ai_job(
     if deleting_projects.contains(&expected_project_id) {
         return Err(AppError::simple(
             "project_delete_in_progress",
-            "このプロジェクトは削除中です。",
+            &yc_locale::t!("ai.projectDeleting"),
         ));
     }
 
@@ -732,14 +772,17 @@ fn prepare_ai_job_entries(
     let active = active_project
         .lock()
         .map_err(|_| internal_state_error("active Project state"))?;
-    let opened = active
-        .as_ref()
-        .ok_or_else(|| AppError::simple("project_required", "プロジェクトを開いてください。"))?;
+    let opened = active.as_ref().ok_or_else(|| {
+        AppError::simple("project_required", &yc_locale::t!("ai.projectRequired"))
+    })?;
     if opened.summary().id != expected_project_id {
         return Err(project_changed_error());
     }
     // 翻訳元とnamespaceはProject DBから読み、Mod名は解析済み情報をIPCで受け取ってJAR再解析を省く。
     let repository = opened.repository();
+    let target_locale = repository
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let shaderpack_unit_ids: HashSet<_> = repository
         .list_mod_units()
         .map_err(|error| database_error(error.to_string()))?
@@ -808,10 +851,10 @@ fn prepare_ai_job_entries(
     let mut entries = Vec::with_capacity(selected_ids.len());
     for id in selected_ids {
         let entry = by_id.get(id).ok_or_else(|| {
-            AppError::simple("entry_not_found", "翻訳項目を読み込めませんでした。")
+            AppError::simple("entry_not_found", &yc_locale::t!("ai.entryReadFailed"))
         })?;
         let expected = expected_by_id.get(id).ok_or_else(|| {
-            AppError::simple("invalid_ai_selection", "翻訳項目を読み込めませんでした。")
+            AppError::simple("invalid_ai_selection", &yc_locale::t!("ai.entryReadFailed"))
         })?;
         let source = entry.source_text.clone().unwrap_or_default();
         let matched_glossary_terms = glossary_matcher
@@ -829,7 +872,7 @@ fn prepare_ai_job_entries(
                 entry.key.clone(),
                 source,
                 source_locale,
-                "ja_jp",
+                &target_locale,
                 entry.format_profile,
             ),
             glossary_terms: matched_glossary_terms,
@@ -1249,6 +1292,26 @@ fn provider_is_configured(
     }
 }
 
+fn target_support_level(
+    provider: ProviderId,
+    target_locale: &str,
+    deepl_supported: Option<bool>,
+) -> AiTargetSupportLevel {
+    if provider == ProviderId::DeepL {
+        if yc_ai::deepl::deepl_target_languages(target_locale).is_none()
+            || deepl_supported == Some(false)
+        {
+            AiTargetSupportLevel::Unsupported
+        } else {
+            AiTargetSupportLevel::Supported
+        }
+    } else if yc_locale::is_constructed_language(target_locale) {
+        AiTargetSupportLevel::Limited
+    } else {
+        AiTargetSupportLevel::Supported
+    }
+}
+
 fn provider_requires_api_key(provider: ProviderId) -> bool {
     matches!(
         provider,
@@ -1334,7 +1397,7 @@ fn parse_provider(provider: &str) -> Result<ProviderId, AppError> {
         "anthropic" => Ok(ProviderId::Anthropic),
         _ => Err(AppError::simple(
             "invalid_ai_provider",
-            "Providerを選び直してください。",
+            &yc_locale::t!("ai.providerSelect"),
         )),
     }
 }
@@ -1347,19 +1410,19 @@ fn validate_ai_config(config: &SaveAiProviderInput) -> Result<(), AppError> {
     {
         return Err(AppError::simple(
             "invalid_ai_settings",
-            "AI翻訳の設定を確認してください。",
+            &yc_locale::t!("ai.settingsCheck"),
         ));
     }
     if provider != ProviderId::DeepL && config.model.trim().is_empty() {
         return Err(AppError::simple(
             "invalid_ai_settings",
-            "Modelを入力してください。",
+            &yc_locale::t!("ai.modelRequired"),
         ));
     }
     if provider == ProviderId::ChatGpt && !yc_ai::chatgpt::valid_model_id(&config.model) {
         return Err(AppError::simple(
             "invalid_ai_settings",
-            "ChatGPTのモデルを選び直してください。",
+            &yc_locale::t!("ai.chatgptModelSelect"),
         ));
     }
     if matches!(
@@ -1463,13 +1526,13 @@ fn unique_ids(ids: Vec<i64>) -> Vec<i64> {
 fn validation_reason(issue: &yc_validation::ValidationIssue) -> String {
     use yc_validation::ValidationIssue;
     match issue {
-        ValidationIssue::MissingResponse => "翻訳が返されませんでした".to_owned(),
-        ValidationIssue::DuplicateId => "翻訳結果が重複しています".to_owned(),
-        ValidationIssue::UnknownId => "不明な項目の結果が含まれていました".to_owned(),
-        ValidationIssue::EmptyTranslation => "翻訳が空です".to_owned(),
-        ValidationIssue::PlaceholderMismatch { .. } => "Placeholderが原文と一致しません".to_owned(),
+        ValidationIssue::MissingResponse => yc_locale::t!("ai.rejectionMissingResponse"),
+        ValidationIssue::DuplicateId => yc_locale::t!("ai.rejectionDuplicate"),
+        ValidationIssue::UnknownId => yc_locale::t!("ai.rejectionUnknown"),
+        ValidationIssue::EmptyTranslation => yc_locale::t!("ai.rejectionEmpty"),
+        ValidationIssue::PlaceholderMismatch { .. } => yc_locale::t!("ai.rejectionPlaceholder"),
         ValidationIssue::InvalidControlCharacter { .. } => {
-            "使用できない制御文字が含まれています".to_owned()
+            yc_locale::t!("ai.rejectionControlCharacter")
         }
     }
 }
@@ -1477,7 +1540,7 @@ fn validation_reason(issue: &yc_validation::ValidationIssue) -> String {
 fn settings_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "settings_unavailable",
-        "設定を読み書きできませんでした。",
+        &yc_locale::t!("ai.settingsReadWrite"),
         Some(error.to_string()),
     )
 }
@@ -1485,64 +1548,67 @@ fn settings_error(error: impl std::fmt::Display) -> AppError {
 fn credential_error(error: AiError) -> AppError {
     #[cfg(target_os = "linux")]
     let user_message = match &error {
-        AiError::CredentialStore => {
-            "資格情報を読み書きできませんでした。GNOME KeyringなどのLinux鍵管理サービスが起動しているか確認してください。"
-        }
-        _ => "API Keyを読み書きできませんでした。",
+        AiError::CredentialStore => yc_locale::t!("ai.credentialsLinuxReadWrite"),
+        _ => yc_locale::t!("ai.credentialsReadWrite"),
     };
     #[cfg(not(target_os = "linux"))]
-    let user_message = "API Keyを読み書きできませんでした。";
+    let user_message = yc_locale::t!("ai.credentialsReadWrite");
 
-    AppError::new("ai_credential_error", user_message, Some(error.to_string()))
+    AppError::new(
+        "ai_credential_error",
+        &user_message,
+        Some(error.to_string()),
+    )
 }
 
 fn credential_unavailable() -> AppError {
     AppError::simple(
         "ai_credential_unavailable",
-        "この環境ではAPI Keyを保存できません。",
+        &yc_locale::t!("ai.credentialsUnavailable"),
     )
 }
 
 fn not_configured_error() -> AppError {
-    AppError::simple(
-        "ai_not_configured",
-        "AI Translationの設定を完了してください。",
-    )
+    AppError::simple("ai_not_configured", &yc_locale::t!("ai.notConfigured"))
 }
 
 fn ai_error(error: AiError) -> AppError {
     let (code, user_message) = match &error {
-        AiError::JobAlreadyRunning => ("ai_job_running", "AI翻訳はすでに実行中です。"),
-        AiError::Cancelled => ("ai_job_cancelled", "AI翻訳をキャンセルしました。"),
-        AiError::InvalidUrl => ("ai_invalid_url", "接続先URLを確認してください。"),
+        AiError::JobAlreadyRunning => ("ai_job_running", yc_locale::t!("ai.jobAlreadyRunning")),
+        AiError::Cancelled => ("ai_job_cancelled", yc_locale::t!("ai.cancelled")),
+        AiError::InvalidUrl => ("ai_invalid_url", yc_locale::t!("ai.invalidProviderUrl")),
         AiError::ChatGptReauthenticationRequired => (
             "chatgpt_reauthentication_required",
-            "ChatGPTに再ログインしてください。",
+            yc_locale::t!("ai.chatgptReauthenticationRequired"),
         ),
-        _ => ("ai_provider_error", "AI翻訳を実行できませんでした。"),
+        AiError::UnsupportedTargetLanguage => (
+            "ai_target_unsupported",
+            yc_locale::t!("ai.deeplTargetUnsupported"),
+        ),
+        _ => ("ai_provider_error", yc_locale::t!("ai.providerFailed")),
     };
-    AppError::new(code, user_message, Some(error.to_string()))
+    AppError::new(code, &user_message, Some(error.to_string()))
 }
 
 fn cancelled_error() -> AppError {
-    AppError::simple("ai_job_cancelled", "AI翻訳をキャンセルしました。")
+    AppError::simple("ai_job_cancelled", &yc_locale::t!("ai.cancelled"))
 }
 
 fn channel_error() -> AppError {
-    AppError::simple("ai_channel_closed", "AI翻訳の進捗を受け取れませんでした。")
+    AppError::simple(
+        "ai_channel_closed",
+        &yc_locale::t!("ai.progressUnavailable"),
+    )
 }
 
 fn project_changed_error() -> AppError {
-    AppError::simple(
-        "project_changed",
-        "プロジェクトが切り替わったため、AI翻訳を停止しました。",
-    )
+    AppError::simple("project_changed", &yc_locale::t!("ai.projectChanged"))
 }
 
 fn database_error(detail: impl Into<String>) -> AppError {
     AppError::new(
         "database",
-        "翻訳データを保存できませんでした。",
+        &yc_locale::t!("ai.dataSaveFailed"),
         Some(detail.into()),
     )
 }
@@ -1550,17 +1616,13 @@ fn database_error(detail: impl Into<String>) -> AppError {
 fn internal_state_error(detail: &str) -> AppError {
     AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("ai.appStateFailed"),
         Some(detail.to_owned()),
     )
 }
 
 fn task_error(detail: String) -> AppError {
-    AppError::new(
-        "task_failed",
-        "処理に失敗しました。もう一度お試しください。",
-        Some(detail),
-    )
+    AppError::new("task_failed", &yc_locale::t!("ai.taskFailed"), Some(detail))
 }
 
 #[cfg(test)]
@@ -1575,8 +1637,9 @@ mod tests {
     };
 
     use super::{
-        AiEntryBaseline, AiJobEntry, AiSettings, ai_settings_from, apply_outcome_to_project,
-        parse_provider, prepare_ai_job_entries, provider_base_url, provider_from_settings,
+        AiEntryBaseline, AiJobEntry, AiSettings, AiTargetSupportLevel, ai_settings_from,
+        apply_outcome_to_project, parse_provider, prepare_ai_job_entries, provider_base_url,
+        provider_from_settings, target_support_level,
     };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -1587,8 +1650,9 @@ mod tests {
     };
     use yc_language::{EntryFlag, LanguageFileFormat, TranslationOrigin};
     use yc_project::{
-        AnalysisData, EntryUpdate, GlossaryTermInput, LanguageRecord, ModRecord, NamespaceRecord,
-        NestedArchiveRecord, ProjectEntry, UpdateOrigin, create_project, open_project,
+        AnalysisData, EntryUpdate, GlossaryTermInput, LanguageRecord, ModRecord, ModUnitSourceKind,
+        NamespaceRecord, NestedArchiveRecord, ProjectEntry, ProjectSource, UpdateOrigin,
+        create_project, create_project_with_sources_and_target_locale, open_project,
     };
     use yc_validation::{
         AiTranslation, PlaceholderProfile, ProfiledRequestedEntry, RequestedEntry,
@@ -1621,7 +1685,7 @@ mod tests {
         let error = super::credential_error(AiError::CredentialStore);
 
         assert!(error.user_message.contains("GNOME Keyring"));
-        assert!(error.user_message.contains("起動しているか確認"));
+        assert!(error.user_message.contains("is running"));
     }
 
     struct TemporaryDirectory(PathBuf);
@@ -1646,13 +1710,24 @@ mod tests {
     }
 
     fn project_with_entry() -> (TemporaryDirectory, yc_project::OpenedProject, ProjectEntry) {
+        project_with_entry_target(yc_language::DEFAULT_TARGET_LOCALE)
+    }
+
+    fn project_with_entry_target(
+        target_locale: &str,
+    ) -> (TemporaryDirectory, yc_project::OpenedProject, ProjectEntry) {
         let temporary = TemporaryDirectory::create();
         let source_path = temporary.0.join("source.jar");
         fs::write(&source_path, b"test JAR").unwrap();
-        let summary = create_project(
+        let summary = create_project_with_sources_and_target_locale(
             temporary.0.join("projects"),
-            std::slice::from_ref(&source_path),
+            &[ProjectSource {
+                path: source_path.clone(),
+                kind: ModUnitSourceKind::Jar,
+            }],
             None,
+            None,
+            target_locale,
         )
         .unwrap();
         let opened = open_project(
@@ -1836,6 +1911,57 @@ mod tests {
             .map(|term| term.source_term.as_str())
             .collect::<Vec<_>>();
         assert_eq!(sources, ["Apple"]);
+    }
+
+    #[test]
+    fn ai_job_preparation_uses_the_project_target_locale() {
+        let (_temporary, opened, entry) = project_with_entry_target("de_de");
+        let project_id = opened.summary().id.clone();
+        let active_project = Arc::new(Mutex::new(Some(opened)));
+        let expected = HashMap::from([(
+            entry.id,
+            AiEntryBaseline {
+                id: entry.id,
+                target_text: String::new(),
+                origin: entry.origin,
+            },
+        )]);
+
+        let (_, prepared) = prepare_ai_job_entries(
+            &active_project,
+            &[entry.id],
+            &expected,
+            &HashMap::new(),
+            &project_id,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared[0].translation.target_locale, "de_de");
+    }
+
+    #[test]
+    fn ai_target_support_uses_provider_language_limits() {
+        assert_eq!(
+            target_support_level(ProviderId::DeepL, "de_de", Some(false)),
+            AiTargetSupportLevel::Unsupported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::DeepL, "tlh_aa", Some(true)),
+            AiTargetSupportLevel::Unsupported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::DeepL, "de_de", None),
+            AiTargetSupportLevel::Supported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::OpenAi, "tlh_aa", None),
+            AiTargetSupportLevel::Limited,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::Anthropic, "de_de", None),
+            AiTargetSupportLevel::Supported,
+        );
     }
 
     #[test]

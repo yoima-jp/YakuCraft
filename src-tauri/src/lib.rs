@@ -102,6 +102,7 @@ pub fn run() {
             commands::logs::open_log_folder,
             commands::updater::automatic_updates_supported,
             commands::ai::get_ai_settings,
+            commands::ai::get_ai_target_support,
             commands::ai::save_ai_provider,
             commands::ai::delete_ai_provider,
             commands::ai::test_ai_provider,

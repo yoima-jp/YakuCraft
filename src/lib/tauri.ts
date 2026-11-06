@@ -110,6 +110,13 @@ export function getAiSettings(provider?: AiProviderId) {
   return invokeApp<AiSettingsDto>("get_ai_settings", { provider });
 }
 
+export function getAiTargetSupport(targetLocale: string) {
+  return invokeApp<{ level: "supported" | "limited" | "unsupported" }>(
+    "get_ai_target_support",
+    { targetLocale },
+  );
+}
+
 export function saveAiProvider(config: SaveAiProviderDto, apiKey?: string) {
   return invokeApp<AiSettingsDto>("save_ai_provider", { config, apiKey });
 }
