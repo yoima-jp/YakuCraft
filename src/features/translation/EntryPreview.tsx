@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getAssetBytes, getAssetPreviewManifest } from "../../lib/tauri";
 import { Select } from "../../components/Controls";
+import { useT, useUiLanguage } from "../../i18n";
+import { minecraftLocaleToBcp47 } from "../../i18n/minecraftLanguages";
 import { useProjectStore } from "../../stores/projectStore";
 import type {
   BlockPreviewManifest,
@@ -20,8 +22,12 @@ interface EntryPreviewProps {
 }
 
 export function EntryPreview({ entry }: EntryPreviewProps) {
+  const t = useT();
+  const uiLanguage = useUiLanguage();
   const previewKey = isAssetTranslationKey(entry);
   const projectId = useProjectStore((state) => state.details?.project.id ?? "");
+  const targetLocale = useProjectStore((state) => state.details?.targetLocale ?? "");
+  const targetLanguage = minecraftLocaleToBcp47(targetLocale);
   const jar = useMinecraftJarStore();
   useEffect(() => {
     if (previewKey) void loadMinecraftJarState();
@@ -68,24 +74,29 @@ export function EntryPreview({ entry }: EntryPreviewProps) {
   }, [entry.id, entry.key, entry.namespace, options, previewKey, jar.path, jar.version, projectId]);
 
   // 表示可否は flags ではなく resolver の結果で決める（理由は preview/thumbnails.ts の isPreviewableEntry）。
-  if (!previewKey) return <PreviewEmpty />;
+  if (!previewKey) return <PreviewEmpty lang={uiLanguage} />;
 
-  if (jar.error) return <PreviewEmpty label="読み込めません" />;
+  if (jar.error) return <PreviewEmpty lang={uiLanguage} label={t("entryPreview.loadFailed")} />;
   const matchesRequest = result.entryId === entry.id && result.options === options
     && result.jarVersion === jar.version && result.projectId === projectId;
   const manifest = matchesRequest ? result.manifest : null;
-  if (manifest && isEmptyPreview(manifest)) return <PreviewEmpty />;
-  if (matchesRequest && result.error) return <PreviewEmpty label="読み込めません" />;
+  if (manifest && isEmptyPreview(manifest)) return <PreviewEmpty lang={uiLanguage} />;
+  if (matchesRequest && result.error) return <PreviewEmpty lang={uiLanguage} label={t("entryPreview.loadFailed")} />;
   if (!manifest) {
-    return <div className="preview__loading" aria-label="プレビュー">読み込み中</div>;
+    return (
+      <div className="preview__loading" lang={uiLanguage} dir="auto" aria-label={t("entryPreview.preview")}>
+        {t("entryPreview.loading")}
+      </div>
+    );
   }
 
   return (
-    <div className="editor-entry-preview">
+    <div className="editor-entry-preview" lang={uiLanguage} dir="auto">
       <Preview
         manifest={manifest}
         getTextureBytes={getTextureBytes}
         getModelJson={getModelJson}
+        contentLang={targetLanguage}
       />
       <PreviewVariantSelector
         manifest={manifest}
@@ -96,13 +107,16 @@ export function EntryPreview({ entry }: EntryPreviewProps) {
   );
 }
 
-function PreviewEmpty({ label = "プレビューなし" }: { label?: string }) {
+function PreviewEmpty({ label, lang }: { label?: string; lang?: string }) {
+  const t = useT();
   return (
     <div
       className="editor-inspector__preview editor-inspector__preview--empty"
-      aria-label="プレビュー"
+      lang={lang}
+      dir="auto"
+      aria-label={t("entryPreview.preview")}
     >
-      {label}
+      {label ?? t("entryPreview.empty")}
     </div>
   );
 }
@@ -116,17 +130,18 @@ function PreviewVariantSelector({
   options: PreviewOptions;
   onChange: (options: PreviewOptions) => void;
 }) {
+  const t = useT();
   if (manifest.kind === "block") {
     const block = manifest.manifest as BlockPreviewManifest;
     return (
       <div className="preview__variant-list">
         {block.properties.map((property) => (
           <div key={property.name}>
-            <span>{propertyLabel(property.name)}</span>
+            <span>{propertyLabel(property.name, t)}</span>
             <Select
-              aria-label={propertyLabel(property.name)}
+              aria-label={propertyLabel(property.name, t)}
               className="preview__variant-select"
-              options={property.values.map((value) => ({ value, label: propertyValueLabel(value, property.name) }))}
+              options={property.values.map((value) => ({ value, label: propertyValueLabel(value, property.name, t) }))}
               value={options.blockstate?.[property.name] ?? property.selectedValue}
               onChange={(value) => onChange({
                 ...options,
@@ -138,13 +153,13 @@ function PreviewVariantSelector({
         ))}
         {block.properties.length === 0 && block.variants.length > 1 && (
           <div>
-            <span>状態</span>
+            <span>{t("entryPreview.state")}</span>
             <Select
-              aria-label="状態"
+              aria-label={t("entryPreview.state")}
               className="preview__variant-select"
               options={block.variants.map((variant) => ({
                 value: variant.id,
-                label: variantSelectorLabel(variant.selector, variant.id),
+                label: variantSelectorLabel(variant.selector, variant.id, t),
               }))}
               value={options.selectedVariant ?? block.selectedVariant ?? block.variants[0].id}
               onChange={(value) => onChange({ ...options, selectedVariant: value })}
@@ -161,11 +176,11 @@ function PreviewVariantSelector({
       <div className="preview__variant-list">
         {item.variants.map((variant) => (
           <div key={variant.selector}>
-            <span>{propertyLabel(variant.property)}</span>
+            <span>{propertyLabel(variant.property, t)}</span>
             <Select
-              aria-label={propertyLabel(variant.property)}
+              aria-label={propertyLabel(variant.property, t)}
               className="preview__variant-select"
-              options={variant.options.map((option) => ({ value: option.id, label: itemOptionLabel(option) }))}
+              options={variant.options.map((option) => ({ value: option.id, label: itemOptionLabel(option, t) }))}
               value={options.item?.[variant.selector] ?? variant.selected}
               onChange={(value) => onChange({
                 ...options,
@@ -185,16 +200,18 @@ function PreviewVariantSelector({
       : entity.textureCandidates[0] ? candidateKey(entity.textureCandidates[0]) : undefined);
     return (
       <div className="preview__variant-list">
-        {entity.confidence !== "high" && <p>候補: {entity.geometry.identifier}</p>}
+        {entity.confidence !== "high" && <p>{t("entryPreview.candidate", { value: entity.geometry.identifier })}</p>}
         {entity.textureCandidates.length > 0 && (
           <div>
-            <span>テクスチャ</span>
+            <span>{t("entryPreview.texture")}</span>
             <Select
-              aria-label="テクスチャ候補"
+              aria-label={t("entryPreview.textureCandidate")}
               className="preview__variant-select"
               options={entity.textureCandidates.map((candidate) => ({
                 value: candidateKey(candidate),
-                label: candidate.confidence === "high" ? candidate.asset.resourceId : `候補: ${candidate.asset.resourceId}`,
+                label: candidate.confidence === "high"
+                  ? candidate.asset.resourceId
+                  : t("entryPreview.candidate", { value: candidate.asset.resourceId }),
               }))}
               value={selected ?? ""}
               onChange={(value) => onChange({ ...options, selectedTexture: value })}
@@ -211,104 +228,110 @@ function candidateKey(candidate: EntityPreviewManifest["textureCandidates"][numb
   return `${candidate.asset.sourceId}:${candidate.asset.archivePath}`;
 }
 
-function itemOptionLabel(option: ItemPreviewManifest["variants"][number]["options"][number]) {
-  if (option.fallback) return "既定";
-  if (typeof option.value === "string") return propertyValueLabel(option.value);
-  if (typeof option.value === "boolean") return propertyValueLabel(String(option.value));
+type PreviewTranslator = ReturnType<typeof useT>;
+
+function itemOptionLabel(option: ItemPreviewManifest["variants"][number]["options"][number], t: PreviewTranslator) {
+  if (option.fallback) return t("entryPreview.fallback");
+  if (typeof option.value === "string") return propertyValueLabel(option.value, undefined, t);
+  if (typeof option.value === "boolean") return propertyValueLabel(String(option.value), undefined, t);
   if (option.value !== null) return JSON.stringify(option.value);
   return option.id;
 }
 
-const PROPERTY_LABELS: Record<string, string> = {
-  age: "成長段階",
-  attachment: "取り付け位置",
-  attached: "接続状態",
-  axis: "軸",
-  face: "設置面",
-  facing: "向き",
-  facing_direction: "向き",
-  half: "上下",
-  hinge: "開く向き",
-  layers: "層",
-  level: "段階",
-  lit: "点灯状態",
-  mode: "モード",
-  moisture: "湿り気",
-  open: "開閉状態",
-  orientation: "向き",
-  part: "部位",
-  powered: "作動状態",
-  rotation: "回転",
-  shape: "形",
-  snowy: "積雪状態",
-  type: "種類",
-  waterlogged: "水没状態",
-};
+const PROPERTY_LABELS = {
+  age: "entryPreview.property.age",
+  attachment: "entryPreview.property.attachment",
+  attached: "entryPreview.property.attached",
+  axis: "entryPreview.property.axis",
+  face: "entryPreview.property.face",
+  facing: "entryPreview.property.facing",
+  facing_direction: "entryPreview.property.facing",
+  half: "entryPreview.property.half",
+  hinge: "entryPreview.property.hinge",
+  layers: "entryPreview.property.layers",
+  level: "entryPreview.property.level",
+  lit: "entryPreview.property.lit",
+  mode: "entryPreview.property.mode",
+  moisture: "entryPreview.property.moisture",
+  open: "entryPreview.property.open",
+  orientation: "entryPreview.property.orientation",
+  part: "entryPreview.property.part",
+  powered: "entryPreview.property.powered",
+  rotation: "entryPreview.property.rotation",
+  shape: "entryPreview.property.shape",
+  snowy: "entryPreview.property.snowy",
+  type: "entryPreview.property.type",
+  waterlogged: "entryPreview.property.waterlogged",
+} as const;
 
-const VALUE_LABELS: Record<string, string> = {
-  ascending_east: "東上り",
-  ascending_north: "北上り",
-  ascending_south: "南上り",
-  ascending_west: "西上り",
-  bottom: "下",
-  ceiling: "天井",
-  down: "下",
-  east: "東",
-  false: "なし",
-  floor: "床",
-  horizontal: "水平",
-  inner_left: "内側・左",
-  inner_right: "内側・右",
-  left: "左",
-  low: "低",
-  north: "北",
-  north_east: "北東",
-  north_south: "南北",
-  north_west: "北西",
-  off: "オフ",
-  on: "オン",
-  outer_left: "外側・左",
-  outer_right: "外側・右",
-  right: "右",
-  single: "単体",
-  south: "南",
-  south_east: "南東",
-  east_west: "東西",
-  south_west: "南西",
-  straight: "まっすぐ",
-  tall: "高",
-  top: "上",
-  true: "あり",
-  up: "上",
-  vertical: "垂直",
-  wall: "壁",
-  west: "西",
-};
+const VALUE_LABELS = {
+  ascending_east: "entryPreview.value.ascendingEast",
+  ascending_north: "entryPreview.value.ascendingNorth",
+  ascending_south: "entryPreview.value.ascendingSouth",
+  ascending_west: "entryPreview.value.ascendingWest",
+  bottom: "entryPreview.value.bottom",
+  ceiling: "entryPreview.value.ceiling",
+  down: "entryPreview.value.down",
+  east: "entryPreview.value.east",
+  false: "entryPreview.value.false",
+  floor: "entryPreview.value.floor",
+  horizontal: "entryPreview.value.horizontal",
+  inner_left: "entryPreview.value.innerLeft",
+  inner_right: "entryPreview.value.innerRight",
+  left: "entryPreview.value.left",
+  low: "entryPreview.value.low",
+  north: "entryPreview.value.north",
+  north_east: "entryPreview.value.northEast",
+  north_south: "entryPreview.value.northSouth",
+  north_west: "entryPreview.value.northWest",
+  off: "entryPreview.value.off",
+  on: "entryPreview.value.on",
+  outer_left: "entryPreview.value.outerLeft",
+  outer_right: "entryPreview.value.outerRight",
+  right: "entryPreview.value.right",
+  single: "entryPreview.value.single",
+  south: "entryPreview.value.south",
+  south_east: "entryPreview.value.southEast",
+  east_west: "entryPreview.value.eastWest",
+  south_west: "entryPreview.value.southWest",
+  straight: "entryPreview.value.straight",
+  tall: "entryPreview.value.tall",
+  top: "entryPreview.value.top",
+  true: "entryPreview.value.true",
+  up: "entryPreview.value.up",
+  vertical: "entryPreview.value.vertical",
+  wall: "entryPreview.value.wall",
+  west: "entryPreview.value.west",
+} as const;
 
-const PROPERTY_VALUE_LABELS: Record<string, Record<string, string>> = {
-  lit: { false: "消灯", true: "点灯" },
-  open: { false: "閉", true: "開" },
-};
+const PROPERTY_VALUE_LABELS = {
+  lit: { false: "entryPreview.value.litFalse", true: "entryPreview.value.litTrue" },
+  open: { false: "entryPreview.value.openFalse", true: "entryPreview.value.openTrue" },
+} as const;
 
-function propertyLabel(property: string) {
-  return PROPERTY_LABELS[property] ?? property;
+function propertyLabel(property: string, t: PreviewTranslator) {
+  const key = PROPERTY_LABELS[property as keyof typeof PROPERTY_LABELS];
+  return key ? t(key) : property;
 }
 
-function propertyValueLabel(value: string, property?: string) {
-  const propertyLabel = property ? PROPERTY_VALUE_LABELS[property]?.[value] : undefined;
-  if (propertyLabel) return propertyLabel;
-  if (property === "axis" && /^[xyz]$/i.test(value)) return `${value.toUpperCase()}軸`;
-  return VALUE_LABELS[value] ?? value;
+function propertyValueLabel(value: string, property: string | undefined, t: PreviewTranslator) {
+  const propertyValueKey = property === "lit" || property === "open"
+    ? PROPERTY_VALUE_LABELS[property][value as "false" | "true"]
+    : undefined;
+  if (propertyValueKey) return t(propertyValueKey);
+  if (property === "axis" && /^[xyz]$/i.test(value)) return t("entryPreview.axis", { axis: value.toUpperCase() });
+  const valueKey = VALUE_LABELS[value as keyof typeof VALUE_LABELS];
+  return valueKey ? t(valueKey) : value;
 }
 
-function variantSelectorLabel(selector: string, id: string) {
+function variantSelectorLabel(selector: string, id: string, t: PreviewTranslator) {
   const label = selector || id;
   return label.split(",").map((part) => {
     const separator = part.indexOf("=");
-    if (separator < 0) return propertyValueLabel(part.trim());
+    if (separator < 0) return propertyValueLabel(part.trim(), undefined, t);
     const property = part.slice(0, separator).trim();
     const value = part.slice(separator + 1).trim();
-    return `${propertyLabel(property)}=${propertyValueLabel(value, property)}`;
+    return `${propertyLabel(property, t)}=${propertyValueLabel(value, property, t)}`;
   }).join(" / ");
 }
 

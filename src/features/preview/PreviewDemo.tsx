@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Preview } from "./Preview";
+import { useT, useUiLanguage } from "../../i18n";
 import "./preview-demo.css";
 import type {
   AssetLocation,
@@ -14,18 +15,20 @@ import type {
 
 const CASES = ["cube_all", "stairs", "stairs rotated", "generated item", "missing texture"] as const;
 type DemoCase = (typeof CASES)[number];
-const CASE_LABELS: Record<DemoCase, string> = {
-  cube_all: "全面テクスチャ",
-  stairs: "階段",
-  "stairs rotated": "回転した階段",
-  "generated item": "生成アイテム",
-  "missing texture": "テクスチャなし",
+const CASE_MESSAGE_KEYS: Record<DemoCase, "preview.demoCase.cubeAll" | "preview.demoCase.stairs" | "preview.demoCase.rotatedStairs" | "preview.demoCase.generatedItem" | "preview.demoCase.missingTexture"> = {
+  cube_all: "preview.demoCase.cubeAll",
+  stairs: "preview.demoCase.stairs",
+  "stairs rotated": "preview.demoCase.rotatedStairs",
+  "generated item": "preview.demoCase.generatedItem",
+  "missing texture": "preview.demoCase.missingTexture",
 };
 
 const GRASS_ASSET = asset("assets/demo/textures/block/cube_all.png", "texture_block");
 const ITEM_ASSET = asset("assets/demo/textures/item/generated.png", "texture_item");
 
 export function PreviewDemo() {
+  const t = useT();
+  const uiLanguage = useUiLanguage();
   const [selected, setSelected] = useState<DemoCase>(CASES[0]);
   const assets = useMemo(() => createDemoTextureBytes(), []);
   const getTextureBytes = useCallback(async (texturePath: string) => {
@@ -50,10 +53,10 @@ export function PreviewDemo() {
   }, []);
 
   return (
-    <main className="preview-demo">
+    <main className="preview-demo" lang={uiLanguage} dir="auto">
       <header className="preview-demo__header">
-        <h1>プレビューの動作確認</h1>
-        <nav aria-label="プレビュー例">
+        <h1>{t("preview.demoTitle")}</h1>
+        <nav aria-label={t("preview.demoExamples")}>
           {CASES.map((name) => (
             <button
               key={name}
@@ -61,7 +64,7 @@ export function PreviewDemo() {
               aria-pressed={selected === name}
               onClick={() => setSelected(name)}
             >
-              {CASE_LABELS[name]}
+              {t(CASE_MESSAGE_KEYS[name])}
             </button>
           ))}
         </nav>

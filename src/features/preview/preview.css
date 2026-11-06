@@ -12,6 +12,19 @@
   color: var(--color-text-primary);
 }
 
+.editor-entry-preview:lang(ar),
+.editor-entry-preview:lang(fa),
+.editor-entry-preview:lang(he),
+.editor-entry-preview:lang(yi),
+.editor-entry-preview:lang(zlm),
+.preview:lang(ar),
+.preview:lang(fa),
+.preview:lang(he),
+.preview:lang(yi),
+.preview:lang(zlm) {
+  direction: rtl;
+}
+
 .preview__toolbar {
   z-index: 2;
   display: flex;
@@ -62,6 +75,20 @@
   min-height: 220px;
   overflow: hidden;
   background: var(--color-preview-background);
+  /* 右横書きでもMinecraft風の表示と左右固定のオーバーレイは既存の配置を保つ。 */
+  direction: ltr;
+}
+
+.preview__viewport :is(
+  .preview__fallback,
+  .preview__notice,
+  .preview__texture-select,
+  .preview__checker-toggle,
+  .preview__missing,
+  .preview__candidate,
+  .preview__model-view
+):is(:lang(ar), :lang(fa), :lang(he), :lang(yi), :lang(zlm)) {
+  direction: rtl;
 }
 
 .preview__canvas {
@@ -240,6 +267,8 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+  direction: ltr;
+  text-align: left;
 }
 
 .preview__model-view pre {
@@ -252,6 +281,7 @@
   font: 10px/1.45 ui-monospace, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  direction: ltr;
 }
 
 .editor-inspector__preview-area {
