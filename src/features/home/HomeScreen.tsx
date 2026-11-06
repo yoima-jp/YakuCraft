@@ -19,6 +19,7 @@ import { useProjectStore } from "../../stores/projectStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useScanStore } from "../scan/scanStore";
 import { UpdaterNotice } from "../updater/UpdaterNotice";
+import { formatDateTime, formatNumber, t, useT } from "../../i18n";
 import "./HomeScreen.css";
 
 // 解析中はこの画面がアンマウントされるため、世代番号は画面の再生成をまたいで保持する。
@@ -37,10 +38,11 @@ function isSupportedArchivePath(path: string) {
 function errorMessage(error: unknown) {
   void logFrontendError(error, "home screen");
   if (error instanceof AppCommandError) return error.message;
-  return "処理に失敗しました。もう一度お試しください。";
+  return t("common.operationFailed");
 }
 
 export function HomeScreen() {
+  const translate = useT();
   const terminalJobIds = useRef(new Set<string>());
   const activeJobId = useRef<string | null>(null);
   const deletingProjectIdRef = useRef<string | null>(null);
@@ -101,13 +103,13 @@ export function HomeScreen() {
       if (!fromAnalysis || useAppStore.getState().route === "analyze") await goTo("review");
       return;
     }
-    setOperationProgress({ percent: null, message: "翻訳データを読み込んでいます" });
+    setOperationProgress({ percent: null, message: translate("common.loadingTranslations") });
     const entries = await listEntries(modUnits[0]?.id ?? null);
     if (generation !== currentAnalysisGeneration) return;
     useEditorStore.getState().loadEntries(entries, details.project.id);
     setOperationProgress(null);
     if (!fromAnalysis || useAppStore.getState().route === "analyze") await goTo("editor");
-  }, [goTo, setModUnits, setOperationProgress, setProjectDetails]);
+  }, [goTo, setModUnits, setOperationProgress, setProjectDetails, translate]);
 
   const resumeProject = useCallback(async (projectId: string) => {
     const generation = ++currentAnalysisGeneration;
@@ -122,8 +124,8 @@ export function HomeScreen() {
         && useProjectStore.getState().details?.project.id !== projectId
         && !(await flushBeforeLeavingEditor())
       ) return;
-      setOperationTitle("プロジェクトを開いています");
-      setOperationProgress({ percent: 0, message: "プロジェクトを開いています" });
+      setOperationTitle(translate("home.openingProject"));
+      setOperationProgress({ percent: 0, message: translate("home.openingProject") });
       await goTo("loading");
       const details = await openProject(projectId, (progress) => setOperationProgress(progress));
       if (generation !== currentAnalysisGeneration) return;
@@ -135,7 +137,7 @@ export function HomeScreen() {
         await goTo("home");
       }
     }
-  }, [cancelActiveAnalysis, goTo, setModImportFailures, setOperationProgress, setOperationTitle, setProjectOpenError, setScanCreationComplete, switchProject]);
+  }, [cancelActiveAnalysis, goTo, setModImportFailures, setOperationProgress, setOperationTitle, setProjectOpenError, setScanCreationComplete, switchProject, translate]);
 
   const handleAnalysisEvent = useCallback((event: AnalysisChannelEvent, generation: number) => {
     if (generation !== currentAnalysisGeneration) return;
@@ -182,7 +184,7 @@ export function HomeScreen() {
       ? paths
       : paths.filter(isSupportedArchivePath);
     if (jarPaths.length === 0) {
-      setError("JAR またはシェーダー ZIP を選んでください。");
+      setError(translate("home.invalidArchives"));
       return;
     }
 
@@ -215,7 +217,7 @@ export function HomeScreen() {
         });
       }
     })();
-  }, [cancelActiveAnalysis, goTo, handleAnalysisEvent, setAnalysisError, setAnalysisJobId, setProjectOpenError, setScanCreationComplete, setSourceJar]);
+  }, [cancelActiveAnalysis, goTo, handleAnalysisEvent, setAnalysisError, setAnalysisJobId, setProjectOpenError, setScanCreationComplete, setSourceJar, translate]);
 
   const handleJarPath = useCallback((path: string) => handleJarPaths([path]), [handleJarPaths]);
 
@@ -248,9 +250,9 @@ export function HomeScreen() {
     } else if (paths.length === 1) {
       void handleFolder(paths[0]);
     } else {
-      setError("JAR、シェーダー ZIP またはフォルダを選んでください。");
+      setError(translate("home.invalidDrop"));
     }
-  }, [handleJarPaths, handleFolder]);
+  }, [handleJarPaths, handleFolder, translate]);
 
   const chooseJar = useCallback(async () => {
     setError(null);
@@ -259,15 +261,15 @@ export function HomeScreen() {
       const selectedPath = await openFileDialog({
         multiple: true,
         directory: false,
-        filters: [{ name: "JAR / シェーダー ZIP", extensions: ["jar", "zip"] }],
+        filters: [{ name: translate("home.fileFilter"), extensions: ["jar", "zip"] }],
       });
       if (typeof selectedPath === "string") handleJarPath(selectedPath);
       else if (selectedPath) handleJarPaths(selectedPath);
     } catch (cause: unknown) {
       void logFrontendError(cause, "home file picker");
-      setError("ファイルを選べませんでした。もう一度お試しください。");
+      setError(translate("home.filePickerError"));
     }
-  }, [handleJarPath, handleJarPaths, setProjectOpenError]);
+  }, [handleJarPath, handleJarPaths, setProjectOpenError, translate]);
 
   const chooseModsFolder = useCallback(async () => {
     setError(null);
@@ -278,9 +280,9 @@ export function HomeScreen() {
       if (path) await handleFolder(path);
     } catch (cause: unknown) {
       void logFrontendError(cause, "home folder picker");
-      setError("フォルダを選べませんでした。もう一度お試しください。");
+      setError(translate("home.folderPickerError"));
     }
-  }, [handleFolder, setProjectOpenError]);
+  }, [handleFolder, setProjectOpenError, translate]);
 
   const refreshRecentProjects = useCallback(async () => {
     try {
@@ -403,14 +405,14 @@ export function HomeScreen() {
       })
       .catch((cause: unknown) => {
         void logFrontendError(cause, "home drag and drop setup");
-        if (active) setError("ドラッグできませんでした。ファイルを選んでください。");
+        if (active) setError(translate("home.dragDropError"));
       });
 
     return () => {
       active = false;
       unlisten?.();
     };
-  }, [handleDroppedPaths]);
+  }, [handleDroppedPaths, translate]);
 
   useEffect(() => {
     const openJarPicker = () => void chooseJar();
@@ -424,22 +426,22 @@ export function HomeScreen() {
       aria-labelledby="home-title"
     >
       <DropArea isDragging={dragState === "valid"}>
-        <h1 className="page-title" id="home-title">JAR・シェーダーパックをドロップ</h1>
+        <h1 className="page-title" id="home-title">{translate("home.title")}</h1>
         {dragState === "invalid" && (
-          <output className="home-screen__drop-message" aria-live="polite">JAR、シェーダー ZIP またはフォルダを選んでください。</output>
+          <output className="home-screen__drop-message" aria-live="polite">{translate("home.invalidDrop")}</output>
         )}
         <div className="home-screen__actions">
-          <Tooltip content="JAR・シェーダー ZIP を選ぶ" shortcut="Ctrl+O">
+          <Tooltip content={translate("home.chooseArchiveTooltip")} shortcut="Ctrl+O">
             <PrimaryButton
               data-testid="home-open-jar"
               onClick={() => void chooseJar()}
               aria-keyshortcuts="Control+O"
             >
-              ファイルを選ぶ
+              {translate("home.chooseFile")}
             </PrimaryButton>
           </Tooltip>
           <SecondaryButton data-testid="home-open-mods-folder" onClick={() => void chooseModsFolder()}>
-            フォルダを選ぶ
+            {translate("home.chooseFolder")}
           </SecondaryButton>
         </div>
       </DropArea>
@@ -447,7 +449,7 @@ export function HomeScreen() {
       {(error ?? projectOpenError) && <p className="status-message" role="alert">{error ?? projectOpenError}</p>}
       {visibleRecentProjects.length > 0 && (
         <section className="recent-projects" aria-labelledby="recent-projects-title">
-          <h2 id="recent-projects-title">最近のプロジェクト</h2>
+          <h2 id="recent-projects-title">{translate("home.recentProjects")}</h2>
           <ul className="recent-projects__list">
             {visibleRecentProjects.map((project) => {
               const total = project.translationProgress.translated + project.translationProgress.missing;
@@ -463,7 +465,7 @@ export function HomeScreen() {
                         autoCorrect="off"
                         autoCapitalize="off"
                         spellCheck={false}
-                        aria-label="プロジェクト名"
+                        aria-label={translate("home.projectName")}
                         value={projectNameDraft}
                         onChange={(event) => setProjectNameDraft(event.currentTarget.value)}
                         onBlur={() => {
@@ -490,10 +492,10 @@ export function HomeScreen() {
                         }}
                       />
                       <span className="recent-projects__meta">
-                        {project.modVersion ?? "バージョン不明"} · {project.translationProgress.translated.toLocaleString("ja-JP")} / {total.toLocaleString("ja-JP")} 翻訳済み
+                        {project.modVersion ?? translate("home.unknownVersion")} · {translate("home.translationProgress", { translated: formatNumber(project.translationProgress.translated), total: formatNumber(total) })}
                       </span>
                       <time className="recent-projects__date" dateTime={project.lastOpened}>
-                        {new Date(project.lastOpened).toLocaleString("ja-JP")}
+                        {formatDateTime(project.lastOpened)}
                       </time>
                     </div>
                   ) : (
@@ -504,20 +506,20 @@ export function HomeScreen() {
                     >
                       <span className="recent-projects__name">{project.displayName}</span>
                       <span className="recent-projects__meta">
-                        {project.modVersion ?? "バージョン不明"} · {project.translationProgress.translated.toLocaleString("ja-JP")} / {total.toLocaleString("ja-JP")} 翻訳済み
+                        {project.modVersion ?? translate("home.unknownVersion")} · {translate("home.translationProgress", { translated: formatNumber(project.translationProgress.translated), total: formatNumber(total) })}
                       </span>
                       <time className="recent-projects__date" dateTime={project.lastOpened}>
-                        {new Date(project.lastOpened).toLocaleString("ja-JP")}
+                        {formatDateTime(project.lastOpened)}
                       </time>
                     </button>
                   )}
                   {renamingProjectId !== project.id && (
                     <TertiaryButton
-                      aria-label={`${project.displayName}を削除`}
+                      aria-label={translate("home.deleteProject", { name: project.displayName })}
                       disabled={deletingProjectId !== null}
                       onClick={() => setProjectPendingDeletion(project.id)}
                     >
-                      削除
+                      {translate("common.delete")}
                     </TertiaryButton>
                   )}
                 </li>
@@ -526,7 +528,7 @@ export function HomeScreen() {
           </ul>
           {recentContextMenu.position && contextMenuProjectId && (
             <ContextMenu
-              label={`${recentProjects.find((project) => project.id === contextMenuProjectId)?.displayName ?? "プロジェクト"}の操作`}
+              label={translate("home.projectActions", { name: recentProjects.find((project) => project.id === contextMenuProjectId)?.displayName ?? translate("home.projectFallbackName") })}
               position={recentContextMenu.position}
               onClose={() => { recentContextMenu.close(); setContextMenuProjectId(null); }}
             >
@@ -534,7 +536,7 @@ export function HomeScreen() {
                 disabled={deletingProjectId !== null}
                 onClick={() => void resumeProject(contextMenuProjectId)}
               >
-                開く
+                {translate("home.openProject")}
               </ContextMenuItem>
               <ContextMenuItem
                 disabled={deletingProjectId !== null}
@@ -543,7 +545,7 @@ export function HomeScreen() {
                   if (project) beginProjectRename(project.id, project.displayName);
                 }}
               >
-                名前を変更
+                {translate("home.renameProject")}
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem
@@ -551,7 +553,7 @@ export function HomeScreen() {
                 disabled={deletingProjectId !== null}
                 onClick={() => setProjectPendingDeletion(contextMenuProjectId)}
               >
-                削除
+                {translate("common.delete")}
               </ContextMenuItem>
             </ContextMenu>
           )}
@@ -559,12 +561,12 @@ export function HomeScreen() {
       )}
       <Dialog
         open={projectPendingDeletion !== null}
-        title="このプロジェクトを削除しますか？"
+        title={translate("home.deleteProjectTitle")}
         onClose={() => setProjectPendingDeletion(null)}
       >
-        <p>翻訳データも削除されます。</p>
+        <p>{translate("home.deleteProjectDescription")}</p>
         <div className="home-screen__dialog-actions">
-          <SecondaryButton disabled={deletingProjectId !== null} onClick={() => setProjectPendingDeletion(null)}>キャンセル</SecondaryButton>
+          <SecondaryButton disabled={deletingProjectId !== null} onClick={() => setProjectPendingDeletion(null)}>{translate("common.cancel")}</SecondaryButton>
           <DestructiveButton
             disabled={deletingProjectId !== null}
             onClick={() => {
@@ -573,7 +575,7 @@ export function HomeScreen() {
               if (projectId) void removeRecentProject(projectId);
             }}
           >
-            削除
+            {translate("common.delete")}
           </DestructiveButton>
         </div>
       </Dialog>

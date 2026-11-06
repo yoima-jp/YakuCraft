@@ -5,6 +5,8 @@ import { PrimaryButton, SecondaryButton, TertiaryButton } from "../../components
 import { Checkbox, Disclosure, RadioGroup, Select } from "../../components/Controls";
 import { StepProgress } from "../../components/progress/StepProgress";
 import { localeDisplayName } from "../../lib/locale";
+import { compareText, formatNumber, t, useT } from "../../i18n";
+import { minecraftLanguageLabel, targetLanguageName } from "../../i18n/minecraftLanguages";
 import { AppCommandError, getReviewAssetSummary, listEntries, saveReviewSettings } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { useAppStore } from "../../stores/appStore";
@@ -30,12 +32,10 @@ const EMPTY_ASSET_SUMMARY: ProjectAssetSummaryDto = {
   unresolvedEntries: 0,
 };
 
-const MODPACK_UNIT_NAME = "Modpack 固有（クエスト・KubeJS）";
-
 function selectionKey(sourceLocale: string, namespaces: IncludedNamespaceDto[]) {
   const selections = namespaces
     .map(({ modUnitId, namespace }) => [modUnitId, namespace] as const)
-    .sort(([leftId, leftNamespace], [rightId, rightNamespace]) => leftId - rightId || leftNamespace.localeCompare(rightNamespace));
+    .sort(([leftId, leftNamespace], [rightId, rightNamespace]) => leftId - rightId || compareText(leftNamespace, rightNamespace));
   return JSON.stringify([sourceLocale.toLowerCase(), selections]);
 }
 
@@ -47,17 +47,21 @@ function minecraftVersionEvidence(detection: MinecraftVersionDetectionDto | null
   if (!detection) return null;
   if (detection.method === "metadata") {
     return detection.rounded
-      ? "Mod の対応範囲 " + (detection.originalValue ?? "") + " に近いバージョン"
-      : "Mod の対応範囲 " + (detection.originalValue ?? "") + " から判定";
+      ? t("review.modVersionNear", { version: detection.originalValue ?? "" })
+      : t("review.modVersionFrom", { version: detection.originalValue ?? "" });
   }
   if (detection.method === "packMcmeta") {
-    return "pack.mcmeta の " + (detection.originalValue ?? "値") + " から判定"
-      + (detection.rounded ? "（近いバージョン）" : "");
+    return detection.rounded
+      ? t("review.packVersionFromNear", { version: detection.originalValue ?? t("review.unknownPackValue") })
+      : t("review.packVersionFrom", { version: detection.originalValue ?? t("review.unknownPackValue") });
   }
-  return "リソース構造から推定" + (detection.rounded ? "（近いバージョン）" : "");
+  return detection.rounded
+    ? t("review.resourceVersionInferredNear")
+    : t("review.resourceVersionInferred");
 }
 
 export function ReviewScreen() {
+  const translate = useT();
   const details = useProjectStore((state) => state.details);
   const [step, setStep] = useState<ReviewStep>("mod");
   const [showSourceLanguageOptions, setShowSourceLanguageOptions] = useState(false);
@@ -151,7 +155,7 @@ export function ReviewScreen() {
       isNamespaceIncluded(includedNamespaces, item.modUnitId, item.namespace))) {
       counts.set(language.locale, (counts.get(language.locale) ?? 0) + language.entryCount);
     }
-    return [...counts].sort(([left], [right]) => left.localeCompare(right));
+    return [...counts].sort(([left], [right]) => compareText(left, right));
   }, [details, includedNamespaces]);
   const currentSelectionKey = selectionKey(sourceLocale, includedNamespaces);
   const persistedSelectionKey = details
@@ -163,16 +167,18 @@ export function ReviewScreen() {
   const reviewSummaryLoading = !reviewSummaryReady && reviewError === null;
   const currentReviewSummary = useMemo<ReviewSetupSummaryDto | null>(() => {
     if (!details) return null;
+    const loadedSummary = reviewSummaryState?.key === currentSelectionKey ? reviewSummaryState.summary : null;
     if (persistedSelectionsMatch) {
       return {
         existingTargetTranslationCount: details.existingTargetTranslationCount,
-        sameLanguageEntryCount: 0,
+        sameLanguageEntryCount: loadedSummary?.sameLanguageEntryCount ?? 0,
         missingSourceKeysCount: details.missingSourceKeysCount,
         assets: details.assetSummary ?? EMPTY_ASSET_SUMMARY,
       };
     }
-    return reviewSummaryState?.key === currentSelectionKey ? reviewSummaryState.summary : null;
+    return loadedSummary;
   }, [currentSelectionKey, details, persistedSelectionsMatch, reviewSummaryState]);
+  const currentReviewSummaryLoaded = reviewSummaryState?.key === currentSelectionKey;
   const displayedReviewSummary = useMemo(() => currentReviewSummary ?? (details ? {
     existingTargetTranslationCount: details.existingTargetTranslationCount,
     sameLanguageEntryCount: 0,
@@ -233,7 +239,7 @@ export function ReviewScreen() {
   }, [details?.recommendedSourceLocale, details?.targetLocale, setSourceLocale, sourceLocale, sourceLocales]);
 
   useEffect(() => {
-    if (!details || persistedSelectionsMatch || reviewSummaryState?.key === currentSelectionKey) return;
+    if (!details || reviewSummaryState?.key === currentSelectionKey) return;
     let active = true;
     setReviewError(null);
     void getReviewAssetSummary({
@@ -251,7 +257,7 @@ export function ReviewScreen() {
       void logFrontendError(error, "review summary");
       setReviewError(error instanceof AppCommandError
         ? error.appError
-        : { code: "unexpected", userMessage: "確認項目を読み込めませんでした。選択を変えて再試行してください。", recoverable: true });
+        : { code: "unexpected", userMessage: t("review.loadItemsError"), recoverable: true });
     });
     return () => {
       active = false;
@@ -260,7 +266,6 @@ export function ReviewScreen() {
     currentSelectionKey,
     details,
     includedNamespaces,
-    persistedSelectionsMatch,
     reviewSummaryState,
     reviewSummaryRetry,
     setReviewError,
@@ -289,8 +294,8 @@ export function ReviewScreen() {
     }
     setSaving(true);
     setReviewError(null);
-    setOperationTitle("翻訳を準備しています");
-    setOperationProgress({ percent: 0, message: "翻訳設定を保存しています" });
+    setOperationTitle(translate("review.preparingTranslation"));
+    setOperationProgress({ percent: 0, message: translate("review.savingSettings") });
     try {
       await goTo("loading");
       const missingSourceKeysCount = currentReviewSummary?.missingSourceKeysCount ?? 0;
@@ -303,7 +308,7 @@ export function ReviewScreen() {
         includedNamespaces: [...includedNamespaces],
       }, setOperationProgress);
       setProjectDetails(savedDetails);
-      setOperationProgress({ percent: null, message: "翻訳データを読み込んでいます" });
+      setOperationProgress({ percent: null, message: translate("common.loadingTranslations") });
       const entries = await listEntries(modUnits[0]?.id ?? null);
       useEditorStore.getState().loadEntries(entries, savedDetails.project.id);
       await goTo("editor");
@@ -312,7 +317,7 @@ export function ReviewScreen() {
       setOperationProgress(null);
       setReviewError(error instanceof AppCommandError
         ? error.appError
-        : { code: "unexpected", userMessage: "設定を保存できませんでした。もう一度お試しください。", recoverable: true });
+        : { code: "unexpected", userMessage: t("review.savingError"), recoverable: true });
       await goTo("review");
     } finally {
       setSaving(false);
@@ -321,26 +326,29 @@ export function ReviewScreen() {
   };
 
   if (!details) {
-    return <section className="focus-page review-screen"><output aria-live="polite">プロジェクトを読み込んでいます…</output></section>;
+    return <section className="focus-page review-screen"><output aria-live="polite">{translate("review.loadingProject")}</output></section>;
   }
 
   const currentStepIndex = visibleSteps.indexOf(step);
   const assetSummary = currentReviewSummary?.assets ?? details.assetSummary ?? EMPTY_ASSET_SUMMARY;
+  const existingTargetCount = currentReviewSummary?.existingTargetTranslationCount ?? 0;
+  const missingSourceKeyCount = currentReviewSummary?.missingSourceKeysCount ?? 0;
+  const sameLanguageEntryCount = currentReviewSummary?.sameLanguageEntryCount ?? 0;
   let content;
   switch (step) {
     case "mod":
       content = (
         <>
-          <h1 className="page-title">Mod情報を確認</h1>
+          <h1 className="page-title">{translate("review.modInfoTitle")}</h1>
           <dl className={`review-details${modUnits.length > 1 ? " review-details--mods" : ""}`}>
             {modUnits.length > 1 ? (
               <div>
-                <dt>対象合計 {modUnits.length.toLocaleString("ja-JP")} 件・名前空間 {details.namespaces.length.toLocaleString("ja-JP")} 件</dt>
+                <dt>{translate("review.totalTargets", { mods: formatNumber(modUnits.length), namespaces: formatNumber(details.namespaces.length) })}</dt>
                 <dd>
                   <ul
                     className="review-mod-list"
                     ref={modListRef}
-                    aria-label="プロジェクト内のMod"
+                    aria-label={translate("review.modsInProject")}
                     style={{ height: Math.min(348, Math.max(82, modListVirtualizer.getTotalSize())) }}
                   >
                     <li className="review-mod-list__space" aria-hidden="true" style={{ height: modListVirtualizer.getTotalSize() }} />
@@ -356,12 +364,12 @@ export function ReviewScreen() {
                           style={{ transform: `translateY(${virtualRow.start}px)` }}
                         >
                           <strong>{unit.sourceKind === "modpack"
-                            ? MODPACK_UNIT_NAME
+                            ? translate("review.modpackUnit")
                             : unit.sourceKind === "shaderpack"
-                              ? `シェーダーパック: ${unit.sourceFilename}`
-                              : unit.name ?? unit.modId ?? "不明"}</strong>
+                              ? translate("review.shaderpackFile", { filename: unit.sourceFilename })
+                              : unit.name ?? unit.modId ?? translate("review.unknown")}</strong>
                           {(unit.sourceKind === undefined || unit.sourceKind === "jar") && (
-                            <span className="review-mod-list__version">{unit.version ?? "バージョン不明"} · {unit.sourceFilename}</span>
+                            <span className="review-mod-list__version">{unit.version ?? translate("review.unknownVersion")} · {unit.sourceFilename}</span>
                           )}
                           {unit.sourceKind !== "shaderpack" && <div className="review-mod-list__namespaces">
                             {(namespacesByModUnit.get(unit.id) ?? []).map((namespace) => (
@@ -377,39 +385,39 @@ export function ReviewScreen() {
             ) : (
               <>
                 <div>
-                  <dt>ファイル</dt>
+                  <dt>{translate("review.file")}</dt>
                   <dd>{modUnits[0]?.sourceKind === "modpack"
-                    ? MODPACK_UNIT_NAME
+                    ? translate("review.modpackUnit")
                     : modUnits[0]?.sourceFilename ?? details.project.displayName}</dd>
                 </div>
                 {modUnits[0]?.sourceKind !== "shaderpack" && (
                   <>
-                    <div><dt>Mod名</dt><dd>{details.mods[0]?.name ?? "不明"}</dd></div>
-                    <div><dt>バージョン</dt><dd>{details.mods[0]?.version ?? "不明"}</dd></div>
+                    <div><dt>{translate("review.modName")}</dt><dd>{details.mods[0]?.name ?? translate("review.unknown")}</dd></div>
+                    <div><dt>{translate("review.version")}</dt><dd>{details.mods[0]?.version ?? translate("review.unknown")}</dd></div>
                     <div>
-                      <dt>Minecraft</dt>
+                      <dt>{translate("review.minecraft")}</dt>
                       <dd>
                         {details.minecraftVersionDetection
                           ? details.minecraftVersionDetection.version
-                          : details.mods[0]?.minecraftVersion ?? "不明"}
+                          : details.mods[0]?.minecraftVersion ?? translate("review.unknown")}
                         {details.minecraftVersionDetection && (
                           <small className="review-details__hint">{minecraftVersionEvidence(details.minecraftVersionDetection)}</small>
                         )}
                       </dd>
                     </div>
-                    <div><dt>ローダー</dt><dd>{details.mods[0]?.loader ?? "不明"}</dd></div>
+                    <div><dt>{translate("review.loader")}</dt><dd>{details.mods[0]?.loader ?? translate("review.unknown")}</dd></div>
                   </>
                 )}
                 <div>
-                  <dt>名前空間</dt>
-                  <dd>{details.namespaces.map((item) => item.namespace).join("、") || "不明"}</dd>
+                  <dt>{translate("review.namespaces")}</dt>
+                  <dd>{details.namespaces.map((item) => item.namespace).join(translate("review.namespaceSeparator")) || translate("review.unknown")}</dd>
                 </div>
               </>
             )}
           </dl>
           {modImportFailures.length > 0 && (
-            <section aria-label="読み込めなかったJAR" aria-live="polite">
-              <p>読み込めなかったJAR</p>
+            <section aria-label={translate("review.failedJars")} aria-live="polite">
+              <p>{translate("review.failedJars")}</p>
               <ul>
                 {modImportFailures.map((failure) => (
                   <li key={failure.filename}>{failure.filename} · {failure.reason}</li>
@@ -419,23 +427,25 @@ export function ReviewScreen() {
           )}
           {nestedModCount > 0 && nestedNamespaces.length > 0 && (
             <>
-              <p className="review-note">同梱Mod {nestedModCount}件</p>
-              <Disclosure className="review-nested" title="翻訳対象に含める">
+              <p className="review-note">{nestedModCount === 1
+                ? translate("review.nestedModCount_one", { count: formatNumber(nestedModCount) })
+                : translate("review.nestedModCount", { count: formatNumber(nestedModCount) })}</p>
+              <Disclosure className="review-nested" title={translate("review.includeTargets")}>
                 {modUnits.length > 1 ? (
                   <>
                     <div className="review-nested__bulk-actions">
-                      <TertiaryButton onClick={() => setAllNestedNamespaces(true)}>全選択</TertiaryButton>
-                      <TertiaryButton onClick={() => setAllNestedNamespaces(false)}>全解除</TertiaryButton>
+                      <TertiaryButton onClick={() => setAllNestedNamespaces(true)}>{translate("review.selectAll")}</TertiaryButton>
+                      <TertiaryButton onClick={() => setAllNestedNamespaces(false)}>{translate("review.clearAll")}</TertiaryButton>
                     </div>
                     <div className="review-nested__groups">
                       {nestedNamespaceGroups.map((group) => (
                         <Disclosure
                           className="review-nested__group"
                           key={group.key}
-                          title={`${group.name} · ${group.namespaces.length.toLocaleString("ja-JP")}`}
+                          title={translate("review.namespaceGroup", { name: group.name, count: formatNumber(group.namespaces.length) })}
                         >
                           <fieldset className="review-options">
-                            <legend className="visually-hidden">{group.name} の同梱Modの名前空間</legend>
+                            <legend className="visually-hidden">{translate("review.nestedNamespacesFor", { name: group.name })}</legend>
                             {group.namespaces.map((namespace) => (
                               <Checkbox
                                 className="review-option"
@@ -444,7 +454,7 @@ export function ReviewScreen() {
                                 checked={isNamespaceIncluded(includedNamespaces, namespace.modUnitId, namespace.namespace)}
                                 onChange={() => toggleNamespace(namespace.modUnitId, namespace.namespace)}
                               >
-                                {namespace.namespace} · {namespace.entryCount.toLocaleString("ja-JP")}
+                                {namespace.namespace} · {formatNumber(namespace.entryCount)}
                               </Checkbox>
                             ))}
                           </fieldset>
@@ -454,7 +464,7 @@ export function ReviewScreen() {
                   </>
                 ) : (
                   <fieldset className="review-options">
-                    <legend className="visually-hidden">同梱Modの名前空間</legend>
+                    <legend className="visually-hidden">{translate("review.nestedNamespaces")}</legend>
                     {nestedNamespaces.map((namespace) => (
                       <Checkbox
                         className="review-option"
@@ -463,7 +473,7 @@ export function ReviewScreen() {
                         checked={isNamespaceIncluded(includedNamespaces, namespace.modUnitId, namespace.namespace)}
                         onChange={() => toggleNamespace(namespace.modUnitId, namespace.namespace)}
                       >
-                        {namespace.namespace} · {namespace.entryCount.toLocaleString("ja-JP")}
+                        {namespace.namespace} · {formatNumber(namespace.entryCount)}
                       </Checkbox>
                     ))}
                   </fieldset>
@@ -477,31 +487,37 @@ export function ReviewScreen() {
     case "sourceLanguage":
       content = (
         <>
-          <h1 className="page-title">翻訳元を確認</h1>
+          <h1 className="page-title">{translate("review.sourceLanguageTitle")}</h1>
           <div className="review-summary">
             <div className="review-summary__heading">
               <div>
-                <p className="review-summary__label">翻訳元</p>
+                <p className="review-summary__label">{translate("review.sourceLanguage")}</p>
                 <p className="review-summary__value">{localeDisplayName(sourceLocale)}</p>
+              </div>
+              <div>
+                <p className="review-summary__label">{translate("review.targetLanguage")}</p>
+                <p className="review-summary__value">{minecraftLanguageLabel(details.targetLocale)}</p>
               </div>
               {sourceLocales.length > 1 && <TertiaryButton
                 aria-controls="source-language-options"
                 aria-expanded={showSourceLanguageOptions}
                 onClick={() => setShowSourceLanguageOptions((visible) => !visible)}
               >
-                {showSourceLanguageOptions ? "閉じる" : "変更"}
+                {showSourceLanguageOptions ? translate("review.close") : translate("review.change")}
               </TertiaryButton>}
             </div>
             <p className="review-summary__meta">
-              {modUnits.length > 1 && "全対象合計 · "}
-              {selectedLocaleCount.toLocaleString("ja-JP")} 件
-              {details.recommendedSourceLocale?.toLowerCase() === sourceLocale.toLowerCase() && <span>おすすめ</span>}
+              {modUnits.length > 1 && <>{translate("review.allTargets")} · </>}
+              {selectedLocaleCount === 1
+                ? translate("review.sourceLocaleEntries_one", { count: formatNumber(selectedLocaleCount) })
+                : translate("review.sourceLocaleEntries", { count: formatNumber(selectedLocaleCount) })}
+              {details.recommendedSourceLocale?.toLowerCase() === sourceLocale.toLowerCase() && <span>{translate("review.recommended")}</span>}
             </p>
             <div className="review-summary__selection" id="source-language-options" hidden={!showSourceLanguageOptions || sourceLocales.length < 2}>
               <div className="review-source-select">
-                <span>翻訳元言語</span>
+                <span>{translate("review.sourceLanguageSelect")}</span>
                 <Select
-                  aria-label="翻訳元言語"
+                  aria-label={translate("review.sourceLanguageSelect")}
                   value={sourceLocale}
                   onChange={setSourceLocale}
                   options={sourceLocales.map(([locale]) => ({ value: locale, label: localeDisplayName(locale) }))}
@@ -515,21 +531,26 @@ export function ReviewScreen() {
     case "existingTarget":
       content = (
         <>
-          <h1 className="page-title">既存の日本語訳を引き継ぎますか？</h1>
+          <h1 className="page-title">{translate("review.existingTargetTitle", { language: targetLanguageName(details.targetLocale) })}</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全対象合計で "}
-            {currentReviewSummary?.existingTargetTranslationCount.toLocaleString("ja-JP") ?? "0"} 件見つかりました
+            {modUnits.length > 1
+              ? existingTargetCount === 1
+                ? translate("review.existingTargetCountAll_one", { count: formatNumber(existingTargetCount) })
+                : translate("review.existingTargetCountAll", { count: formatNumber(existingTargetCount) })
+              : existingTargetCount === 1
+                ? translate("review.existingTargetCount_one", { count: formatNumber(existingTargetCount) })
+                : translate("review.existingTargetCount", { count: formatNumber(existingTargetCount) })}
           </p>
           <RadioGroup
             className="review-options"
             optionClassName="review-option"
-            legend="既存の日本語訳"
+            legend={translate("review.existingTargetLegend", { language: targetLanguageName(details.targetLocale) })}
             name="preserve-japanese"
             value={preserveTarget ? "preserve" : "clear"}
             onChange={(value) => setPreserveTarget(value === "preserve")}
             options={[
-              { value: "preserve", label: "そのまま引き継ぐ" },
-              { value: "clear", label: "すべて新しく翻訳する" },
+              { value: "preserve", label: translate("review.preserveExisting") },
+              { value: "clear", label: translate("review.replaceAll") },
             ]}
           />
         </>
@@ -538,21 +559,26 @@ export function ReviewScreen() {
     case "missingKeys":
       content = (
         <>
-          <h1 className="page-title">不足キーを補完しますか？</h1>
+          <h1 className="page-title">{translate("review.missingKeysTitle")}</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全対象合計で "}
-            翻訳元にないキーが {currentReviewSummary?.missingSourceKeysCount.toLocaleString("ja-JP") ?? "0"} 件あります
+            {modUnits.length > 1
+              ? missingSourceKeyCount === 1
+                ? translate("review.missingKeysCountAll_one", { count: formatNumber(missingSourceKeyCount) })
+                : translate("review.missingKeysCountAll", { count: formatNumber(missingSourceKeyCount) })
+              : missingSourceKeyCount === 1
+                ? translate("review.missingKeysCount_one", { count: formatNumber(missingSourceKeyCount) })
+                : translate("review.missingKeysCount", { count: formatNumber(missingSourceKeyCount) })}
           </p>
           <RadioGroup
             className="review-options"
             optionClassName="review-option"
-            legend="不足キーの扱い"
+            legend={translate("review.missingKeysLegend")}
             name="fill-missing-keys"
             value={fillMissingSourceKeys ? "fill" : "empty"}
             onChange={(value) => setFillMissingSourceKeys(value === "fill")}
             options={[
-              { value: "fill", label: "他の言語から補完する", disabled: saving },
-              { value: "empty", label: "空欄のままにする", disabled: saving },
+              { value: "fill", label: translate("review.fillFromOtherLanguages"), disabled: saving },
+              { value: "empty", label: translate("review.leaveEmpty"), disabled: saving },
             ]}
           />
         </>
@@ -561,17 +587,22 @@ export function ReviewScreen() {
     case "assets":
       content = (
         <>
-          <h1 className="page-title">プレビュー用アセット</h1>
+          <h1 className="page-title">{translate("review.assetsTitle")}</h1>
           <p className="review-description">
-            {modUnits.length > 1 && "全対象合計で "}
-            プレビューに使えるアセットを {assetSummary.total.toLocaleString("ja-JP")} 件見つけました
+            {modUnits.length > 1
+              ? assetSummary.total === 1
+                ? translate("review.assetsCountAll_one", { count: formatNumber(assetSummary.total) })
+                : translate("review.assetsCountAll", { count: formatNumber(assetSummary.total) })
+              : assetSummary.total === 1
+                ? translate("review.assetsCount_one", { count: formatNumber(assetSummary.total) })
+                : translate("review.assetsCount", { count: formatNumber(assetSummary.total) })}
           </p>
           <dl className="review-details">
-            <div><dt>ブロックモデル</dt><dd>{(assetSummary?.blockModels ?? 0).toLocaleString("ja-JP")}</dd></div>
-            <div><dt>アイテムモデル</dt><dd>{(assetSummary?.itemModels ?? 0).toLocaleString("ja-JP")}</dd></div>
-            <div><dt>エンティティのテクスチャ</dt><dd>{(assetSummary?.entityTextures ?? 0).toLocaleString("ja-JP")}</dd></div>
-            <div><dt>ジオメトリモデル</dt><dd>{(assetSummary?.geometryModels ?? 0).toLocaleString("ja-JP")}</dd></div>
-            <div><dt>未解決の項目</dt><dd>{(assetSummary?.unresolvedEntries ?? 0).toLocaleString("ja-JP")}</dd></div>
+            <div><dt>{translate("review.blockModels")}</dt><dd>{formatNumber(assetSummary.blockModels)}</dd></div>
+            <div><dt>{translate("review.itemModels")}</dt><dd>{formatNumber(assetSummary.itemModels)}</dd></div>
+            <div><dt>{translate("review.entityTextures")}</dt><dd>{formatNumber(assetSummary.entityTextures)}</dd></div>
+            <div><dt>{translate("review.geometryModels")}</dt><dd>{formatNumber(assetSummary.geometryModels)}</dd></div>
+            <div><dt>{translate("review.unresolvedItems")}</dt><dd>{formatNumber(assetSummary.unresolvedEntries)}</dd></div>
           </dl>
         </>
       );
@@ -579,10 +610,23 @@ export function ReviewScreen() {
   }
 
   return (
-    <section className="focus-page review-screen" aria-label="セットアップ確認">
+    <section className="focus-page review-screen" aria-label={translate("review.setupLabel")}>
       <StepProgress step={currentStepIndex + 1} total={visibleSteps.length} />
       <div className="review-panel" key={step}>
         {content}
+        {currentReviewSummaryLoaded && sameLanguageEntryCount > 0 && (
+          <output className="status-message" aria-live="polite">
+            {sameLanguageEntryCount === 1
+              ? translate("review.sameLanguageWarning_one", {
+                count: formatNumber(sameLanguageEntryCount),
+                language: targetLanguageName(details.targetLocale),
+              })
+              : translate("review.sameLanguageWarning", {
+                count: formatNumber(sameLanguageEntryCount),
+                language: targetLanguageName(details.targetLocale),
+              })}
+          </output>
+        )}
         {reviewSummaryLoading && (
           <output aria-live="polite">
             {/* 件数集計の進捗が未着の間はHTML progressの不確定表示を使う。 */}
@@ -593,25 +637,25 @@ export function ReviewScreen() {
                 && reviewSummaryProgress.progress.percent != null
                 ? { value: reviewSummaryProgress.progress.percent }
                 : {})}
-              aria-label="確認項目の進行状況"
+              aria-label={translate("review.progress")}
             />
             <span>{reviewSummaryProgress?.key === currentSelectionKey
               ? reviewSummaryProgress.progress.message
-              : "確認項目を読み込んでいます"}</span>
+              : translate("review.loadingItems")}</span>
           </output>
         )}
         {reviewError && <p className="status-message" role="alert">{reviewError.userMessage}</p>}
       </div>
       <footer className="review-actions">
-        <SecondaryButton disabled={saving || reviewSummaryLoading} onClick={goBack}>戻る</SecondaryButton>
+        <SecondaryButton disabled={saving || reviewSummaryLoading} onClick={goBack}>{translate("review.back")}</SecondaryButton>
         <PrimaryButton data-testid="review-next" disabled={saving || reviewSummaryLoading} onClick={() => void goNext()}>
           {reviewSummaryLoading
-            ? "集計中…"
+            ? translate("review.calculating")
             : reviewError && !reviewSummaryReady
-              ? "再試行"
+              ? translate("review.retry")
               : saving
-                ? (currentStepIndex === visibleSteps.length - 1 ? "保存中…" : "準備中…")
-                : currentStepIndex === visibleSteps.length - 1 ? "翻訳を始める" : "次へ"}
+                ? (currentStepIndex === visibleSteps.length - 1 ? translate("review.saving") : translate("review.preparing"))
+                : currentStepIndex === visibleSteps.length - 1 ? translate("review.startTranslation") : translate("review.next")}
         </PrimaryButton>
       </footer>
     </section>

@@ -53,7 +53,7 @@ export const useProjectStore = create<ProjectStore>()((set) => ({
   recentProjects: [],
   analysisProgress: null,
   operationProgress: null,
-  operationTitle: "読み込んでいます",
+  operationTitle: "",
   analysisJobId: null,
   analysisError: null,
   reviewError: null,

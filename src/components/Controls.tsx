@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 
 import { useDismiss } from "./useDismiss";
 import { isImeCompositionKeyDown } from "../lib/keyboard";
+import { lowerText, useT, useUiLanguage } from "../i18n";
 import "./form-controls.css";
 export { Tooltip } from "./Tooltip";
 export { Menu, MenuItem } from "./Menu";
@@ -58,11 +59,14 @@ export function Select({
   className,
   disabled = false,
   options,
-  placeholder = "選択",
+  placeholder,
   value,
   onChange,
   onBlur,
 }: SelectProps) {
+  const translate = useT();
+  const uiLanguage = useUiLanguage();
+  const resolvedPlaceholder = placeholder ?? translate("common.select");
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -147,7 +151,7 @@ export function Select({
       return;
     }
     if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      const query = `${typeaheadRef.current}${event.key}`.toLocaleLowerCase();
+      const query = lowerText(`${typeaheadRef.current}${event.key}`, uiLanguage);
       typeaheadRef.current = query;
       if (typeaheadTimerRef.current) clearTimeout(typeaheadTimerRef.current);
       typeaheadTimerRef.current = setTimeout(() => { typeaheadRef.current = ""; }, 700);
@@ -155,7 +159,7 @@ export function Select({
       let match = -1;
       for (let offset = 1; offset <= options.length; offset += 1) {
         const index = (start + offset + options.length) % options.length;
-        if (!options[index].disabled && options[index].label.toLocaleLowerCase().startsWith(query)) {
+        if (!options[index].disabled && lowerText(options[index].label, uiLanguage).startsWith(query)) {
           match = index;
           break;
         }
@@ -275,7 +279,7 @@ export function Select({
         onBlur={onBlur}
         onKeyDown={handleKeyDown}
       >
-        <span>{selectedOption?.label ?? placeholder}</span>
+        <span>{selectedOption?.label ?? resolvedPlaceholder}</span>
       </button>
       {menu}
     </span>
@@ -292,6 +296,8 @@ interface ComboboxProps {
 }
 
 export function Combobox({ id, value, options, disabled = false, "aria-describedby": describedBy, onChange }: ComboboxProps) {
+  const translate = useT();
+  const uiLanguage = useUiLanguage();
   const listId = useId();
   const rootRef = useRef<HTMLSpanElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -304,9 +310,9 @@ export function Combobox({ id, value, options, disabled = false, "aria-described
 
   // 未取得や独自モデルも入力できるようにし、候補は消さず一致順に並べる。
   const sortedOptions = useMemo(() => {
-    const query = value.toLocaleLowerCase();
+    const query = lowerText(value, uiLanguage);
     const rank = (option: string) => {
-      const text = option.toLocaleLowerCase();
+      const text = lowerText(option, uiLanguage);
       if (!query) return 0;
       if (text === query) return 0;
       if (text.startsWith(query)) return 1;
@@ -316,7 +322,7 @@ export function Combobox({ id, value, options, disabled = false, "aria-described
     return options.map((option, index) => ({ option, index, rank: rank(option) }))
       .sort((a, b) => a.rank - b.rank || a.index - b.index)
       .map(({ option }) => option);
-  }, [options, value]);
+  }, [options, uiLanguage, value]);
   const visible = open && options.length > 0 && !disabled;
   const choose = (index: number) => {
     const option = sortedOptions[index];
@@ -372,11 +378,11 @@ export function Combobox({ id, value, options, disabled = false, "aria-described
           } else if (event.key === "Tab") setOpen(false);
         }}
       />
-      {options.length > 0 && <button type="button" className="combobox__toggle" aria-label="候補を表示" tabIndex={-1} disabled={disabled}
+      {options.length > 0 && <button type="button" className="combobox__toggle" aria-label={translate("common.showSuggestions")} tabIndex={-1} disabled={disabled}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => { inputRef.current?.focus(); setOpen(!visible); setActiveIndex(-1); }}><span className="menu__icon" aria-hidden="true" /></button>}
       {visible && typeof document !== "undefined" && createPortal(
-        <div className="select__menu" id={`${listId}-listbox`} ref={menuRef} role="listbox" aria-label="モデル候補"
+        <div className="select__menu" id={`${listId}-listbox`} ref={menuRef} role="listbox" aria-label={translate("common.modelSuggestions")}
           data-placement={position.placement} style={{ top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
           {sortedOptions.map((option, index) => <div className="select__option" id={`${listId}-option-${index}`} key={option} role="option"
             aria-selected={option === value} data-active={index === activeIndex || undefined} tabIndex={-1}

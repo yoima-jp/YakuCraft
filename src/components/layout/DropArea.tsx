@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useT } from "../../i18n";
 
 interface DropAreaProps {
   isDragging: boolean;
@@ -6,12 +7,13 @@ interface DropAreaProps {
 }
 
 export function DropArea({ isDragging, children }: DropAreaProps) {
+  const translate = useT();
   const className = isDragging
     ? "drop-area drop-area--active"
     : "drop-area";
 
   return (
-    <section className={className} aria-label="JAR・シェーダーパックのドロップ領域">
+    <section className={className} aria-label={translate("common.dropArea")}>
       <svg className="drop-area__icon" viewBox="0 0 48 48" aria-hidden="true">
         <path d="M24 5v23m-9-9 9 9 9-9M8 31v8a4 4 0 0 0 4 4h24a4 4 0 0 0 4-4v-8" />
       </svg>

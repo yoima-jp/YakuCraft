@@ -10,11 +10,11 @@ export type AppRoute =
   | "settings";
 
 export const REVIEW_STEPS = [
-  "Mod情報",
-  "翻訳元",
-  "日本語訳",
-  "不足キー",
-  "アセット",
+  "review.stepModInfo",
+  "review.stepSourceLanguage",
+  "review.stepExistingTarget",
+  "review.stepMissingKeys",
+  "review.stepAssets",
 ] as const;
 
 export type ReviewStep = (typeof REVIEW_STEPS)[number];

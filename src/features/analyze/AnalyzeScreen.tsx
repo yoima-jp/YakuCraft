@@ -8,6 +8,7 @@ import { logFrontendError } from "../../lib/errorLogging";
 import { useAppStore } from "../../stores/appStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useScanStore } from "../scan/scanStore";
+import { formatNumber, useT } from "../../i18n";
 import "./AnalyzeScreen.css";
 
 const STAGES = [
@@ -22,6 +23,7 @@ const STAGES = [
 ];
 
 export function AnalyzeScreen() {
+  const translate = useT();
   const [cancelRequested, setCancelRequested] = useState(false);
   const fileName = useProjectStore((state) => state.sourceFileName);
   const progress = useProjectStore((state) => state.analysisProgress);
@@ -48,7 +50,7 @@ export function AnalyzeScreen() {
       await cancelAnalysis(jobId);
     } catch (error: unknown) {
       void logFrontendError(error, "cancel analysis");
-      const message = error instanceof AppCommandError ? error.message : "処理を中止できませんでした。";
+      const message = error instanceof AppCommandError ? error.message : translate("analyze.cancelError");
       setCancelRequested(false);
       setAnalysisError(error instanceof AppCommandError
         ? error.appError
@@ -62,22 +64,22 @@ export function AnalyzeScreen() {
         <p className="eyebrow">{fileName}</p>
         <h1 className="page-title" id="analyze-title">
           {analysisError
-            ? "解析できませんでした"
+            ? translate("analyze.failedTitle")
             : scanCreationComplete && modImportFailures.length > 0
-              ? "読み込めなかったModがあります"
-              : "Modを調べています"}
+              ? translate("analyze.failuresTitle")
+              : translate("analyze.title")}
         </h1>
         {!analysisError && !scanCreationComplete && (
           <>
-            <ProgressBar value={progressValue} label="解析の進行状況" />
+            <ProgressBar value={progressValue} label={translate("analyze.progress")} />
             <p className="analyze-screen__stage" aria-live="polite">
               {progress?.modFilename && progress.modIndex && progress.modCount
-                ? `${progress.modIndex} / ${progress.modCount} · ${progress.modFilename} · ${progress.message}`
-                : progress?.message ?? "準備中…"}
+                ? `${formatNumber(progress.modIndex)} / ${formatNumber(progress.modCount)} · ${progress.modFilename} · ${progress.message}`
+                : progress?.message ?? translate("common.preparing")}
             </p>
             {jobId && (
               <SecondaryButton disabled={cancelRequested} onClick={() => void cancel()}>
-                {cancelRequested ? "中止中…" : "キャンセル"}
+                {cancelRequested ? translate("analyze.canceling") : translate("analyze.cancel")}
               </SecondaryButton>
             )}
           </>
@@ -86,15 +88,17 @@ export function AnalyzeScreen() {
           <div className="analyze-screen__error" role="alert">
             <p>{analysisError.userMessage}</p>
             {analysisError.detail && (
-              <Disclosure title="詳細">
+              <Disclosure title={translate("analyze.details")}>
                 <pre>{analysisError.detail}</pre>
               </Disclosure>
             )}
           </div>
         )}
         {!analysisError && scanCreationComplete && modImportFailures.length > 0 && (
-          <section className="analyze-screen__failures" aria-label="読み込めなかったMod" aria-live="polite">
-            <p>{modImportFailures.length.toLocaleString("ja-JP")} 個のModを読み込めませんでした</p>
+          <section className="analyze-screen__failures" aria-label={translate("analyze.failuresTitle")} aria-live="polite">
+            <p>{modImportFailures.length === 1
+              ? translate("analyze.failureCount_one", { count: formatNumber(modImportFailures.length) })
+              : translate("analyze.failureCount", { count: formatNumber(modImportFailures.length) })}</p>
             <ul>
               {modImportFailures.map((failure) => (
                 <li key={failure.filename}>
@@ -106,12 +110,12 @@ export function AnalyzeScreen() {
             <PrimaryButton onClick={() => {
               setModImportFailures([]);
               void goTo("review");
-            }}>確認へ進む</PrimaryButton>
+            }}>{translate("analyze.proceedReview")}</PrimaryButton>
           </section>
         )}
       </div>
       {analysisError && (
-        <PrimaryButton onClick={() => void goTo("home")}>ホームへ戻る</PrimaryButton>
+        <PrimaryButton onClick={() => void goTo("home")}>{translate("analyze.backHome")}</PrimaryButton>
       )}
     </section>
   );
