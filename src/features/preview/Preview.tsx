@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Checkbox, Select } from "../../components/Controls";
+import { useT, useUiLanguage } from "../../i18n";
 import { logFrontendError } from "../../lib/errorLogging";
 import {
   classifyPreviewManifest,
@@ -26,6 +27,7 @@ interface PreviewProps {
   manifest: PreviewManifest;
   getTextureBytes: PreviewTextureLoader;
   getModelJson: (source: AssetLocation) => Promise<unknown>;
+  contentLang?: string;
   className?: string;
 }
 
@@ -36,13 +38,17 @@ interface ListedTexture {
 
 type CameraView = { position: THREE.Vector3; target: THREE.Vector3 };
 
-const MODE_LABELS: Record<PreviewMode, string> = {
-  "3d": "3D",
-  texture: "テクスチャ",
-  model: "モデル",
+const MODE_MESSAGE_KEYS: Record<PreviewMode, "preview.mode3d" | "preview.modeTexture" | "preview.modeModel"> = {
+  "3d": "preview.mode3d",
+  texture: "preview.modeTexture",
+  model: "preview.modeModel",
 };
 
-export function Preview({ manifest, getTextureBytes, getModelJson, className = "" }: PreviewProps) {
+type PreviewTranslator = ReturnType<typeof useT>;
+
+export function Preview({ manifest, getTextureBytes, getModelJson, contentLang, className = "" }: PreviewProps) {
+  const t = useT();
+  const uiLanguage = useUiLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -326,8 +332,8 @@ export function Preview({ manifest, getTextureBytes, getModelJson, className = "
   }, [content, entityHasRenderableCube, getTextureBytes, kind]);
 
   return (
-    <section className={classNames} aria-label="アセットプレビュー">
-      <div className="preview__toolbar" role="tablist" aria-label="プレビューモード">
+    <section className={classNames} lang={uiLanguage} dir="auto" aria-label={t("preview.assetPreview")}>
+      <div className="preview__toolbar" role="tablist" aria-label={t("preview.modeTabs")}>
         {(["3d", "texture", "model"] as const).map((candidateMode) => {
           const enabled = candidateMode === "3d" ? canRender3d : candidateMode === "texture" ? textures.length > 0 : true;
           return (
@@ -339,31 +345,33 @@ export function Preview({ manifest, getTextureBytes, getModelJson, className = "
               disabled={!enabled}
               onClick={() => changeMode(candidateMode)}
             >
-              {MODE_LABELS[candidateMode]}
+              {t(MODE_MESSAGE_KEYS[candidateMode])}
             </button>
           );
         })}
       </div>
 
-      <div className="preview__viewport" ref={viewportRef}>
+      <div className="preview__viewport" ref={viewportRef} lang={contentLang} dir="auto">
         <canvas
           ref={canvasRef}
           className={`preview__canvas${mode === "3d" ? " preview__canvas--active" : ""}`}
-          aria-label="3Dプレビュー。ドラッグで回転、Shiftまたは中ボタンドラッグで移動、ホイールで拡大縮小。矢印キーとプラス・マイナスでも操作できます。"
+          lang={uiLanguage}
+          dir="auto"
+          aria-label={t("preview.canvasDescription")}
           tabIndex={mode === "3d" ? 0 : -1}
         />
 
         {mode === "3d" && (
-          <div className="preview__layer preview__layer--active preview__fallback" aria-live="polite">
+          <div className="preview__layer preview__layer--active preview__fallback" lang={uiLanguage} dir="auto" aria-live="polite">
             {(rendererAvailable === false || modelError || !canRender3d) && (
               <>
-                <p>3Dプレビューを表示できません</p>
+                <p>{t("preview.unavailable3d")}</p>
                 {textures.length > 0 ? (
                   <button type="button" onClick={() => changeMode("texture")}>
-                    {textures[0].candidate ? "テクスチャ候補" : "テクスチャ"}
+                    {textures[0].candidate ? t("preview.textureCandidate") : t("preview.texture")}
                   </button>
                 ) : (
-                  <strong>プレビューなし</strong>
+                  <strong>{t("preview.noPreview")}</strong>
                 )}
               </>
             )}
@@ -378,10 +386,12 @@ export function Preview({ manifest, getTextureBytes, getModelJson, className = "
             onTextureIndexChange={changeTextureIndex}
             getTextureBytes={getTextureBytes}
             reason={kind === "noPreview" ? (content as { reason?: string }).reason : rawKind === "texture" || rawKind === "unknown" ? "fallback" : undefined}
+            t={t}
+            uiLanguage={uiLanguage}
           />
         )}
 
-        {mode === "model" && <ModelView kind={rawKind} manifest={content} getModelJson={getModelJson} />}
+        {mode === "model" && <ModelView kind={rawKind} manifest={content} getModelJson={getModelJson} t={t} uiLanguage={uiLanguage} />}
 
       </div>
     </section>
@@ -441,6 +451,8 @@ function TextureView({
   onTextureIndexChange,
   getTextureBytes,
   reason,
+  t,
+  uiLanguage,
 }: {
   texture?: ListedTexture;
   textures: ListedTexture[];
@@ -448,6 +460,8 @@ function TextureView({
   onTextureIndexChange: (index: number) => void;
   getTextureBytes: PreviewTextureLoader;
   reason?: string;
+  t: PreviewTranslator;
+  uiLanguage: ReturnType<typeof useUiLanguage>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
@@ -504,25 +518,25 @@ function TextureView({
 
   if (!texture) {
     return (
-      <div className="preview__layer preview__layer--active preview__fallback">
-        <strong>プレビューなし</strong>
-        {reason && <span>{previewReasonLabel(reason)}</span>}
+      <div className="preview__layer preview__layer--active preview__fallback" lang={uiLanguage} dir="auto">
+        <strong>{t("preview.noPreview")}</strong>
+        {reason && <span>{previewReasonLabel(reason, t)}</span>}
       </div>
     );
   }
 
   return (
-    <div className="preview__layer preview__layer--active preview__texture-view" ref={viewRef}>
-      {reason && <p className="preview__notice">3Dプレビューを表示できません</p>}
+    <div className="preview__layer preview__layer--active preview__texture-view" ref={viewRef} lang={uiLanguage} dir="auto">
+      {reason && <p className="preview__notice">{t("preview.unavailable3d")}</p>}
       {textures.length > 1 && (
         <div className="preview__texture-select">
-          <span>{texture.candidate ? "テクスチャ候補" : "テクスチャ"}</span>
+          <span>{texture.candidate ? t("preview.textureCandidate") : t("preview.texture")}</span>
           <Select
-            aria-label={texture.candidate ? "テクスチャ候補" : "テクスチャ"}
+            aria-label={texture.candidate ? t("preview.textureCandidate") : t("preview.texture")}
             className="preview__texture-select-control"
             options={textures.map((entry, index) => ({
               value: String(index),
-              label: entry.candidate ? `候補: ${entry.reference.location}` : entry.reference.location,
+              label: entry.candidate ? t("preview.candidate", { value: entry.reference.location }) : entry.reference.location,
             }))}
             value={String(textureIndex)}
             onChange={(value) => onTextureIndexChange(Number(value))}
@@ -535,18 +549,20 @@ function TextureView({
         aria-label={texture.reference.location}
       />
       <Checkbox className="preview__checker-toggle" checked={checker} onChange={setChecker}>
-        市松模様
+        {t("preview.checker")}
       </Checkbox>
-      {resource?.missing && <span className="preview__missing">テクスチャを読み込めません</span>}
-      {textures.length === 1 && texture.candidate && <span className="preview__candidate">候補</span>}
+      {resource?.missing && <span className="preview__missing">{t("preview.textureLoadFailed")}</span>}
+      {textures.length === 1 && texture.candidate && <span className="preview__candidate">{t("preview.onlyCandidate")}</span>}
     </div>
   );
 }
 
-function ModelView({ kind, manifest, getModelJson }: {
+function ModelView({ kind, manifest, getModelJson, t, uiLanguage }: {
   kind: string;
   manifest: unknown;
   getModelJson: (source: AssetLocation) => Promise<unknown>;
+  t: PreviewTranslator;
+  uiLanguage: ReturnType<typeof useUiLanguage>;
 }) {
   const record = asRecord(manifest);
   const sources = useMemo(() => getModelSources(kind, manifest), [kind, manifest]);
@@ -571,48 +587,51 @@ function ModelView({ kind, manifest, getModelJson }: {
   const loadError = loadMatches && loadedModels.error;
 
   return (
-    <div className="preview__layer preview__layer--active preview__model-view">
+    <div className="preview__layer preview__layer--active preview__model-view" lang={uiLanguage} dir="auto">
       {sources.length > 0 && (
         <dl>
-          {sources.map(({ path, identifier, texturePaths }, index) => (
-            <div key={`${path}-${index}`}>
-              <dt>モデル</dt><dd>{kind === "entity" && ["low", "medium"].includes(String(record?.confidence)) ? `候補: ${identifier}` : identifier}</dd>
-              <dt>パス</dt><dd>{path}</dd>
-              {texturePaths.length > 0 && <><dt>テクスチャ</dt><dd>{texturePaths.join(", ")}</dd></>}
-            </div>
-          ))}
+          {sources.map(({ path, identifier, texturePaths }, index) => {
+            const modelLabel = identifier ?? t("preview.entityGeometry");
+            return (
+              <div key={`${path}-${index}`}>
+                <dt>{t("preview.model")}</dt><dd>{kind === "entity" && ["low", "medium"].includes(String(record?.confidence)) ? t("preview.candidate", { value: modelLabel }) : modelLabel}</dd>
+                <dt>{t("preview.path")}</dt><dd>{path}</dd>
+                {texturePaths.length > 0 && <><dt>{t("preview.texture")}</dt><dd>{texturePaths.join(", ")}</dd></>}
+              </div>
+            );
+          })}
         </dl>
       )}
       {record?.reason != null && String(record.reason).length > 0 && (
-        <p>モデルを表示できません。テクスチャ表示または候補を確認してください。</p>
+        <p>{t("preview.modelUnavailable")}</p>
       )}
       {rawModels.length > 0 ? (
         <pre>{rawModels.map((model) => JSON.stringify(model.value, null, 2)).join("\n\n")}</pre>
       ) : loadError ? (
-        <strong>元 JSON を読み込めません</strong>
+        <strong>{t("preview.modelJsonLoadFailed")}</strong>
       ) : sources.some((source) => source.readable) && !loadMatches ? (
-        <strong>読み込み中</strong>
+        <strong>{t("preview.loading")}</strong>
       ) : sources.length > 0 ? (
-        <strong>組み込みの親モデル</strong>
+        <strong>{t("preview.builtinParentModel")}</strong>
       ) : kind !== "unknown" && record?.rawModelInfo != null ? (
         <>
           {typeof record.rawModelPath === "string" && (
-            <dl><dt>パス</dt><dd>{record.rawModelPath}</dd></dl>
+            <dl><dt>{t("preview.path")}</dt><dd>{record.rawModelPath}</dd></dl>
           )}
           <pre>{JSON.stringify(record.rawModelInfo, null, 2)}</pre>
         </>
       ) : (
-        <strong>プレビューなし</strong>
+        <strong>{t("preview.noPreview")}</strong>
       )}
     </div>
   );
 }
 
-function previewReasonLabel(reason: string) {
+function previewReasonLabel(reason: string, t: PreviewTranslator) {
   if (reason === "entity geometry and texture are unavailable") {
-    return "エンティティのモデルとテクスチャがありません。";
+    return t("preview.noEntityModelAndTexture");
   }
-  return "対応するプレビューがありません。テクスチャ候補を確認してください。";
+  return t("preview.genericUnavailable");
 }
 
 function asAssetLocation(value: unknown): AssetLocation | null {
@@ -624,7 +643,7 @@ function asAssetLocation(value: unknown): AssetLocation | null {
 
 function getModelSources(kind: string, manifest: unknown): Array<{
   path: string;
-  identifier: string;
+  identifier: string | undefined;
   source: AssetLocation;
   texturePaths: string[];
   readable: boolean;
@@ -635,7 +654,9 @@ function getModelSources(kind: string, manifest: unknown): Array<{
     if (!source) return [];
     return [{
       path: source.archivePath,
-      identifier: String(asRecord(record?.geometry)?.identifier ?? "エンティティのジオメトリ"),
+      identifier: asRecord(record?.geometry)?.identifier == null
+        ? undefined
+        : String(asRecord(record?.geometry)?.identifier),
       source,
       texturePaths: asCandidates(record?.textureCandidates).map((candidate) => candidate.asset.archivePath),
       readable: source.sourceKind !== "builtin",

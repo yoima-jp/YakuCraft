@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import * as THREE from "three";
 
 import { getAssetPreviewManifest, loadThumbnail, saveThumbnail } from "../../lib/tauri";
+import { t } from "../../i18n";
 import type { TranslationEntry } from "../../types/translation";
 import {
   classifyPreviewManifest,
@@ -486,7 +487,7 @@ async function renderSceneThumbnail(
 
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("サムネイルを画像化できませんでした。")), "image/png");
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error(t("preview.thumbnailImageError"))), "image/png");
   });
 }
 
