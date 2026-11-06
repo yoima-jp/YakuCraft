@@ -1,0 +1,43 @@
+.onboarding-screen {
+  display: grid;
+  min-block-size: 100vh;
+  place-items: center;
+  padding: var(--spacing-xl);
+  user-select: none;
+}
+
+.onboarding-card {
+  display: grid;
+  inline-size: min(100%, 32rem);
+  gap: var(--spacing-2xl);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: clamp(var(--spacing-xl), 5vw, var(--spacing-2xl));
+  background: var(--color-surface);
+  box-shadow: 0 6px 0 var(--color-border);
+}
+
+.onboarding-card__legend {
+  margin-block-end: var(--spacing-md);
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.onboarding-language-options .radio-group__options {
+  display: grid;
+  gap: var(--spacing-sm);
+}
+
+.onboarding-language-options .radio-group__option {
+  min-block-size: 2.75rem;
+}
+
+.onboarding-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.onboarding-card .target-language-picker__input {
+  user-select: text;
+}

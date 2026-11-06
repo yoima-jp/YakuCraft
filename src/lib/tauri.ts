@@ -72,6 +72,16 @@ export function getSettings() {
   return invokeApp<AppSettingsDto>("get_settings");
 }
 
+export async function getSystemLocale(): Promise<string | null> {
+  try {
+    const locale = await invokeApp<string | null>("get_system_locale");
+    if (typeof locale === "string" && locale.trim() !== "") return locale;
+  } catch {
+    // OSロケールは補助情報なので、取得できない場合はWebViewの言語設定を使う。
+  }
+  return typeof navigator === "undefined" ? null : navigator.languages[0] ?? null;
+}
+
 export function saveSettings(settings: Record<string, unknown>) {
   return invokeApp<void>("save_settings", { settings });
 }

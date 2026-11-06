@@ -1,6 +1,9 @@
 import { create } from "zustand";
 
-import { getSettings, saveSettings } from "../lib/tauri";
+import { getSettings, getSystemLocale, saveSettings } from "../lib/tauri";
+import { detectTargetLocale, detectUiLanguage } from "../i18n/detect";
+import { isUiLanguage, setUiLanguage, t } from "../i18n";
+import { findMinecraftLanguage } from "../i18n/minecraftLanguages";
 import type { AppSettingsDto } from "../types/settings";
 
 const APPEARANCE_THEME_CACHE_KEY = "yakucraft.appearance.theme";
@@ -60,12 +63,15 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   "advanced.debugLogs": false,
   "ai.provider": "chatgpt",
   "ai.privacyNoticeAccepted": false,
+  "language.uiLanguage": "ja",
+  "language.targetLocale": "en_us",
 };
 
 interface SettingsStore {
   settings: AppSettingsDto;
   loaded: boolean;
   error: string | null;
+  systemLocale: string | null;
   load: () => Promise<void>;
   save: (patch: Record<string, unknown>) => Promise<void>;
   value: <T>(key: string) => T;
@@ -79,17 +85,36 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
   settings: defaultSettings(),
   loaded: false,
   error: null,
+  systemLocale: null,
   load: async () => {
     try {
       const settings = await getSettings();
+      const systemLocale = await getSystemLocale();
       const loadedSettings = { ...defaultSettings(), ...settings };
+      const uiLanguage = isUiLanguage(settings["language.uiLanguage"])
+        ? settings["language.uiLanguage"]
+        : detectUiLanguage(systemLocale);
+      const configuredTarget = settings["language.targetLocale"];
+      const targetLocale = typeof configuredTarget === "string" && findMinecraftLanguage(configuredTarget)
+        ? findMinecraftLanguage(configuredTarget)?.code ?? detectTargetLocale(systemLocale)
+        : detectTargetLocale(systemLocale);
+      loadedSettings["language.uiLanguage"] = uiLanguage;
+      loadedSettings["language.targetLocale"] = targetLocale;
       if (!isAppearanceTheme(loadedSettings["appearance.theme"])) {
         loadedSettings["appearance.theme"] = "system";
       }
       cacheAppearanceTheme(loadedSettings["appearance.theme"]);
-      set({ settings: loadedSettings, loaded: true, error: null });
+      setUiLanguage(uiLanguage);
+      set({ settings: loadedSettings, loaded: true, error: null, systemLocale });
     } catch {
-      set({ loaded: true, error: "設定を読み込めませんでした。" });
+      let systemLocale: string | null = null;
+      try {
+        systemLocale = await getSystemLocale();
+      } catch {
+        // settings取得の失敗表示は維持し、ロケールが取れない場合は英語を既定値にする。
+      }
+      setUiLanguage(detectUiLanguage(systemLocale));
+      set({ loaded: true, error: t("app.settingsLoadError"), systemLocale });
     }
   },
   save: async (patch) => {
@@ -101,6 +126,7 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
       cacheAppearanceTheme(nextTheme);
       try {
         await saveSettings(patch);
+        if (isUiLanguage(patch["language.uiLanguage"])) setUiLanguage(patch["language.uiLanguage"]);
       } catch (error) {
         set((state) => state.settings["appearance.theme"] === nextTheme
           ? { settings: { ...state.settings, "appearance.theme": previousTheme } }
@@ -115,6 +141,7 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
 
     await saveSettings(patch);
     set((state) => ({ settings: { ...state.settings, ...patch }, error: null }));
+    if (isUiLanguage(patch["language.uiLanguage"])) setUiLanguage(patch["language.uiLanguage"]);
   },
   value: <T,>(key: string) => {
     const value = get().settings[key];

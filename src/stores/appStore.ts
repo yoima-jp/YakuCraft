@@ -19,7 +19,7 @@ type SettingsReturnRoute = Exclude<AppRoute, "settings">;
 interface AppStore {
   route: AppRoute;
   settingsReturnRoute: SettingsReturnRoute;
-  settingsCategory: "general" | "ai" | "editor" | "appearance" | "advanced" | "logs";
+  settingsCategory: "general" | "language" | "ai" | "editor" | "appearance" | "advanced" | "logs";
   exportCompletion: ExportCompletion | null;
   goTo: (route: AppRoute) => Promise<void>;
   openSettings: (category?: AppStore["settingsCategory"]) => Promise<void>;

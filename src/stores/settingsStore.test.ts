@@ -6,6 +6,7 @@ import { SETTING_DEFAULTS, useSettingsStore } from "./settingsStore";
 
 vi.mock("../lib/tauri", () => ({
   getSettings: vi.fn(),
+  getSystemLocale: vi.fn().mockResolvedValue("ja-JP"),
   saveSettings: vi.fn(),
 }));
 
