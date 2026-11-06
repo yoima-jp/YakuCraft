@@ -59,6 +59,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         source_language.push('}');
     }
+    let sample_target_path = format!(
+        "assets/sample/lang/{}.json",
+        yc_language::DEFAULT_TARGET_LOCALE
+    );
+    let tools_target_path = format!(
+        "assets/sample_tools/lang/{}.json",
+        yc_language::DEFAULT_TARGET_LOCALE
+    );
     let jar = make_jar(&[
         (
             "fabric.mod.json",
@@ -69,7 +77,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             source_language.as_bytes(),
         ),
         (
-            "assets/sample/lang/ja_jp.json",
+            sample_target_path.as_str(),
             r#"{"block.sample.machine":"機械"}"#.as_bytes(),
         ),
         (
@@ -81,7 +89,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             br#"{"item.sample_tools.hammer":"Hammer"}"#,
         ),
         (
-            "assets/sample_tools/lang/ja_jp.json",
+            tools_target_path.as_str(),
             r#"{"item.sample_tools.hammer":"ハンマー"}"#.as_bytes(),
         ),
         ("META-INF/jars/sample-library.jar", nested.as_slice()),

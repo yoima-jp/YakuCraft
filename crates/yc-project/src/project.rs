@@ -243,6 +243,22 @@ pub fn create_project_with_sources(
     instance_path: Option<&Path>,
     modpack: Option<ModpackSource<'_>>,
 ) -> Result<ProjectSummary> {
+    create_project_with_sources_and_target_locale(
+        projects_root,
+        sources,
+        instance_path,
+        modpack,
+        yc_language::DEFAULT_TARGET_LOCALE,
+    )
+}
+
+pub fn create_project_with_sources_and_target_locale(
+    projects_root: impl AsRef<Path>,
+    sources: &[ProjectSource],
+    instance_path: Option<&Path>,
+    modpack: Option<ModpackSource<'_>>,
+    target_locale: &str,
+) -> Result<ProjectSummary> {
     let projects_root = projects_root.as_ref();
     if sources.is_empty() && modpack.is_none() {
         return Err(std::io::Error::new(
@@ -273,16 +289,23 @@ pub fn create_project_with_sources(
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("{} 個の mod", sources.len()))
         };
+        let target_locale = yc_language::normalize_locale(target_locale.trim());
+        let target_locale = if target_locale.is_empty() {
+            yc_language::DEFAULT_TARGET_LOCALE
+        } else {
+            &target_locale
+        };
         transaction.execute(
             "INSERT INTO project_meta (
-                id, schema_version, created_at, updated_at, display_name, instance_path
-            ) VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+                id, schema_version, created_at, updated_at, display_name, instance_path, target_locale
+            ) VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
             params![
                 id.to_string(),
                 schema_version,
                 created_at,
                 initial_display_name,
-                instance_path.map(|path| path.to_string_lossy().into_owned())
+                instance_path.map(|path| path.to_string_lossy().into_owned()),
+                target_locale,
             ],
         )?;
 

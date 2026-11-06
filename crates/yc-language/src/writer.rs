@@ -19,7 +19,15 @@ pub fn write_json_language(
     entries: &[TranslationEntry],
     _options: WriterOptions,
 ) -> Result<Vec<u8>, LanguageError> {
-    let entries = export_entries(namespace, entries);
+    write_json_language_inner(namespace, entries, false)
+}
+
+fn write_json_language_inner(
+    namespace: &str,
+    entries: &[TranslationEntry],
+    include_empty: bool,
+) -> Result<Vec<u8>, LanguageError> {
+    let entries = export_entries(namespace, entries, include_empty);
     let mut output = Vec::new();
     {
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"  ");
@@ -40,7 +48,16 @@ pub fn write_legacy_language(
     entries: &[TranslationEntry],
     options: WriterOptions,
 ) -> Vec<u8> {
-    let entries = export_entries(namespace, entries);
+    write_legacy_language_inner(namespace, entries, options, false)
+}
+
+fn write_legacy_language_inner(
+    namespace: &str,
+    entries: &[TranslationEntry],
+    options: WriterOptions,
+    include_empty: bool,
+) -> Vec<u8> {
+    let entries = export_entries(namespace, entries, include_empty);
     let mut output = String::new();
     let parse_escapes = options.legacy_parse_escapes
         || entries.iter().any(|entry| {
@@ -93,15 +110,31 @@ pub fn write_language_file(
     }
 }
 
+/// en_usを翻訳先にする場合、原本にある空値のキーも維持して書き出す。
+pub fn write_language_file_preserving_empty(
+    namespace: &str,
+    entries: &[TranslationEntry],
+    format: LanguageFileFormat,
+    options: WriterOptions,
+) -> Result<Vec<u8>, LanguageError> {
+    match format {
+        LanguageFileFormat::Json => write_json_language_inner(namespace, entries, true),
+        LanguageFileFormat::LegacyLang => Ok(write_legacy_language_inner(
+            namespace, entries, options, true,
+        )),
+    }
+}
+
 /// Language File / Modified JAR向けのlocale filenameを選ぶ。
-/// 原文と同じ形式の日本語ファイルがあればその綴りを優先し、なければ原文の表記を使う。
+/// 原文と同じ形式の翻訳先ファイルがあればその綴りを優先し、なければ原文の表記を使う。
 pub fn language_export_filename(
     files: &[DiscoveredLanguageFile],
     namespace: &str,
     source_locale: &str,
+    target_locale: &str,
 ) -> Option<String> {
-    let source = language_export_source_file(files, namespace, source_locale)?;
-    target_filename_from_source(source)
+    let source = language_export_source_file(files, namespace, source_locale, target_locale)?;
+    target_filename_from_source(source, target_locale)
 }
 
 /// 書き出し時に形式とlocaleの大文字小文字を引き継ぐ既存ファイルを返す。
@@ -109,6 +142,7 @@ pub fn language_export_source_file<'a>(
     files: &'a [DiscoveredLanguageFile],
     namespace: &str,
     source_locale: &str,
+    target_locale: &str,
 ) -> Option<&'a DiscoveredLanguageFile> {
     let mut namespace_files: Vec<_> = files
         .iter()
@@ -120,36 +154,57 @@ pub fn language_export_source_file<'a>(
         .iter()
         .copied()
         .find(|file| file.normalized_locale == normalize_locale(source_locale))
-        // Modごとに選択localeがない場合も、他の原文localeの形式を使う。
-        // 日本語の旧形式ファイルを原文より先に選ぶと、混在Modで同じ問題が再発する。
+        // Modごとに選択localeがない場合も、翻訳先以外の原文localeの形式を使う。
         .or_else(|| {
             namespace_files
                 .iter()
                 .copied()
-                .find(|file| file.normalized_locale != "ja_jp")
+                .find(|file| file.normalized_locale != normalize_locale(target_locale))
         })
-        // 日本語しかないnamespaceも、そのファイルの形式で書き出せる。
+        // 翻訳先localeしかないnamespaceも、そのファイルの形式で書き出せる。
         .or_else(|| namespace_files.first().copied())?;
 
     // 古い.langが残っていても、JSON原文のmodにはゲームが読むJSONを出力する。
     namespace_files
         .iter()
         .copied()
-        .find(|file| file.normalized_locale == "ja_jp" && file.format == source.format)
+        .find(|file| {
+            file.normalized_locale == normalize_locale(target_locale)
+                && file.format == source.format
+        })
         .or(Some(source))
 }
 
-fn target_filename_from_source(source: &DiscoveredLanguageFile) -> Option<String> {
-    if source.normalized_locale == "ja_jp" {
+fn target_filename_from_source(
+    source: &DiscoveredLanguageFile,
+    target_locale: &str,
+) -> Option<String> {
+    let target_locale = normalize_locale(target_locale);
+    if source.normalized_locale == target_locale {
         return Some(source.file_name.clone());
     }
     let (stem, extension) = source.file_name.rsplit_once('.')?;
-    let use_upper_region = stem
-        .rsplit_once('_')
-        .map(|(_, region)| !region.is_empty() && region.chars().all(|ch| !ch.is_ascii_lowercase()))
-        .unwrap_or_else(|| stem.chars().any(|character| character.is_ascii_uppercase()));
-    let target_locale = if use_upper_region { "ja_JP" } else { "ja_jp" };
-    Some(format!("{target_locale}.{extension}"))
+    let target_spelling = target_locale
+        .split_once('_')
+        .map(|(language, region)| {
+            let use_upper_region = stem
+                .rsplit_once('_')
+                .map(|(_, region)| {
+                    !region.is_empty() && region.chars().all(|ch| !ch.is_ascii_lowercase())
+                })
+                .unwrap_or_else(|| stem.chars().any(|character| character.is_ascii_uppercase()));
+            if use_upper_region {
+                format!(
+                    "{}_{}",
+                    language.to_ascii_lowercase(),
+                    region.to_ascii_uppercase()
+                )
+            } else {
+                target_locale.clone()
+            }
+        })
+        .unwrap_or(target_locale);
+    Some(format!("{target_spelling}.{extension}"))
 }
 
 /// Minecraft versionを数値の各要素として比較し、不明な表記ならNoneを返す。
@@ -174,14 +229,28 @@ pub fn compare_minecraft_versions(left: &str, right: &str) -> Option<Ordering> {
 }
 
 /// Resource PackのMinecraft version ruleに合う言語ファイル名を返す。
-pub fn resource_pack_language_filename(version: Option<&str>) -> Option<String> {
+pub fn resource_pack_language_filename(
+    version: Option<&str>,
+    target_locale: &str,
+) -> Option<String> {
     let version = version?;
     if compare_minecraft_versions(version, "1.13")? != Ordering::Less {
-        Some("ja_jp.json".to_owned())
+        Some(format!("{}.json", normalize_locale(target_locale)))
     } else if compare_minecraft_versions(version, "1.11")? != Ordering::Less {
-        Some("ja_jp.lang".to_owned())
+        Some(format!("{}.lang", normalize_locale(target_locale)))
     } else if compare_minecraft_versions(version, "1.6.1")? != Ordering::Less {
-        Some("ja_JP.lang".to_owned())
+        let locale = normalize_locale(target_locale);
+        let locale = locale
+            .split_once('_')
+            .map(|(language, region)| {
+                format!(
+                    "{}_{}",
+                    language.to_ascii_lowercase(),
+                    region.to_ascii_uppercase()
+                )
+            })
+            .unwrap_or(locale);
+        Some(format!("{locale}.lang"))
     } else {
         None
     }
@@ -190,10 +259,14 @@ pub fn resource_pack_language_filename(version: Option<&str>) -> Option<String> 
 fn export_entries<'a>(
     namespace: &str,
     entries: &'a [TranslationEntry],
+    include_empty: bool,
 ) -> Vec<&'a TranslationEntry> {
     let mut selected: Vec<_> = entries
         .iter()
-        .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
+        .filter(|entry| {
+            entry.namespace == namespace
+                && (include_empty || !is_empty_translation(&entry.target_text))
+        })
         .collect();
     // 判定だけtrimし、翻訳済みテキストの意図した前後の空白は保持する。
     selected.sort_by(|left, right| {

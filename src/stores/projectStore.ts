@@ -22,7 +22,7 @@ interface ProjectStore {
   analysisError: AppError | null;
   reviewError: AppError | null;
   projectOpenError: string | null;
-  preserveJapanese: boolean;
+  preserveTarget: boolean;
   fillMissingSourceKeys: boolean;
   sourceLocale: string;
   includedNamespaces: IncludedNamespaceDto[];
@@ -39,7 +39,7 @@ interface ProjectStore {
   setReviewError: (error: AppError | null) => void;
   setProjectOpenError: (error: string | null) => void;
   setSourceLocale: (locale: string) => void;
-  setPreserveJapanese: (preserve: boolean) => void;
+  setPreserveTarget: (preserve: boolean) => void;
   setFillMissingSourceKeys: (fill: boolean) => void;
   setIncludedNamespaces: (namespaces: IncludedNamespaceDto[]) => void;
 }
@@ -58,7 +58,7 @@ export const useProjectStore = create<ProjectStore>()((set) => ({
   analysisError: null,
   reviewError: null,
   projectOpenError: null,
-  preserveJapanese: true,
+  preserveTarget: true,
   fillMissingSourceKeys: true,
   sourceLocale: "en_us",
   includedNamespaces: [],
@@ -80,7 +80,7 @@ export const useProjectStore = create<ProjectStore>()((set) => ({
       details,
       sourceFileName: details.mods[0]?.name ?? details.project.displayName,
       sourceLocale: details.sourceLocale,
-      preserveJapanese: details.preserveExistingJapanese,
+      preserveTarget: details.preserveExistingTarget,
       fillMissingSourceKeys: details.fillMissingFromOtherLanguages,
       includedNamespaces: details.includedNamespaces.map((selection) => ({ ...selection })),
       reviewError: null,
@@ -96,7 +96,7 @@ export const useProjectStore = create<ProjectStore>()((set) => ({
   setReviewError: (reviewError) => set({ reviewError }),
   setProjectOpenError: (projectOpenError) => set({ projectOpenError }),
   setSourceLocale: (sourceLocale) => set({ sourceLocale }),
-  setPreserveJapanese: (preserveJapanese) => set({ preserveJapanese }),
+  setPreserveTarget: (preserveTarget) => set({ preserveTarget }),
   setFillMissingSourceKeys: (fillMissingSourceKeys) => set({ fillMissingSourceKeys }),
   setIncludedNamespaces: (includedNamespaces) => set({ includedNamespaces }),
 }));

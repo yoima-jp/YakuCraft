@@ -9,8 +9,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use yc_language::{
-    LanguageFileFormat, TranslationEntry, WriterOptions, compare_minecraft_versions,
-    is_empty_translation, resource_pack_language_filename, write_language_file,
+    DEFAULT_TARGET_LOCALE, LanguageFileFormat, TranslationEntry, WriterOptions,
+    compare_minecraft_versions, is_empty_translation, resource_pack_language_filename,
+    write_language_file,
 };
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -131,7 +132,11 @@ pub fn pack_format_for_version(version: &str) -> Option<ResolvedPackFormat> {
     })
 }
 
-pub fn resource_pack_filename(mods: &[ResourcePackMod], source_jar_filename: &str) -> String {
+pub fn resource_pack_filename(
+    mods: &[ResourcePackMod],
+    source_jar_filename: &str,
+    target_locale: &str,
+) -> String {
     let mod_name = filename_component(resource_pack_mod_name(mods, source_jar_filename));
     let version = mods
         .first()
@@ -139,9 +144,19 @@ pub fn resource_pack_filename(mods: &[ResourcePackMod], source_jar_filename: &st
         .filter(|version| !version.trim().is_empty())
         .map(filename_component);
 
+    let suffix = resource_pack_suffix(target_locale);
     match version {
-        Some(version) => format!("{mod_name}-{version}-JP_EX.zip"),
-        None => format!("{mod_name}-JP_EX.zip"),
+        Some(version) => format!("{mod_name}-{version}-{suffix}.zip"),
+        None => format!("{mod_name}-{suffix}.zip"),
+    }
+}
+
+fn resource_pack_suffix(target_locale: &str) -> String {
+    let target_locale = yc_language::normalize_locale(target_locale);
+    if target_locale == yc_language::DEFAULT_TARGET_LOCALE {
+        "JP_EX".to_owned()
+    } else {
+        format!("{}_EX", target_locale.to_ascii_uppercase())
     }
 }
 
@@ -177,7 +192,7 @@ pub fn export_resource_pack(
         .minecraft_version
         .ok_or(ExportError::MissingMinecraftVersion)?;
     let pack_format = resolve_pack_format(version, options.manual_format)?;
-    let file_name = resource_pack_language_filename(Some(version))
+    let file_name = resource_pack_language_filename(Some(version), input.target_locale)
         .ok_or_else(|| ExportError::UnknownPackFormat(version.to_owned()))?;
     // 統合packは対象Minecraft versionが一つなので、出力形式とlocale表記もそのversionで決める。
     let language_format = if file_name.ends_with(".json") {
@@ -204,6 +219,7 @@ pub fn export_resource_pack(
         if yc_archive::normalize_archive_path(&path).as_deref() != Ok(path.as_str()) {
             return Err(ExportError::UnsafeArchivePath(path));
         }
+        // Resource Packはゲーム内でキー単位に重なるため、未翻訳キーを別途埋める必要がない。
         let bytes = write_language_file(
             &namespace.namespace,
             input.entries,
@@ -218,17 +234,24 @@ pub fn export_resource_pack(
             .map(|artifact| (artifact.path, artifact.bytes)),
     );
 
-    let metadata = pack_metadata(
-        pack_format,
-        &format!(
-            "{} Japanese Expansion Pack",
-            resource_pack_mod_name(options.mods, options.source_jar_filename).trim()
-        ),
-    )?;
+    let pack_name = resource_pack_mod_name(options.mods, options.source_jar_filename).trim();
+    let description = if yc_language::normalize_locale(input.target_locale)
+        == yc_language::DEFAULT_TARGET_LOCALE
+    {
+        format!("{pack_name} Japanese Expansion Pack")
+    } else {
+        format!(
+            "{pack_name} translation ({}, {} mods)",
+            yc_language::normalize_locale(input.target_locale),
+            options.mods.len()
+        )
+    };
+    let metadata = pack_metadata(pack_format, &description)?;
     let entry_count = language_entries.len() + 1;
     let output_path = output_directory.as_ref().join(resource_pack_filename(
         options.mods,
         options.source_jar_filename,
+        input.target_locale,
     ));
 
     write_resource_pack_archive(&output_path, &metadata, &language_entries, overwrite)?;
@@ -248,12 +271,21 @@ pub fn merged_resource_pack_display_name(project_name: &str) -> &str {
 
 /// Choose the suggested filename for a combined resource pack.
 pub fn merged_resource_pack_filename(mods: &[MergedPackMod<'_>], project_name: &str) -> String {
+    let target_locale = mods
+        .first()
+        .map(|mod_data| mod_data.input.target_locale)
+        .unwrap_or(DEFAULT_TARGET_LOCALE);
     if let [single] = mods {
-        return resource_pack_filename(std::slice::from_ref(&single.info), single.label);
+        return resource_pack_filename(
+            std::slice::from_ref(&single.info),
+            single.label,
+            target_locale,
+        );
     }
     format!(
-        "{}-JP_EX.zip",
-        filename_component(merged_resource_pack_display_name(project_name))
+        "{}-{}.zip",
+        filename_component(merged_resource_pack_display_name(project_name)),
+        resource_pack_suffix(target_locale),
     )
 }
 
@@ -293,8 +325,13 @@ pub fn export_merged_resource_pack(
         .minecraft_version
         .ok_or(ExportError::MissingMinecraftVersion)?;
     let pack_format = resolve_pack_format(version, options.manual_format)?;
-    let file_name = resource_pack_language_filename(Some(version))
-        .ok_or_else(|| ExportError::UnknownPackFormat(version.to_owned()))?;
+    let file_name = resource_pack_language_filename(
+        Some(version),
+        mods.first()
+            .map(|mod_data| mod_data.input.target_locale)
+            .unwrap_or(DEFAULT_TARGET_LOCALE),
+    )
+    .ok_or_else(|| ExportError::UnknownPackFormat(version.to_owned()))?;
     let language_format = if file_name.ends_with(".json") {
         LanguageFileFormat::Json
     } else {
@@ -400,7 +437,20 @@ pub fn export_merged_resource_pack(
     merged_documents.sort_by(|left, right| left.0.cmp(&right.0));
     language_entries.extend(merged_documents);
 
-    let default_description = format!("{} 個の mod の日本語訳", mods.len());
+    let target_locale = mods
+        .first()
+        .map(|mod_data| yc_language::normalize_locale(mod_data.input.target_locale))
+        .unwrap_or_else(|| DEFAULT_TARGET_LOCALE.to_owned());
+    let default_description =
+        if yc_language::normalize_locale(&target_locale) == yc_language::DEFAULT_TARGET_LOCALE {
+            format!("{} 個の mod の日本語訳", mods.len())
+        } else {
+            let name = mods
+                .first()
+                .map(|mod_data| mod_data.label)
+                .unwrap_or("YakuCraft");
+            format!("{name} translation ({target_locale}, {} mods)", mods.len())
+        };
     let metadata = pack_metadata(
         pack_format,
         options.pack_description.unwrap_or(&default_description),

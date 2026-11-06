@@ -281,7 +281,7 @@ pub struct ProjectEntrySummary {
     pub total: usize,
     pub translated: usize,
     pub needs_review: usize,
-    pub existing_japanese: usize,
+    pub existing_target: usize,
     pub unresolved_assets: usize,
 }
 
@@ -398,7 +398,7 @@ pub struct EntryUpdate {
 pub struct ProjectReviewSettings {
     pub source_locale: Option<String>,
     pub fallback_priority: Vec<String>,
-    pub preserve_existing_japanese: bool,
+    pub preserve_existing_target: bool,
     pub fill_missing_from_other_languages: bool,
     pub setup_completed: bool,
     pub included_namespaces: Vec<IncludedNamespace>,

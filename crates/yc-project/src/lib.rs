@@ -24,7 +24,8 @@ pub use model::{
 };
 pub use project::{
     ModpackSource, OpenedProject, ProjectSource, cleanup_trash_directories, create_project,
-    create_project_with_modpack, create_project_with_sources, delete_project, list_projects,
+    create_project_with_modpack, create_project_with_sources,
+    create_project_with_sources_and_target_locale, delete_project, list_projects,
     normalize_project_name, open_project, rename_project,
 };
 pub use repository::Repository;

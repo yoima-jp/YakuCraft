@@ -231,7 +231,7 @@ fn legacy_parse_escapes_mode_decodes_java_properties_and_round_trips_both_modes(
 fn language_export_filename_uses_an_available_locale_when_source_is_missing() {
     let fallback = discovered("fr_FR", "lang", "");
     assert_eq!(
-        language_export_filename(&[fallback], "mod", "en_us").as_deref(),
+        language_export_filename(&[fallback], "mod", "en_us", "ja_jp").as_deref(),
         Some("ja_JP.lang")
     );
 }
@@ -269,7 +269,7 @@ fn locale_normalization_preserves_the_original_in_discovery_results() {
 #[test]
 fn review_defaults_match_the_preserve_and_fill_choices() {
     let defaults = ReviewSettings::default();
-    assert!(defaults.preserve_existing_japanese);
+    assert!(defaults.preserve_existing_target);
     assert!(defaults.fill_missing_from_other_languages);
 }
 
@@ -412,13 +412,13 @@ fn fallback_coverage_is_scoped_to_the_current_namespace() {
 }
 
 #[test]
-fn existing_japanese_is_preserved_or_started_empty_by_review_choice() {
+fn existing_target_is_preserved_or_started_empty_by_review_choice() {
     let files = [
         parsed_json("en_us", "", r#"{"key":"English","source_only":"Source"}"#),
         parsed_json("ja_JP", "", r#"{"key":"既存訳","target_only":"既存のみ"}"#),
     ];
     let mut review = settings("en_us");
-    review.preserve_existing_japanese = true;
+    review.preserve_existing_target = true;
     let kept = merge_languages(&files, &review);
     let existing = kept.iter().find(|entry| entry.key == "key").unwrap();
     assert_eq!(existing.target_text, "既存訳");
@@ -426,7 +426,7 @@ fn existing_japanese_is_preserved_or_started_empty_by_review_choice() {
     assert_eq!(existing.translated_source_text.as_deref(), Some("English"));
     assert_eq!(existing.origin, TranslationOrigin::Existing);
 
-    review.preserve_existing_japanese = false;
+    review.preserve_existing_target = false;
     let empty = merge_languages(&files, &review);
     let existing = empty.iter().find(|entry| entry.key == "key").unwrap();
     assert_eq!(existing.target_text, "");
@@ -436,13 +436,33 @@ fn existing_japanese_is_preserved_or_started_empty_by_review_choice() {
 }
 
 #[test]
+fn de_de_is_merged_as_the_existing_target_translation() {
+    let files = [
+        parsed_json("en_us", "", r#"{"key":"English","source_only":"Source"}"#),
+        parsed_json(
+            "de_de",
+            "",
+            r#"{"key":"Vorhanden","target_only":"Nur Ziel"}"#,
+        ),
+    ];
+    let mut review = settings("en_us");
+    review.target_locale = "de_de".to_owned();
+    let merged = merge_languages(&files, &review);
+    let existing = merged.iter().find(|entry| entry.key == "key").unwrap();
+
+    assert_eq!(existing.target_text, "Vorhanden");
+    assert_eq!(existing.origin, TranslationOrigin::Existing);
+    assert!(merged.iter().any(|entry| entry.key == "target_only"));
+}
+
+#[test]
 fn source_locale_recommendation_prefers_english_then_most_entries() {
     let english_files = [
         parsed_json("en_US", "", r#"{"one":"English"}"#),
         parsed_json("de_de", "", r#"{"one":"Eins","two":"Zwei"}"#),
     ];
     assert_eq!(
-        recommend_source_locale(&english_files, &["mod".to_owned()]).as_deref(),
+        recommend_source_locale(&english_files, &["mod".to_owned()], "ja_jp").as_deref(),
         Some("en_US")
     );
 
@@ -451,8 +471,26 @@ fn source_locale_recommendation_prefers_english_then_most_entries() {
         parsed_json("de_de", "", r#"{"one":"Eins","two":"Zwei"}"#),
     ];
     assert_eq!(
-        recommend_source_locale(&no_english, &["mod".to_owned()]).as_deref(),
+        recommend_source_locale(&no_english, &["mod".to_owned()], "ja_jp").as_deref(),
         Some("de_de")
+    );
+}
+
+#[test]
+fn source_recommendation_excludes_the_target_when_english_is_the_target() {
+    let files = [
+        parsed_json("en_US", "", r#"{"one":"English"}"#),
+        parsed_json("de_de", "", r#"{"one":"Deutsch","two":"Zwei"}"#),
+    ];
+    assert_eq!(
+        recommend_source_locale(&files, &["mod".to_owned()], "en_us").as_deref(),
+        Some("de_de")
+    );
+
+    let only_english = [parsed_json("en_US", "", r#"{"one":"English"}"#)];
+    assert_eq!(
+        recommend_source_locale(&only_english, &["mod".to_owned()], "en_us").as_deref(),
+        Some("en_US")
     );
 }
 
@@ -525,15 +563,30 @@ fn writers_omit_whitespace_only_translations_without_trimming_translated_values(
 fn language_export_filename_prefers_existing_target_then_source_style() {
     let source = discovered("en_US", "json", "");
     assert_eq!(
-        language_export_filename(std::slice::from_ref(&source), "mod", "en_us").as_deref(),
+        language_export_filename(std::slice::from_ref(&source), "mod", "en_us", "ja_jp").as_deref(),
         Some("ja_JP.json")
     );
 
     let lower_source = discovered("en_us", "lang", "");
     let existing = discovered("ja_jp", "lang", "META-INF/jars/nested.jar");
     assert_eq!(
-        language_export_filename(&[existing, lower_source], "mod", "en_us").as_deref(),
+        language_export_filename(&[existing, lower_source], "mod", "en_us", "ja_jp").as_deref(),
         Some("ja_jp.lang")
+    );
+}
+
+#[test]
+fn language_export_filename_uses_the_requested_locale_and_regionless_codes() {
+    let uppercase_source = discovered("en_US", "lang", "");
+    assert_eq!(
+        language_export_filename(&[uppercase_source], "mod", "en_us", "de_de").as_deref(),
+        Some("de_DE.lang")
+    );
+
+    let lowercase_source = discovered("en_us", "json", "");
+    assert_eq!(
+        language_export_filename(&[lowercase_source], "mod", "en_us", "tok").as_deref(),
+        Some("tok.json")
     );
 }
 
@@ -546,18 +599,28 @@ fn language_export_filename_keeps_selected_source_format_in_mixed_mods() {
         let source = discovered("en_US", source_format, "");
         let incompatible = discovered("ja_jp", incompatible_format, "");
         assert_eq!(
-            language_export_filename(&[source.clone(), incompatible.clone()], "mod", "en_us")
-                .as_deref(),
+            language_export_filename(
+                &[source.clone(), incompatible.clone()],
+                "mod",
+                "en_us",
+                "ja_jp",
+            )
+            .as_deref(),
             Some(expected)
         );
         assert_eq!(
-            language_export_filename(&[source.clone(), incompatible.clone()], "mod", "fr_fr")
-                .as_deref(),
+            language_export_filename(
+                &[source.clone(), incompatible.clone()],
+                "mod",
+                "fr_fr",
+                "ja_jp",
+            )
+            .as_deref(),
             Some(expected)
         );
         let compatible = discovered("ja_jp", source_format, "");
         assert_eq!(
-            language_export_filename(&[source, incompatible, compatible], "mod", "en_us")
+            language_export_filename(&[source, incompatible, compatible], "mod", "en_us", "ja_jp")
                 .as_deref(),
             Some(format!("ja_jp.{source_format}").as_str())
         );
@@ -567,27 +630,30 @@ fn language_export_filename_keeps_selected_source_format_in_mixed_mods() {
 #[test]
 fn resource_pack_filename_uses_numeric_minecraft_version_boundaries() {
     assert_eq!(
-        resource_pack_language_filename(Some("1.10.2")).as_deref(),
+        resource_pack_language_filename(Some("1.10.2"), "ja_jp").as_deref(),
         Some("ja_JP.lang")
     );
     assert_eq!(
-        resource_pack_language_filename(Some("1.11")).as_deref(),
+        resource_pack_language_filename(Some("1.11"), "ja_jp").as_deref(),
         Some("ja_jp.lang")
     );
     assert_eq!(
-        resource_pack_language_filename(Some("1.12.2")).as_deref(),
+        resource_pack_language_filename(Some("1.12.2"), "ja_jp").as_deref(),
         Some("ja_jp.lang")
     );
     assert_eq!(
-        resource_pack_language_filename(Some("1.13")).as_deref(),
+        resource_pack_language_filename(Some("1.13"), "ja_jp").as_deref(),
         Some("ja_jp.json")
     );
     assert_eq!(
-        resource_pack_language_filename(Some("26.1")).as_deref(),
+        resource_pack_language_filename(Some("26.1"), "ja_jp").as_deref(),
         Some("ja_jp.json")
     );
-    assert_eq!(resource_pack_language_filename(None), None);
-    assert_eq!(resource_pack_language_filename(Some("unknown")), None);
+    assert_eq!(resource_pack_language_filename(None, "ja_jp"), None);
+    assert_eq!(
+        resource_pack_language_filename(Some("unknown"), "ja_jp"),
+        None
+    );
     assert_eq!(
         compare_minecraft_versions("1.12.2", "1.11"),
         Some(Ordering::Greater)
@@ -597,4 +663,24 @@ fn resource_pack_filename_uses_numeric_minecraft_version_boundaries() {
         Some(Ordering::Greater)
     );
     assert_eq!(compare_minecraft_versions("unknown", "1.13"), None);
+}
+
+#[test]
+fn resource_pack_filename_uses_generic_locale_spelling_for_old_and_new_versions() {
+    assert_eq!(
+        resource_pack_language_filename(Some("1.10.2"), "de_de").as_deref(),
+        Some("de_DE.lang")
+    );
+    assert_eq!(
+        resource_pack_language_filename(Some("1.12.2"), "de_de").as_deref(),
+        Some("de_de.lang")
+    );
+    assert_eq!(
+        resource_pack_language_filename(Some("1.13"), "de_de").as_deref(),
+        Some("de_de.json")
+    );
+    assert_eq!(
+        resource_pack_language_filename(Some("1.10.2"), "tok").as_deref(),
+        Some("tok.lang")
+    );
 }

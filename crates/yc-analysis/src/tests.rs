@@ -67,7 +67,13 @@ fn analyze_with_limits(
     jar: &TemporaryJar,
     limits: ArchiveLimits,
 ) -> Result<AnalysisData, AnalysisError> {
-    analyze_jar_with_limits(&jar.0, limits, &CancellationToken::default(), |_| {})
+    analyze_jar_with_limits(
+        &jar.0,
+        limits,
+        yc_language::DEFAULT_TARGET_LOCALE,
+        &CancellationToken::default(),
+        |_| {},
+    )
 }
 
 fn patch_uncompressed_size(bytes: &mut [u8], path: &[u8], forged_size: u32) {
@@ -135,15 +141,50 @@ fn fabric_metadata_and_japanese_counts_are_available() {
         data.result.recommended_source_locale.as_deref(),
         Some("en_us")
     );
-    assert_eq!(data.result.existing_japanese_translation_count, 1);
+    assert_eq!(data.result.existing_target_translation_count, 1);
     assert_eq!(data.result.missing_source_keys_count, 1);
     assert_eq!(data.result.namespaces.len(), 2);
     assert_eq!(data.result.language_files.len(), 4);
 
     let merged = data.merge_review(&data.default_review_settings());
-    assert_eq!(merged.existing_japanese_translation_count, 1);
+    assert_eq!(merged.existing_target_translation_count, 1);
     assert_eq!(merged.missing_source_keys_count, 1);
     assert_eq!(merged.entries.len(), 4);
+}
+
+#[test]
+fn english_target_is_not_recommended_and_same_language_counts_use_actual_locale() {
+    let jar = temporary_jar(&[
+        (
+            "assets/sample/lang/en_us.json",
+            br#"{"same":"US","english":"US only"}"#,
+        ),
+        ("assets/sample/lang/de_de.json", br#"{"same":"Deutsch"}"#),
+        (
+            "assets/sample/lang/en_gb.json",
+            br#"{"british":"British only"}"#,
+        ),
+    ]);
+    let analysis =
+        analyze_jar_with_target_locale(&jar.0, "en_us", &CancellationToken::default(), |_| {})
+            .unwrap();
+
+    assert_eq!(
+        analysis.result.recommended_source_locale.as_deref(),
+        Some("de_de")
+    );
+    let mut settings = analysis.default_review_settings();
+    settings.source_locale = "en_us".to_owned();
+    settings.target_locale = "en_us".to_owned();
+    settings.included_namespaces = vec!["sample".to_owned()];
+    let merged = analysis.merge_review(&settings);
+    assert_eq!(merged.same_language_entry_count, 2);
+    let british = merged
+        .entries
+        .iter()
+        .find(|entry| entry.key == "british")
+        .unwrap();
+    assert_eq!(british.source_locale.as_deref(), Some("en_gb"));
 }
 
 #[test]
@@ -540,11 +581,11 @@ fn lightweight_scan_and_analysis_ignore_blank_japanese_values() {
     ));
 
     let analysis = analyze(&jar).expect("analyze fixture");
-    assert_eq!(analysis.result.existing_japanese_translation_count, 1);
+    assert_eq!(analysis.result.existing_target_translation_count, 1);
     assert_eq!(
         analysis
             .merge_review(&analysis.default_review_settings())
-            .existing_japanese_translation_count,
+            .existing_target_translation_count,
         1
     );
 

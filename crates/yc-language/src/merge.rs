@@ -20,6 +20,7 @@ struct EffectiveValue {
 pub fn source_language_recommendation(
     files: &[ParsedLanguageFile],
     included_namespaces: &[String],
+    target_locale: &str,
 ) -> SourceLanguageRecommendation {
     let included: HashSet<&str> = included_namespaces.iter().map(String::as_str).collect();
     let (effective, locale_spellings) = build_effective_values(files, &included);
@@ -29,10 +30,16 @@ pub fn source_language_recommendation(
         *counts.entry(locale.clone()).or_default() += 1;
     }
 
-    let english = locale_spellings.get("en_us").cloned();
+    let target_locale = normalize_locale(target_locale);
+    let english = locale_spellings
+        .get("en_us")
+        .filter(|_| target_locale != "en_us")
+        .cloned();
+    let non_target = counts.iter().any(|(locale, _)| locale != &target_locale);
     let recommended_locale = english.or_else(|| {
         counts
             .iter()
+            .filter(|(locale, _)| !non_target || *locale != &target_locale)
             .max_by(|(left_locale, left_count), (right_locale, right_count)| {
                 left_count
                     .cmp(right_count)
@@ -85,6 +92,7 @@ pub fn merge_languages(
     }
 
     let source_locale = normalize_locale(&settings.source_locale);
+    let target_locale = normalize_locale(&settings.target_locale);
     let mut result = Vec::new();
 
     for namespace in namespaces {
@@ -93,6 +101,7 @@ pub fn merge_languages(
             &coverage,
             &namespace,
             &source_locale,
+            &target_locale,
             &settings.fallback_priority,
         );
         let mut ordered_keys = Vec::new();
@@ -151,8 +160,8 @@ pub fn merge_languages(
             let selected_locale = selected_source
                 .map(|source| source.locale.clone())
                 .or_else(|| primary.map(|source| source.locale.clone()));
-            let target = effective.get(&(namespace.clone(), "ja_jp".to_owned(), key.clone()));
-            let preserve_target = settings.preserve_existing_japanese && target.is_some();
+            let target = effective.get(&(namespace.clone(), target_locale.clone(), key.clone()));
+            let preserve_target = settings.preserve_existing_target && target.is_some();
             let target_text = if preserve_target {
                 target
                     .and_then(|value| value.value.text.clone())
@@ -196,8 +205,9 @@ pub fn merge_languages(
 pub fn recommend_source_locale(
     files: &[ParsedLanguageFile],
     included_namespaces: &[String],
+    target_locale: &str,
 ) -> Option<String> {
-    source_language_recommendation(files, included_namespaces).recommended_locale
+    source_language_recommendation(files, included_namespaces, target_locale).recommended_locale
 }
 
 fn build_effective_values(
@@ -244,6 +254,7 @@ fn fallback_locale_order(
     coverage: &BTreeMap<(String, String), usize>,
     namespace: &str,
     source_locale: &str,
+    target_locale: &str,
     explicit_priority: &[String],
 ) -> Vec<String> {
     let available: BTreeSet<_> = effective
@@ -256,7 +267,7 @@ fn fallback_locale_order(
     for locale in explicit_priority {
         let normalized = normalize_locale(locale);
         if normalized != source_locale
-            && normalized != "ja_jp"
+            && normalized != target_locale
             && available.contains(&normalized)
             && seen.insert(normalized.clone())
         {
@@ -266,7 +277,9 @@ fn fallback_locale_order(
 
     let mut remaining: Vec<_> = available
         .into_iter()
-        .filter(|locale| locale != source_locale && locale != "ja_jp" && !seen.contains(locale))
+        .filter(|locale| {
+            locale != source_locale && locale != target_locale && !seen.contains(locale)
+        })
         .collect();
     remaining.sort_by(|left, right| {
         coverage

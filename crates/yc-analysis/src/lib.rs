@@ -24,10 +24,10 @@ use yc_archive::{
     NestedDiscoveryError,
 };
 use yc_language::{
-    DiscoveredLanguageFile, LanguageArchivePath, LanguageFileFormat, LanguageParseWarning,
-    ParsedLanguageFile, ParsedLanguageValue, PatchouliArchiveFile, ReviewSettings,
-    TranslationEntry, TranslationOrigin, discover_books, discover_language_files, extract_entries,
-    extract_i18n_keys, merge_languages, normalize_locale,
+    DEFAULT_TARGET_LOCALE, DiscoveredLanguageFile, LanguageArchivePath, LanguageFileFormat,
+    LanguageParseWarning, ParsedLanguageFile, ParsedLanguageValue, PatchouliArchiveFile,
+    ReviewSettings, TranslationEntry, TranslationOrigin, discover_books, discover_language_files,
+    extract_entries, extract_i18n_keys, merge_languages, normalize_locale,
 };
 use yc_metadata::{ArchiveLookup, MetadataAnalysis, ModInfo, analyze_metadata};
 
@@ -162,7 +162,7 @@ pub struct AnalysisResult {
     pub language_files: Vec<LanguageFileInfo>,
     pub patchouli_books: Vec<PatchouliBookInfo>,
     pub recommended_source_locale: Option<String>,
-    pub existing_japanese_translation_count: usize,
+    pub existing_target_translation_count: usize,
     pub missing_source_keys_count: usize,
     pub warnings: Vec<AnalysisWarning>,
     pub is_signed: bool,
@@ -213,7 +213,7 @@ impl AnalysisData {
                 entry.origin == TranslationOrigin::Existing && !entry.target_text.trim().is_empty()
             })
             .count();
-        let existing_japanese_translation_count = language_existing_count
+        let existing_target_translation_count = language_existing_count
             + self
                 .patchouli_entries
                 .iter()
@@ -225,6 +225,23 @@ impl AnalysisData {
                             .is_some_and(|text| !text.trim().is_empty())
                 })
                 .count();
+        let same_language_entry_count = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .source_locale
+                    .as_deref()
+                    .is_some_and(|locale| normalize_locale(locale) == settings.target_locale)
+            })
+            .count()
+            + if settings.target_locale == "en_us" {
+                self.patchouli_entries
+                    .iter()
+                    .filter(|entry| settings.included_namespaces.contains(&entry.namespace))
+                    .count()
+            } else {
+                0
+            };
         let missing_source_keys_count = count_missing_source_keys(
             &self.parsed_languages,
             &settings.included_namespaces,
@@ -233,13 +250,15 @@ impl AnalysisData {
 
         ReviewMergeResult {
             entries,
-            existing_japanese_translation_count,
+            existing_target_translation_count,
+            same_language_entry_count,
             missing_source_keys_count,
         }
     }
 
     fn resolve_settings(&self, settings: &ReviewSettings) -> ReviewSettings {
         let mut resolved = settings.clone();
+        resolved.target_locale = normalize_locale(&resolved.target_locale);
         if resolved.source_locale.trim().is_empty() {
             resolved.source_locale = self
                 .result
@@ -256,7 +275,8 @@ impl AnalysisData {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewMergeResult {
     pub entries: Vec<TranslationEntry>,
-    pub existing_japanese_translation_count: usize,
+    pub existing_target_translation_count: usize,
+    pub same_language_entry_count: usize,
     pub missing_source_keys_count: usize,
 }
 
@@ -285,6 +305,14 @@ pub enum AnalysisError {
 pub fn analyze_shaderpack(
     path: impl AsRef<Path>,
     namespace: &str,
+) -> Result<AnalysisData, AnalysisError> {
+    analyze_shaderpack_with_target_locale(path, namespace, DEFAULT_TARGET_LOCALE)
+}
+
+pub fn analyze_shaderpack_with_target_locale(
+    path: impl AsRef<Path>,
+    namespace: &str,
+    target_locale: &str,
 ) -> Result<AnalysisData, AnalysisError> {
     let path = path.as_ref();
     let source = if path.is_dir() {
@@ -385,21 +413,25 @@ pub fn analyze_shaderpack(
 
     let cancellation = CancellationToken::default();
     let included_namespaces = vec![namespace.to_owned()];
+    let target_locale = normalize_locale(target_locale);
     let recommendation = source_language_recommendation_cancellable(
         &parsed_languages,
         &included_namespaces,
+        &target_locale,
         &cancellation,
     )?;
     let default_settings = ReviewSettings {
         source_locale: recommendation.clone().unwrap_or_default(),
         fallback_priority: Vec::new(),
-        preserve_existing_japanese: true,
+        preserve_existing_target: true,
         fill_missing_from_other_languages: true,
         included_namespaces,
+        target_locale: target_locale.clone(),
     };
-    let existing_japanese_translation_count = count_existing_japanese_cancellable(
+    let existing_target_translation_count = count_existing_target_cancellable(
         &parsed_languages,
         &default_settings.included_namespaces,
+        &target_locale,
         &cancellation,
     )?;
     let missing_source_keys_count = count_missing_source_keys_cancellable(
@@ -429,7 +461,7 @@ pub fn analyze_shaderpack(
             language_files,
             patchouli_books: Vec::new(),
             recommended_source_locale: recommendation,
-            existing_japanese_translation_count,
+            existing_target_translation_count,
             missing_source_keys_count,
             warnings,
             is_signed: false,
@@ -472,12 +504,28 @@ pub fn analyze_jar(
     cancellation: &CancellationToken,
     on_progress: impl FnMut(AnalysisProgress),
 ) -> Result<AnalysisData, AnalysisError> {
-    analyze_jar_with_limits(path, ArchiveLimits::default(), cancellation, on_progress)
+    analyze_jar_with_target_locale(path, DEFAULT_TARGET_LOCALE, cancellation, on_progress)
+}
+
+pub fn analyze_jar_with_target_locale(
+    path: impl AsRef<Path>,
+    target_locale: &str,
+    cancellation: &CancellationToken,
+    on_progress: impl FnMut(AnalysisProgress),
+) -> Result<AnalysisData, AnalysisError> {
+    analyze_jar_with_limits(
+        path,
+        ArchiveLimits::default(),
+        target_locale,
+        cancellation,
+        on_progress,
+    )
 }
 
 fn analyze_jar_with_limits(
     path: impl AsRef<Path>,
     limits: ArchiveLimits,
+    target_locale: &str,
     cancellation: &CancellationToken,
     on_progress: impl FnMut(AnalysisProgress),
 ) -> Result<AnalysisData, AnalysisError> {
@@ -681,11 +729,13 @@ fn analyze_jar_with_limits(
         "言語ファイルを解析しました",
     );
 
+    let target_locale = normalize_locale(target_locale);
     let (patchouli_books, patchouli_entries, patchouli_i18n_keys) = collect_patchouli_data(
         &root_paths,
         &mut root,
         &mut opened_nested,
         &nested_indices,
+        &target_locale,
         cancellation,
         &mut warnings,
     )?;
@@ -737,7 +787,7 @@ fn analyze_jar_with_limits(
     let mut default_settings = ReviewSettings {
         source_locale: String::new(),
         fallback_priority: Vec::new(),
-        preserve_existing_japanese: true,
+        preserve_existing_target: true,
         fill_missing_from_other_languages: true,
         included_namespaces: namespaces
             .iter()
@@ -746,6 +796,7 @@ fn analyze_jar_with_limits(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
+        target_locale: target_locale.clone(),
     };
     let mut recommendation_namespaces = default_settings.included_namespaces.clone();
     if recommendation_namespaces.is_empty() {
@@ -759,6 +810,7 @@ fn analyze_jar_with_limits(
     let recommendation = source_language_recommendation_cancellable(
         &parsed_languages,
         &recommendation_namespaces,
+        &target_locale,
         cancellation,
     )?;
     ensure_not_cancelled(cancellation)?;
@@ -769,9 +821,10 @@ fn analyze_jar_with_limits(
         "翻訳元を推奨しました",
     );
     default_settings.source_locale = recommendation.clone().unwrap_or_default();
-    let existing_japanese_translation_count = count_existing_japanese_cancellable(
+    let existing_target_translation_count = count_existing_target_cancellable(
         &parsed_languages,
         &default_settings.included_namespaces,
+        &target_locale,
         cancellation,
     )? + patchouli_entries
         .iter()
@@ -820,7 +873,7 @@ fn analyze_jar_with_limits(
             language_files: language_summaries,
             patchouli_books,
             recommended_source_locale: recommendation,
-            existing_japanese_translation_count,
+            existing_target_translation_count,
             missing_source_keys_count,
             warnings,
             is_signed,
@@ -1042,6 +1095,7 @@ fn collect_patchouli_data(
     root: &mut Archive<File>,
     nested: &mut [OpenNestedArchive],
     nested_indices: &HashMap<String, usize>,
+    target_locale: &str,
     cancellation: &CancellationToken,
     warnings: &mut Vec<AnalysisWarning>,
 ) -> Result<CollectedPatchouliData, AnalysisError> {
@@ -1124,7 +1178,7 @@ fn collect_patchouli_data(
                     });
                 }
             } else {
-                let extraction = extract_entries(&book, "en_us", "ja_jp");
+                let extraction = extract_entries(&book, "en_us", target_locale);
                 for warning in extraction.warnings {
                     warnings.push(AnalysisWarning {
                         container_path: container_path.clone(),
@@ -1555,6 +1609,7 @@ fn count_missing_source_keys_cancellable(
 fn source_language_recommendation_cancellable(
     files: &[ParsedLanguageFile],
     included_namespaces: &[String],
+    target_locale: &str,
     cancellation: &CancellationToken,
 ) -> Result<Option<String>, AnalysisError> {
     let included: HashSet<&str> = included_namespaces.iter().map(String::as_str).collect();
@@ -1605,7 +1660,11 @@ fn source_language_recommendation_cancellable(
         ensure_not_cancelled(cancellation)?;
         *counts.entry(locale).or_default() += keys.len();
     }
-    let recommendation = if let Some(english) = locale_spellings.get("en_us") {
+    let target_locale = normalize_locale(target_locale);
+    let has_non_target = counts.keys().any(|locale| locale != &target_locale);
+    let recommendation = if target_locale != "en_us"
+        && let Some(english) = locale_spellings.get("en_us")
+    {
         Some(english.clone())
     } else {
         let mut best_locale: Option<&str> = None;
@@ -1614,8 +1673,10 @@ fn source_language_recommendation_cancellable(
             if index % PROGRESS_ENTRY_INTERVAL as usize == 0 {
                 ensure_not_cancelled(cancellation)?;
             }
-            if *count > best_count
-                || (*count == best_count && best_locale.is_none_or(|best| locale.as_str() < best))
+            if (!has_non_target || locale != &target_locale)
+                && (*count > best_count
+                    || (*count == best_count
+                        && best_locale.is_none_or(|best| locale.as_str() < best)))
             {
                 best_locale = Some(locale);
                 best_count = *count;
@@ -1627,15 +1688,17 @@ fn source_language_recommendation_cancellable(
     Ok(recommendation)
 }
 
-fn count_existing_japanese_cancellable(
+fn count_existing_target_cancellable(
     files: &[ParsedLanguageFile],
     included_namespaces: &[String],
+    target_locale: &str,
     cancellation: &CancellationToken,
 ) -> Result<usize, AnalysisError> {
     let included: HashSet<&str> = included_namespaces.iter().map(String::as_str).collect();
     let mut effective = BTreeMap::<(String, String), bool>::new();
     for file in files.iter().filter(|file| {
-        file.file.normalized_locale == "ja_jp" && included.contains(file.file.namespace.as_str())
+        file.file.normalized_locale == normalize_locale(target_locale)
+            && included.contains(file.file.namespace.as_str())
     }) {
         ensure_not_cancelled(cancellation)?;
         for (index, (key, value)) in file.entries.iter().enumerate() {

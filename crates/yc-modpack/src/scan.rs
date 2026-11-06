@@ -32,7 +32,11 @@ struct KubeJsLanguagePath {
 }
 
 /// Analyze an imported set of instance-relative files without reading from disk.
-pub fn analyze_files(files: &BTreeMap<String, Vec<u8>>) -> Result<ModpackData, ModpackError> {
+pub fn analyze_files(
+    files: &BTreeMap<String, Vec<u8>>,
+    target_locale: &str,
+) -> Result<ModpackData, ModpackError> {
+    let target_locale = yc_language::normalize_locale(target_locale);
     let normalized = normalize_file_map(files)?;
     let game_prefix = find_game_prefix(normalized.keys().map(String::as_str));
     let game_files = game_files(&normalized, &game_prefix);
@@ -53,7 +57,7 @@ pub fn analyze_files(files: &BTreeMap<String, Vec<u8>>) -> Result<ModpackData, M
     let mut entries = Vec::new();
 
     for source_path in ftb_sources {
-        let target_game_path = counterpart_ftb_path(&source_path, "ja_jp");
+        let target_game_path = counterpart_ftb_path(&source_path, &target_locale);
         let source_instance_path = add_game_prefix(&game_prefix, &source_path.path);
         let target_instance_path = add_game_prefix(&game_prefix, &target_game_path);
         let source_bytes = game_files
@@ -82,7 +86,7 @@ pub fn analyze_files(files: &BTreeMap<String, Vec<u8>>) -> Result<ModpackData, M
     }
 
     for source_path in kubejs_sources {
-        let target_game_path = kubejs_counterpart_path(&source_path, "ja_jp");
+        let target_game_path = kubejs_counterpart_path(&source_path, &target_locale);
         let source_instance_path = add_game_prefix(&game_prefix, &source_path.path);
         let target_instance_path = add_game_prefix(&game_prefix, &target_game_path);
         let source_bytes = game_files

@@ -234,6 +234,7 @@ struct ExportContext {
     malformed_translation_files: Vec<String>,
     duplicate_key_warnings: Vec<(String, String)>,
     source_locale: String,
+    target_locale: String,
     is_signed: bool,
     minecraft_version_detection: Option<yc_export::MinecraftVersionDetection>,
 }
@@ -246,6 +247,7 @@ impl ExportContext {
             language_files: &self.language_files,
             legacy_parse_escapes_namespaces: &self.legacy_parse_escapes_namespaces,
             source_locale: &self.source_locale,
+            target_locale: &self.target_locale,
             writer_options: WriterOptions::default(),
             malformed_translation_files: &self.malformed_translation_files,
             placeholder_warnings: &self.placeholder_warnings,
@@ -1146,7 +1148,19 @@ fn export_selected_merged_resource_pack_core(
     } else {
         merged_resource_pack_display_name(&project_pack_name)
     };
-    let pack_description = format!("{pack_name} の日本語訳（{} mod）", merged_mods.len());
+    let target_locale = contexts
+        .first()
+        .map(|(_, context)| context.target_locale.as_str())
+        .unwrap_or(yc_language::DEFAULT_TARGET_LOCALE);
+    let pack_description = if normalize_locale(target_locale) == yc_language::DEFAULT_TARGET_LOCALE
+    {
+        format!("{pack_name} の日本語訳（{} mod）", merged_mods.len())
+    } else {
+        format!(
+            "{pack_name} translation ({target_locale}, {} mods)",
+            merged_mods.len()
+        )
+    };
     let result = (|| {
         let report = export_merged_resource_pack(
             &merged_mods,
@@ -1461,7 +1475,17 @@ fn export_selected_modified_jars_core(
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("mod");
-            let filename = format!("{}-{}-ja.jar", safe_file_component(file_stem), unit.id);
+            let target_suffix =
+                if normalize_locale(&context.target_locale) == yc_language::DEFAULT_TARGET_LOCALE {
+                    "ja".to_owned()
+                } else {
+                    normalize_locale(&context.target_locale)
+                };
+            let filename = format!(
+                "{}-{}-{target_suffix}.jar",
+                safe_file_component(file_stem),
+                unit.id
+            );
             let output = output_directory.join(filename);
             if output.exists() {
                 results.push(mod_export_result(
@@ -1767,13 +1791,17 @@ pub(crate) fn export_modpack_files_core(
         let source = repository
             .mod_unit_source_path(unit.id)
             .map_err(|error| project_error(error.to_string()))?;
-        let (analysis, data) = super::modpack::analyze_modpack_archive(&source)?;
+        let target_locale = repository
+            .target_locale()
+            .map_err(|error| project_error(error.to_string()))?;
+        let (analysis, data) =
+            super::modpack::analyze_modpack_archive_with_target_locale(&source, &target_locale)?;
         let settings = repository
             .review_settings_for_unit(unit.id)
             .map_err(|error| project_error(error.to_string()))?;
         let (translations, excluded_kubejs_output_paths) =
             modpack_export_translations(opened, unit.id, &data, &settings)?;
-        let output_files = yc_modpack::write_ja_jp(&data, &translations)
+        let output_files = yc_modpack::write_target_locale(&data, &translations, &target_locale)
             .map_err(|error| export_error(error.safe_detail()))?
             .into_iter()
             .filter(|output| !excluded_kubejs_output_paths.contains(&output.path))
@@ -1966,6 +1994,7 @@ pub(crate) fn export_selected_shaderpacks_core(
             &source_path,
             &staging,
             &source_lang.file_name,
+            &context.target_locale,
             &translations,
         );
         if let Err(error) = write_result {
@@ -1980,11 +2009,12 @@ pub(crate) fn export_selected_shaderpacks_core(
         let remove_result = fs::remove_file(&staging).map_err(export_error);
         let bytes = bytes?;
         remove_result?;
-        let base_name = shaderpack_output_filename(unit);
+        let base_name = shaderpack_output_filename(unit, &context.target_locale);
         let filename = if units
             .iter()
             .filter(|candidate| {
-                shaderpack_output_filename(candidate).to_lowercase() == base_name.to_lowercase()
+                shaderpack_output_filename(candidate, &context.target_locale).to_lowercase()
+                    == base_name.to_lowercase()
             })
             .count()
             > 1
@@ -2130,12 +2160,17 @@ pub(crate) fn export_selected_shaderpacks_core(
     })
 }
 
-fn shaderpack_output_filename(unit: &ModUnitRecord) -> String {
+fn shaderpack_output_filename(unit: &ModUnitRecord, target_locale: &str) -> String {
     let stem = Path::new(&unit.source_filename)
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(&unit.source_filename);
-    format!("{}-ja.zip", safe_file_component(stem))
+    let suffix = if normalize_locale(target_locale) == yc_language::DEFAULT_TARGET_LOCALE {
+        "ja".to_owned()
+    } else {
+        normalize_locale(target_locale)
+    };
+    format!("{}-{suffix}.zip", safe_file_component(stem))
 }
 
 fn shaderpack_instance_root(opened: &OpenedProject) -> Result<PathBuf, AppError> {
@@ -2170,22 +2205,65 @@ fn shaderpack_lang_export(
                 "翻訳元の言語ファイルが見つかりません。",
             )
         })?;
-    let entries = context
-        .entries
-        .iter()
-        .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
-        .map(|entry| (entry.key.clone(), entry.target_text.clone()))
-        .collect::<Vec<_>>();
-    let raw_keys = yc_shaderpack::raw_keys_for_file(&context.source_jar, &source.archive_path)
-        .map_err(|error| {
+    let english_target = normalize_locale(&context.target_locale) == "en_us";
+    let base_file = if english_target {
+        context
+            .language_files
+            .iter()
+            .find(|language| {
+                language.namespace == namespace && language.normalized_locale == "en_us"
+            })
+            .unwrap_or(source)
+    } else {
+        source
+    };
+    let (mut entries, raw_keys) = if english_target {
+        // en_usにはfallback先がないため、原文を土台にして訳を重ね、空欄の値を残す。
+        let mut archive = yc_archive::Archive::open(&context.source_jar).map_err(|error| {
             AppError::new(
                 "shaderpack_read",
                 "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
                 Some(error.to_string()),
             )
         })?;
+        let bytes = archive
+            .read_entry(&base_file.archive_path, yc_archive::EntryKind::Text)
+            .map_err(|error| {
+                AppError::new(
+                    "shaderpack_read",
+                    "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                    Some(error.to_string()),
+                )
+            })?;
+        let parsed = yc_shaderpack::parse_lang(&bytes);
+        (parsed.entries, parsed.raw_keys)
+    } else {
+        (
+            Vec::new(),
+            yc_shaderpack::raw_keys_for_file(&context.source_jar, &source.archive_path).map_err(
+                |error| {
+                    AppError::new(
+                        "shaderpack_read",
+                        "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                        Some(error.to_string()),
+                    )
+                },
+            )?,
+        )
+    };
+    for translation in context
+        .entries
+        .iter()
+        .filter(|entry| entry.namespace == namespace && !is_empty_translation(&entry.target_text))
+    {
+        if let Some((_, value)) = entries.iter_mut().find(|(key, _)| key == &translation.key) {
+            value.clone_from(&translation.target_text);
+        } else {
+            entries.push((translation.key.clone(), translation.target_text.clone()));
+        }
+    }
     Ok((
-        yc_shaderpack::japanese_filename(&source.file_name).to_owned(),
+        yc_shaderpack::japanese_filename(&source.file_name, &context.target_locale),
         yc_shaderpack::write_lang_with_raw_keys(&entries, &raw_keys),
     ))
 }
@@ -2197,6 +2275,9 @@ fn modpack_export_translations(
     settings: &ReviewSettings,
 ) -> Result<(BTreeMap<String, String>, HashSet<String>), AppError> {
     let repository = opened.repository();
+    let target_locale = repository
+        .target_locale()
+        .map_err(|error| project_error(error.to_string()))?;
     let saved_lang = repository
         .list_entries(Some(mod_unit_id))
         .map_err(|error| project_error(error.to_string()))?;
@@ -2215,7 +2296,7 @@ fn modpack_export_translations(
         })
         .filter_map(|file| {
             let (directory, _) = file.path.rsplit_once('/')?;
-            Some(format!("{directory}/ja_jp.json"))
+            Some(format!("{directory}/{target_locale}.json"))
         })
         .collect();
     let mut translations = BTreeMap::new();
@@ -2250,7 +2331,7 @@ fn modpack_export_translations(
                     // Explicitly cleared KubeJS translations suppress the previous Japanese value.
                     translations.insert(entry.key.clone(), target.clone());
                 } else if entry.key.starts_with("ftbquests:")
-                    && !settings.preserve_existing_japanese
+                    && !settings.preserve_existing_target
                     && entry.translatable
                 {
                     translations.insert(entry.key.clone(), entry.source_text.clone());
@@ -2258,7 +2339,7 @@ fn modpack_export_translations(
             } else {
                 translations.insert(entry.key.clone(), target.clone());
             }
-        } else if !settings.preserve_existing_japanese && entry.translatable {
+        } else if !settings.preserve_existing_target && entry.translatable {
             if entry.key.starts_with("ftbquests:") {
                 translations.insert(entry.key.clone(), entry.source_text.clone());
             } else if entry.key.starts_with("kubejs:") {
@@ -2280,7 +2361,12 @@ fn validate_modpack_files_for_units(
             .repository()
             .mod_unit_source_path(unit.id)
             .map_err(|error| project_error(error.to_string()))?;
-        let (_analysis, data) = super::modpack::analyze_modpack_archive(&source)?;
+        let target_locale = opened
+            .repository()
+            .target_locale()
+            .map_err(|error| project_error(error.to_string()))?;
+        let (_analysis, data) =
+            super::modpack::analyze_modpack_archive_with_target_locale(&source, &target_locale)?;
         let settings = opened
             .repository()
             .review_settings_for_unit(unit.id)
@@ -2678,7 +2764,13 @@ pub(crate) fn restore_modpack_file_core(
             let source = repository
                 .mod_unit_source_path(unit.id)
                 .map_err(|error| project_error(error.to_string()))?;
-            let (_, data) = super::modpack::analyze_modpack_archive(&source)?;
+            let target_locale = repository
+                .target_locale()
+                .map_err(|error| project_error(error.to_string()))?;
+            let (_, data) = super::modpack::analyze_modpack_archive_with_target_locale(
+                &source,
+                &target_locale,
+            )?;
             modpack_instance_root(&unit, &data.scan.game_directory)?
         }
         ModUnitSourceKind::Shaderpack => shaderpack_instance_root(opened)?,
@@ -3288,6 +3380,9 @@ pub(crate) fn export_language_file_core(
 
 fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportContext, AppError> {
     let repository = opened.repository();
+    let target_locale = repository
+        .target_locale()
+        .map_err(|error| project_error(error.to_string()))?;
     let unit = repository
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?
@@ -3298,21 +3393,27 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| project_error(error.to_string()))?;
     let analysis = match unit.source_kind {
-        ModUnitSourceKind::Jar => {
-            yc_analysis::analyze_jar(&source_jar, &CancellationToken::default(), |_| {}).map_err(
-                |error| {
-                    AppError::new(
-                        "archive_read",
-                        "JARを読み込めませんでした。プロジェクトを開き直してください。",
-                        Some(error.to_string()),
-                    )
-                },
-            )?
+        ModUnitSourceKind::Jar => yc_analysis::analyze_jar_with_target_locale(
+            &source_jar,
+            &target_locale,
+            &CancellationToken::default(),
+            |_| {},
+        )
+        .map_err(|error| {
+            AppError::new(
+                "archive_read",
+                "JARを読み込めませんでした。プロジェクトを開き直してください。",
+                Some(error.to_string()),
+            )
+        })?,
+        ModUnitSourceKind::Modpack => {
+            super::modpack::analyze_modpack_archive_with_target_locale(&source_jar, &target_locale)?
+                .0
         }
-        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_jar)?.0,
-        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack_with_target_locale(
             &source_jar,
             &shaderpack_namespace(&unit.source_filename),
+            &target_locale,
         )
         .map_err(|error| {
             AppError::new(
@@ -3333,7 +3434,8 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
     let saved_document_entries = repository
         .list_document_entries(Some(mod_unit_id))
         .map_err(|error| project_error(error.to_string()))?;
-    let patchouli_documents = patchouli_document_exports(&source_jar, &saved_document_entries)?;
+    let patchouli_documents =
+        patchouli_document_exports(&source_jar, &saved_document_entries, &target_locale)?;
     let summary = repository
         .entry_summary(Some(mod_unit_id))
         .map_err(|error| project_error(error.to_string()))?;
@@ -3419,7 +3521,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
                 && language_files.iter().any(|file| {
                     file.archive_path == warning.path
                         && (file.normalized_locale == normalize_locale(&source_locale)
-                            || file.normalized_locale == "ja_jp")
+                            || file.normalized_locale == normalize_locale(&target_locale))
                 })
         })
         .map(|warning| (warning.path.clone(), warning.message.clone()))
@@ -3489,6 +3591,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         malformed_translation_files,
         duplicate_key_warnings,
         source_locale,
+        target_locale,
         is_signed: analysis.result.is_signed,
         minecraft_version_detection,
     })
@@ -3497,6 +3600,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
 fn patchouli_document_exports(
     source_jar: &Path,
     entries: &[DocumentProjectEntry],
+    target_locale: &str,
 ) -> Result<Vec<PatchouliDocumentExport>, AppError> {
     let mut grouped =
         BTreeMap::<(String, String), (String, Vec<PatchouliDocumentTranslation>)>::new();
@@ -3509,7 +3613,7 @@ fn patchouli_document_exports(
             |(container, path)| (container.to_owned(), path),
         );
         let target_path =
-            yc_language::patchouli_target_document_path(document_path, "en_us", "ja_jp")
+            yc_language::patchouli_target_document_path(document_path, "en_us", target_locale)
                 .ok_or_else(|| {
                     export_error(format!(
                         "Patchouli文書のパスを確認できません: {document_path}"
@@ -4184,7 +4288,12 @@ mod export_path_regression_tests {
         validate_project_core_for_units,
     };
     use crate::commands::editor::update_entries_batch_core;
-    use crate::{commands::project::create_project_from_sources_core, paths::AppPaths};
+    use crate::{
+        commands::project::{
+            create_project_from_sources_core, create_project_from_sources_with_target_locale_core,
+        },
+        paths::AppPaths,
+    };
     use yc_analysis::CancellationToken;
     use yc_project::{EntryUpdate, JarReplacementRecord, OpenedProject, UpdateOrigin};
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
@@ -4219,6 +4328,13 @@ mod export_path_regression_tests {
     fn export_project_fixture_with_instance(
         with_instance: bool,
     ) -> (TemporaryDirectory, OpenedProject, i64) {
+        export_project_fixture_with_target_locale(with_instance, yc_language::DEFAULT_TARGET_LOCALE)
+    }
+
+    fn export_project_fixture_with_target_locale(
+        with_instance: bool,
+        target_locale: &str,
+    ) -> (TemporaryDirectory, OpenedProject, i64) {
         let temporary = TemporaryDirectory::create();
         let source = temporary.0.join("fixture.jar");
         let file = fs::File::create(&source).expect("fixture JAR should be created");
@@ -4244,11 +4360,12 @@ mod export_path_regression_tests {
         let paths = AppPaths::create(temporary.0.join("app-data"))
             .expect("application data directories should be created");
         let instance = temporary.0.join("instance");
-        let created = create_project_from_sources_core(
+        let created = create_project_from_sources_with_target_locale_core(
             &paths,
             &[source],
             with_instance.then_some(instance.as_path()),
             false,
+            target_locale,
             &CancellationToken::default(),
             |_, _, _, _| {},
         )
@@ -4284,6 +4401,33 @@ mod export_path_regression_tests {
             })
             .expect("fixture translation should be saved");
         (temporary, opened, mod_unit_id)
+    }
+
+    #[test]
+    fn selected_modified_jar_filename_uses_project_target_locale() {
+        let (temporary, opened, mod_unit_id) =
+            export_project_fixture_with_target_locale(false, "de_de");
+        let output_directory = temporary.0.join("exports");
+        let results = benchmark_export_selected_modified_jars(
+            &opened,
+            &[mod_unit_id],
+            &output_directory,
+            false,
+        )
+        .unwrap();
+
+        let result = results
+            .iter()
+            .find(|result| result.mod_unit_id == mod_unit_id)
+            .unwrap();
+        assert_eq!(result.status, "success");
+        let output = Path::new(result.output_path.as_deref().unwrap());
+        let expected_filename = format!("fixture-{mod_unit_id}-de_de.jar");
+        assert_eq!(
+            output.file_name().and_then(|name| name.to_str()),
+            Some(expected_filename.as_str())
+        );
+        assert!(output.is_file());
     }
 
     fn write_in_place_fixture_jar(path: &Path, mod_id: &str) {

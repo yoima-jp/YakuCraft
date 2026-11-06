@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    FtbQuestsStatus, SnbtValue, analyze_files, parse_snbt, scan_instance, write_ja_jp, write_snbt,
+    FtbQuestsStatus, SnbtValue, analyze_files, parse_snbt, scan_instance, write_snbt,
+    write_target_locale,
 };
 
 fn files(items: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
@@ -63,7 +64,7 @@ fn single_file_prefers_existing_ja_values_and_keeps_nontranslatable_lines() {
         ),
     ]);
 
-    let data = analyze_files(&imported).expect("modpack language files should parse");
+    let data = analyze_files(&imported, "ja_jp").expect("modpack language files should parse");
     assert_eq!(data.scan.ftb_quests, FtbQuestsStatus::Single);
     assert_eq!(data.entries.len(), 6);
     assert!(!data.entries[2].translatable);
@@ -78,7 +79,8 @@ fn single_file_prefers_existing_ja_values_and_keeps_nontranslatable_lines() {
         "ftbquests:en_us.snbt#quest.q.title".to_owned(),
         "翻訳タイトル".to_owned(),
     )]);
-    let output = write_ja_jp(&data, &translations).expect("Japanese FTB output should be written");
+    let output = write_target_locale(&data, &translations, "ja_jp")
+        .expect("Japanese FTB output should be written");
     assert_eq!(output.len(), 1);
     assert_eq!(output[0].path, "config/ftbquests/quests/lang/ja_jp.snbt");
     let rendered = std::str::from_utf8(&output[0].bytes).unwrap();
@@ -117,7 +119,7 @@ fn split_ftb_files_override_a_stale_single_file() {
         ),
     ]);
 
-    let data = analyze_files(&imported).expect("split language files should parse");
+    let data = analyze_files(&imported, "ja_jp").expect("split language files should parse");
     assert_eq!(data.scan.ftb_quests, FtbQuestsStatus::Split);
     assert_eq!(data.entries.len(), 1);
     assert_eq!(data.entries[0].source_text, "canonical split");
@@ -130,7 +132,7 @@ fn split_ftb_files_override_a_stale_single_file() {
         "ftbquests:chapters/start.snbt#quest.q.title"
     );
 
-    let output = write_ja_jp(&data, &BTreeMap::new()).unwrap();
+    let output = write_target_locale(&data, &BTreeMap::new(), "ja_jp").unwrap();
     assert_eq!(output.len(), 1);
     assert_eq!(
         output[0].path,
@@ -153,13 +155,14 @@ fn blank_ftb_translation_uses_the_existing_translation_as_untranslated_does() {
             "{ quest.q.title: \"既存タイトル\" }",
         ),
     ]);
-    let data = analyze_files(&imported).expect("FTB language files should parse");
+    let data = analyze_files(&imported, "ja_jp").expect("FTB language files should parse");
     let translations = BTreeMap::from([(
         "ftbquests:en_us.snbt#quest.q.title".to_owned(),
         " \u{3000}".to_owned(),
     )]);
 
-    let output = write_ja_jp(&data, &translations).expect("FTB output should be written");
+    let output =
+        write_target_locale(&data, &translations, "ja_jp").expect("FTB output should be written");
     let parsed = parse_snbt(std::str::from_utf8(&output[0].bytes).unwrap()).unwrap();
     assert_eq!(
         parsed.entries[0].1,
@@ -174,7 +177,8 @@ fn old_inline_chapters_are_reported_without_extracting_entries() {
         "{ quests: [{ title: \"inline quest text\" }] }",
     )]);
 
-    let data = analyze_files(&imported).expect("legacy state detection does not parse chapters");
+    let data =
+        analyze_files(&imported, "ja_jp").expect("legacy state detection does not parse chapters");
     assert_eq!(data.scan.ftb_quests, FtbQuestsStatus::LegacyInline);
     assert!(data.entries.is_empty());
 }
@@ -192,7 +196,7 @@ fn kubejs_namespaces_are_extracted_and_written_in_instance_relative_paths() {
         ),
     ]);
 
-    let data = analyze_files(&imported).expect("KubeJS JSON language files should parse");
+    let data = analyze_files(&imported, "ja_jp").expect("KubeJS JSON language files should parse");
     assert_eq!(data.scan.kubejs_namespaces, ["example"]);
     assert_eq!(data.entries.len(), 2);
     assert_eq!(
@@ -203,7 +207,7 @@ fn kubejs_namespaces_are_extracted_and_written_in_instance_relative_paths() {
         "kubejs:example#tooltip.example".to_owned(),
         "ツールチップ".to_owned(),
     )]);
-    let output = write_ja_jp(&data, &translations).unwrap();
+    let output = write_target_locale(&data, &translations, "ja_jp").unwrap();
     assert_eq!(output.len(), 1);
     assert_eq!(
         output[0].path,
@@ -212,6 +216,66 @@ fn kubejs_namespaces_are_extracted_and_written_in_instance_relative_paths() {
     let written: BTreeMap<String, String> = serde_json::from_slice(&output[0].bytes).unwrap();
     assert_eq!(written["item.example.widget"], "ウィジェット");
     assert_eq!(written["tooltip.example"], "ツールチップ");
+}
+
+#[test]
+fn german_modpack_outputs_use_de_de_paths_and_english_kubejs_keeps_source_keys() {
+    let imported = files(&[
+        (
+            "config/ftbquests/quests/lang/en_us.snbt",
+            "{ quest.q.title: \"English title\" }",
+        ),
+        (
+            "kubejs/assets/example/lang/en_us.json",
+            r#"{"translated":"Source","missing":"Keep original"}"#,
+        ),
+    ]);
+    let data = analyze_files(&imported, "de_de").expect("modpack source files should parse");
+    let output = write_target_locale(
+        &data,
+        &BTreeMap::from([
+            (
+                "ftbquests:en_us.snbt#quest.q.title".to_owned(),
+                "Titel".to_owned(),
+            ),
+            (
+                "kubejs:example#translated".to_owned(),
+                "Übersetzt".to_owned(),
+            ),
+        ]),
+        "de_de",
+    )
+    .unwrap();
+    assert!(
+        output
+            .iter()
+            .any(|file| { file.path == "config/ftbquests/quests/lang/de_de.snbt" })
+    );
+    let kubejs = output
+        .iter()
+        .find(|file| file.path == "kubejs/assets/example/lang/de_de.json")
+        .unwrap();
+    let translated: BTreeMap<String, String> = serde_json::from_slice(&kubejs.bytes).unwrap();
+    assert_eq!(translated["translated"], "Übersetzt");
+    assert!(!translated.contains_key("missing"));
+
+    let english = analyze_files(&imported, "en_us").expect("English target should parse");
+    let output = write_target_locale(
+        &english,
+        &BTreeMap::from([
+            ("kubejs:example#translated".to_owned(), "Changed".to_owned()),
+            ("kubejs:example#missing".to_owned(), String::new()),
+        ]),
+        "en_us",
+    )
+    .unwrap();
+    let kubejs = output
+        .iter()
+        .find(|file| file.path == "kubejs/assets/example/lang/en_us.json")
+        .unwrap();
+    let english: BTreeMap<String, String> = serde_json::from_slice(&kubejs.bytes).unwrap();
+    assert_eq!(english["translated"], "Changed");
+    assert_eq!(english["missing"], "Keep original");
 }
 
 #[test]

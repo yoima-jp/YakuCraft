@@ -72,11 +72,19 @@ pub(crate) fn read_modpack_archive(path: &Path) -> Result<BTreeMap<String, Vec<u
     Ok(files)
 }
 
+#[cfg(test)]
 pub(crate) fn analyze_modpack_archive(
     path: &Path,
 ) -> Result<(yc_analysis::AnalysisData, ModpackData), AppError> {
+    analyze_modpack_archive_with_target_locale(path, yc_language::DEFAULT_TARGET_LOCALE)
+}
+
+pub(crate) fn analyze_modpack_archive_with_target_locale(
+    path: &Path,
+    target_locale: &str,
+) -> Result<(yc_analysis::AnalysisData, ModpackData), AppError> {
     let files = read_modpack_archive(path)?;
-    let modpack = analyze_files(&files).map_err(|error| {
+    let modpack = analyze_files(&files, target_locale).map_err(|error| {
         AppError::new(
             "modpack_analysis",
             "Modpack の翻訳ファイルを解析できませんでした。",
@@ -117,8 +125,9 @@ pub(crate) fn analyze_modpack_archive(
         std::env::temp_dir().join(format!("yakucraft-modpack-{}.jar", uuid::Uuid::new_v4()));
     let result = (|| {
         fs::write(&temp_path, bytes).map_err(modpack_archive_error)?;
-        let mut analysis = yc_analysis::analyze_jar(
+        let mut analysis = yc_analysis::analyze_jar_with_target_locale(
             &temp_path,
+            target_locale,
             &yc_analysis::CancellationToken::default(),
             |_| {},
         )

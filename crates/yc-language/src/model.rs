@@ -60,9 +60,12 @@ pub struct ParsedLanguageFile {
 pub struct ReviewSettings {
     pub source_locale: String,
     pub fallback_priority: Vec<String>,
-    pub preserve_existing_japanese: bool,
+    #[serde(alias = "preserveExistingJapanese")]
+    pub preserve_existing_target: bool,
     pub fill_missing_from_other_languages: bool,
     pub included_namespaces: Vec<String>,
+    #[serde(skip)]
+    pub target_locale: String,
 }
 
 impl Default for ReviewSettings {
@@ -70,9 +73,10 @@ impl Default for ReviewSettings {
         Self {
             source_locale: String::new(),
             fallback_priority: Vec::new(),
-            preserve_existing_japanese: true,
+            preserve_existing_target: true,
             fill_missing_from_other_languages: true,
             included_namespaces: Vec::new(),
+            target_locale: super::DEFAULT_TARGET_LOCALE.to_owned(),
         }
     }
 }

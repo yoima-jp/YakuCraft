@@ -16,15 +16,15 @@ use yc_analysis::{
 };
 use yc_assets::{AssetPack, AssetResolver, AssetSource, AssetType, LinkConfidence, SourceKind};
 use yc_language::{
-    DiscoveredLanguageFile, EntryFlag, LanguageFileFormat, ReviewSettings, TranslationEntry,
-    TranslationOrigin, normalize_locale,
+    DEFAULT_TARGET_LOCALE, DiscoveredLanguageFile, EntryFlag, LanguageFileFormat, ReviewSettings,
+    TranslationEntry, TranslationOrigin, normalize_locale,
 };
 use yc_project::{
     AnalysisData as ProjectAnalysisData, AssetRecord, DocumentEntryInput, IncludedNamespace,
     LanguageRecord, ModRecord, ModUnitRecord, ModUnitSourceKind, ModpackSource, NamespaceRecord,
     NestedArchiveRecord, OpenedProject, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
     ProjectReviewSettings, ProjectSource, ProjectSummary, RecentProject, RecentProjects,
-    TranslationAssetMatch, TranslationProgress, create_project_with_sources,
+    TranslationAssetMatch, TranslationProgress, create_project_with_sources_and_target_locale,
     delete_project as remove_project, list_projects, load_recent_projects, load_settings,
     normalize_project_name, open_project as open_project_file,
     rename_project as rename_project_file, save_recent_projects,
@@ -44,7 +44,7 @@ use crate::{
 pub struct ReviewSettingsInput {
     pub source_locale: String,
     pub fallback_priority: Vec<String>,
-    pub preserve_existing_japanese: bool,
+    pub preserve_existing_target: bool,
     pub fill_missing_from_other_languages: bool,
     /// Namespace名はunit間で重複するため、選択をunit IDと組にして保存する。
     pub included_namespaces: Vec<IncludedNamespace>,
@@ -119,6 +119,7 @@ pub struct ProjectAssetSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDetails {
     pub project: ProjectSummary,
+    pub target_locale: String,
     pub mods: Vec<ModSummary>,
     pub namespaces: Vec<NamespaceSummary>,
     pub languages: Vec<LanguageSummary>,
@@ -126,11 +127,11 @@ pub struct ProjectDetails {
     pub recommended_source_locale: Option<String>,
     pub source_locale: String,
     pub fallback_priority: Vec<String>,
-    pub preserve_existing_japanese: bool,
+    pub preserve_existing_target: bool,
     pub fill_missing_from_other_languages: bool,
     pub included_namespaces: Vec<IncludedNamespace>,
     pub setup_completed: bool,
-    pub existing_japanese_translation_count: usize,
+    pub existing_target_translation_count: usize,
     pub missing_source_keys_count: usize,
     pub counts: ProjectCounts,
     pub target_language_file_name: String,
@@ -145,7 +146,8 @@ pub struct ProjectDetails {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSetupSummary {
-    pub existing_japanese_translation_count: usize,
+    pub existing_target_translation_count: usize,
+    pub same_language_entry_count: usize,
     pub missing_source_keys_count: usize,
     pub assets: ProjectAssetSummary,
 }
@@ -378,15 +380,29 @@ fn load_project_analysis(
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
         .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let analysis = Arc::new(match unit.source_kind {
-        ModUnitSourceKind::Jar => {
-            yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), on_progress)
-                .map_err(analysis_error)?
+        ModUnitSourceKind::Jar => yc_analysis::analyze_jar_with_target_locale(
+            &source_path,
+            &target_locale,
+            &CancellationToken::default(),
+            on_progress,
+        )
+        .map_err(analysis_error)?,
+        ModUnitSourceKind::Modpack => {
+            super::modpack::analyze_modpack_archive_with_target_locale(
+                &source_path,
+                &target_locale,
+            )?
+            .0
         }
-        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_path)?.0,
-        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack_with_target_locale(
             &source_path,
             &shaderpack_namespace(&unit.source_filename),
+            &target_locale,
         )
         .map_err(analysis_error)?,
     });
@@ -607,6 +623,7 @@ fn resolve_mods_folder(folder: &Path) -> Result<ResolvedModsFolder, std::io::Err
 fn scan_shaderpack_candidates(
     selected_folder: &Path,
     shaderpacks_folder: &Path,
+    options: &ScanOptions,
 ) -> Vec<yc_analysis::ShaderpackScanResult> {
     let mut candidates = Vec::new();
     if selected_folder.is_dir()
@@ -640,8 +657,22 @@ fn scan_shaderpack_candidates(
     candidates.dedup();
     candidates
         .iter()
-        .map(|path| yc_analysis::scan_shaderpack(path))
+        .map(|path| yc_analysis::scan_shaderpack(path, options))
         .collect()
+}
+
+fn configured_target_locale(paths: &AppPaths) -> Result<String, AppError> {
+    let settings =
+        load_settings(&paths.settings_file).map_err(|error| database_error(error.to_string()))?;
+    let locale = settings
+        .values
+        .get("language.targetLocale")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|locale| !locale.is_empty())
+        .map(normalize_locale)
+        .unwrap_or_else(|| DEFAULT_TARGET_LOCALE.to_owned());
+    Ok(locale)
 }
 
 #[tauri::command]
@@ -672,6 +703,7 @@ pub fn scan_mods_folder(
     channel: Channel<ScanModsFolderEvent>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
+    let target_locale = configured_target_locale(&state.paths)?;
     let job_id = Uuid::new_v4().to_string();
     let cancellation = CancellationToken::default();
     state
@@ -683,6 +715,7 @@ pub fn scan_mods_folder(
     let analysis_jobs = Arc::clone(&state.analysis_jobs);
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let scan_options = ScanOptions { target_locale };
         let folder = PathBuf::from(path);
         let result = resolve_mods_folder(&folder)
             .map_err(|source| yc_analysis::AnalysisError::ScanFolderIo {
@@ -692,7 +725,7 @@ pub fn scan_mods_folder(
             .and_then(|resolved| {
                 scan_mods_folder_core(
                     &resolved.scanned_folder,
-                    &ScanOptions::default(),
+                    &scan_options,
                     &cancellation,
                     |progress| {
                         if let Err(error) = channel.send(ScanModsFolderEvent::Progress { progress })
@@ -713,7 +746,8 @@ pub fn scan_mods_folder(
                         .then_some(scan);
                     let shaderpack_root =
                         yc_modpack::resolve_game_directory(&candidate).join("shaderpacks");
-                    let shaderpacks = scan_shaderpack_candidates(&folder, &shaderpack_root);
+                    let shaderpacks =
+                        scan_shaderpack_candidates(&folder, &shaderpack_root, &scan_options);
                     let game_directory = yc_modpack::resolve_game_directory(&candidate);
                     let has_game_directory_marker = ["config", "kubejs", "shaderpacks"]
                         .iter()
@@ -787,7 +821,7 @@ pub fn scan_project_instance_sources(
 ) -> Result<String, AppError> {
     let project_io_lock = Arc::clone(&state.project_io_lock);
     let active_project = Arc::clone(&state.active_project);
-    let (instance_root, existing_hashes, existing_paths, deployment_targets) = {
+    let (instance_root, existing_hashes, existing_paths, deployment_targets, target_locale) = {
         let _project_io = project_io_lock
             .lock()
             .map_err(|_| internal_state_error("Project file operations"))?;
@@ -831,7 +865,17 @@ pub fn scan_project_instance_sources(
             .into_iter()
             .map(|deployment| deployment.target_path)
             .collect::<Vec<_>>();
-        (instance_path, hashes, paths, deployment_targets)
+        let target_locale = opened
+            .repository()
+            .target_locale()
+            .map_err(|error| database_error(error.to_string()))?;
+        (
+            instance_path,
+            hashes,
+            paths,
+            deployment_targets,
+            target_locale,
+        )
     };
 
     let job_id = Uuid::new_v4().to_string();
@@ -845,12 +889,13 @@ pub fn scan_project_instance_sources(
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let selected_folder = path.map(PathBuf::from);
-        let scan_result = scan_project_instance_sources_core(
+        let scan_result = scan_project_instance_sources_core_with_target_locale(
             &instance_root,
             selected_folder.as_deref(),
             &existing_hashes,
             &existing_paths,
             &deployment_targets,
+            &target_locale,
             &cancellation,
             |progress| {
                 if let Err(error) = channel.send(AddInstanceScanEvent::Progress { progress }) {
@@ -900,6 +945,7 @@ pub fn scan_project_instance_sources(
     Ok(job_id)
 }
 
+#[cfg(test)]
 fn scan_project_instance_sources_core(
     instance_root: &Path,
     selected_folder: Option<&Path>,
@@ -910,6 +956,34 @@ fn scan_project_instance_sources_core(
     on_progress: impl Fn(ScanProgress) + Sync,
 ) -> Result<(Vec<ModScanResult>, Vec<yc_analysis::ShaderpackScanResult>), yc_analysis::AnalysisError>
 {
+    scan_project_instance_sources_core_with_target_locale(
+        instance_root,
+        selected_folder,
+        existing_hashes,
+        existing_paths,
+        deployment_targets,
+        DEFAULT_TARGET_LOCALE,
+        cancellation,
+        on_progress,
+    )
+}
+
+// 既存候補の除外情報とキャンセル・進捗を別々に受け取る既存の境界へ、プロジェクト固定localeも渡す。
+#[allow(clippy::too_many_arguments)]
+fn scan_project_instance_sources_core_with_target_locale(
+    instance_root: &Path,
+    selected_folder: Option<&Path>,
+    existing_hashes: &HashSet<String>,
+    existing_paths: &HashSet<String>,
+    deployment_targets: &[String],
+    target_locale: &str,
+    cancellation: &CancellationToken,
+    on_progress: impl Fn(ScanProgress) + Sync,
+) -> Result<(Vec<ModScanResult>, Vec<yc_analysis::ShaderpackScanResult>), yc_analysis::AnalysisError>
+{
+    let scan_options = ScanOptions {
+        target_locale: normalize_locale(target_locale),
+    };
     let (mods_directory, selected_folder, game_directory) =
         if let Some(selected_folder) = selected_folder {
             let resolved = resolve_mods_folder(selected_folder).map_err(|source| {
@@ -938,12 +1012,7 @@ fn scan_project_instance_sources_core(
     let deployment_paths =
         deployment_path_keys(instance_root, deployment_targets.iter().map(String::as_str));
     let results = if mods_directory.is_dir() {
-        scan_mods_folder_core(
-            &mods_directory,
-            &ScanOptions::default(),
-            cancellation,
-            on_progress,
-        )?
+        scan_mods_folder_core(&mods_directory, &scan_options, cancellation, on_progress)?
     } else if cancellation.is_cancelled() {
         return Err(yc_analysis::AnalysisError::Cancelled);
     } else {
@@ -962,7 +1031,7 @@ fn scan_project_instance_sources_core(
         })
         .collect();
     let shaderpack_root = game_directory.join("shaderpacks");
-    let shaderpacks = scan_shaderpack_candidates(&selected_folder, &shaderpack_root)
+    let shaderpacks = scan_shaderpack_candidates(&selected_folder, &shaderpack_root, &scan_options)
         .into_iter()
         .filter(|result| {
             !is_existing_instance_candidate(
@@ -1180,6 +1249,7 @@ pub fn create_project_from_jars(
     channel: Channel<AnalysisChannelEvent>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
+    let target_locale = configured_target_locale(&state.paths)?;
     if paths.is_empty() && !include_modpack {
         return Err(AppError::simple(
             "no_jar_selected",
@@ -1220,11 +1290,12 @@ pub fn create_project_from_jars(
         };
         let source_paths = paths.iter().map(PathBuf::from).collect::<Vec<_>>();
         let instance_path = instance_path.as_deref().map(Path::new);
-        let result = create_project_from_sources_core(
+        let result = create_project_from_sources_with_target_locale_core(
             &app_paths,
             &source_paths,
             instance_path,
             include_modpack,
+            &target_locale,
             &cancellation,
             |progress, mod_index, mod_count, mod_filename| {
                 if let Err(error) = channel.send(AnalysisChannelEvent::Progress {
@@ -1685,8 +1756,14 @@ fn refresh_modpack_unit_from_scan(
     let refresh_path =
         source_path.with_file_name(format!("{}.refresh-{}.zip", mod_unit_id, Uuid::new_v4()));
     fs::write(&refresh_path, archive_bytes).map_err(modpack_refresh_io_error)?;
+    let target_locale = repository
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let result = (|| {
-        let (analysis, data) = super::modpack::analyze_modpack_archive(&refresh_path)?;
+        let (analysis, data) = super::modpack::analyze_modpack_archive_with_target_locale(
+            &refresh_path,
+            &target_locale,
+        )?;
         let saved_entries = repository
             .list_entries(Some(mod_unit_id))
             .map_err(|error| database_error(error.to_string()))?;
@@ -1705,7 +1782,7 @@ fn refresh_modpack_unit_from_scan(
         let default_included: HashSet<_> = settings.included_namespaces.iter().cloned().collect();
         settings.source_locale = resolve_source_locale(&analysis, &old_settings.source_locale);
         settings.fallback_priority = old_settings.fallback_priority;
-        settings.preserve_existing_japanese = old_settings.preserve_existing_japanese;
+        settings.preserve_existing_target = old_settings.preserve_existing_target;
         settings.fill_missing_from_other_languages = old_settings.fill_missing_from_other_languages;
         settings.included_namespaces = analysis
             .result
@@ -1823,12 +1900,24 @@ pub async fn get_review_asset_summary(
                             .is_some_and(|text| !text.trim().is_empty())
                     })
                     .count();
+                let same_language_documents = opened
+                    .repository()
+                    .list_document_entries(Some(unit.id))
+                    .map_err(|error| database_error(error.to_string()))?
+                    .iter()
+                    .filter(|entry| {
+                        entry.source_locale.as_deref().is_some_and(|locale| {
+                            normalize_locale(locale) == settings.target_locale
+                        })
+                    })
+                    .count();
                 add_review_setup_summary(
                     &mut aggregate,
                     ReviewSetupSummary {
-                        existing_japanese_translation_count: merged
-                            .existing_japanese_translation_count
+                        existing_target_translation_count: merged.existing_target_translation_count
                             + existing_documents,
+                        same_language_entry_count: merged.same_language_entry_count
+                            + same_language_documents,
                         missing_source_keys_count: merged
                             .entries
                             .iter()
@@ -1894,7 +1983,8 @@ fn selected_namespaces(settings: &ReviewSettingsInput, mod_unit_id: i64) -> Vec<
 
 fn add_review_setup_summary(aggregate: &mut Option<ReviewSetupSummary>, unit: ReviewSetupSummary) {
     if let Some(aggregate) = aggregate {
-        aggregate.existing_japanese_translation_count += unit.existing_japanese_translation_count;
+        aggregate.existing_target_translation_count += unit.existing_target_translation_count;
+        aggregate.same_language_entry_count += unit.same_language_entry_count;
         aggregate.missing_source_keys_count += unit.missing_source_keys_count;
         aggregate.assets.total += unit.assets.total;
         aggregate.assets.block_models += unit.assets.block_models;
@@ -1930,7 +2020,7 @@ pub async fn save_review_settings(
             .repository()
             .list_mod_units()
             .map_err(|error| database_error(error.to_string()))?;
-        let mut existing_japanese_translation_count = 0;
+        let mut existing_target_translation_count = 0;
         let mut missing_source_keys_count = 0;
         let mut first_signed = None;
         let setup_unit_id = units.first().map(|unit| unit.id);
@@ -1964,7 +2054,14 @@ pub async fn save_review_settings(
                     .repository()
                     .mod_unit_source_path(unit.id)
                     .map_err(|error| database_error(error.to_string()))?;
-                let (_, data) = super::modpack::analyze_modpack_archive(&source_path)?;
+                let target_locale = opened
+                    .repository()
+                    .target_locale()
+                    .map_err(|error| database_error(error.to_string()))?;
+                let (_, data) = super::modpack::analyze_modpack_archive_with_target_locale(
+                    &source_path,
+                    &target_locale,
+                )?;
                 opened
                     .writer()
                     .save_analysis(unit.id, project_analysis)
@@ -1984,7 +2081,7 @@ pub async fn save_review_settings(
                     .writer()
                     .save_asset_index(unit.id, ProjectAssetIndex::default())
                     .map_err(|error| database_error(error.to_string()))?;
-                existing_japanese_translation_count += merged.existing_japanese_translation_count
+                existing_target_translation_count += merged.existing_target_translation_count
                     + opened
                         .repository()
                         .list_document_entries(Some(unit.id))
@@ -2013,7 +2110,7 @@ pub async fn save_review_settings(
                 false,
                 |percent, message| send_operation_progress(&channel, percent, message),
             )?;
-            existing_japanese_translation_count += existing;
+            existing_target_translation_count += existing;
             missing_source_keys_count += missing;
         }
         if let Some(mod_unit_id) = setup_unit_id {
@@ -2037,7 +2134,7 @@ pub async fn save_review_settings(
             review,
             first_signed,
         )?;
-        details.existing_japanese_translation_count = existing_japanese_translation_count;
+        details.existing_target_translation_count = existing_target_translation_count;
         details.missing_source_keys_count = missing_source_keys_count;
         match recent_lock.lock() {
             Ok(_guard) => {
@@ -2458,7 +2555,7 @@ fn analyze_and_save_project_unit(
     unit: &ModUnitRecord,
     cancellation: &CancellationToken,
     preserve_project_state: bool,
-    mut on_progress: impl FnMut(AnalysisProgress),
+    on_progress: impl FnMut(AnalysisProgress),
     validate_analysis: impl FnOnce(&AnalysisData) -> Result<(), AppError>,
 ) -> Result<Arc<AnalysisData>, AppError> {
     let source_path = opened
@@ -2468,10 +2565,17 @@ fn analyze_and_save_project_unit(
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
 
     let analysis = match unit.source_kind {
         ModUnitSourceKind::Modpack => {
-            let (analysis, data) = super::modpack::analyze_modpack_archive(&source_path)?;
+            let (analysis, data) = super::modpack::analyze_modpack_archive_with_target_locale(
+                &source_path,
+                &target_locale,
+            )?;
             validate_analysis(&analysis)?;
             let analysis = Arc::new(analysis);
             let mut settings = analysis.default_review_settings();
@@ -2493,9 +2597,10 @@ fn analyze_and_save_project_unit(
             analysis
         }
         ModUnitSourceKind::Shaderpack => {
-            let analysis = yc_analysis::analyze_shaderpack(
+            let analysis = yc_analysis::analyze_shaderpack_with_target_locale(
                 &source_path,
                 &shaderpack_namespace(&unit.source_filename),
+                &target_locale,
             )
             .map_err(analysis_error)?;
             if analysis.result.source_sha256 != unit.source_sha256 {
@@ -2519,9 +2624,12 @@ fn analyze_and_save_project_unit(
             analysis
         }
         ModUnitSourceKind::Jar => {
-            let analysis = yc_analysis::analyze_jar(&source_path, cancellation, |progress| {
-                on_progress(progress);
-            })
+            let analysis = yc_analysis::analyze_jar_with_target_locale(
+                &source_path,
+                &target_locale,
+                cancellation,
+                on_progress,
+            )
             .map_err(analysis_error)?;
             if analysis.result.source_sha256 != unit.source_sha256 {
                 return Err(AppError::simple(
@@ -2782,11 +2890,32 @@ fn rollback_added_project_units(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn create_project_from_sources_core(
     paths: &AppPaths,
     sources: &[PathBuf],
     instance_path: Option<&Path>,
     include_modpack: bool,
+    cancellation: &CancellationToken,
+    on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
+) -> Result<CreatedProject, AppError> {
+    create_project_from_sources_with_target_locale_core(
+        paths,
+        sources,
+        instance_path,
+        include_modpack,
+        DEFAULT_TARGET_LOCALE,
+        cancellation,
+        on_progress,
+    )
+}
+
+pub(crate) fn create_project_from_sources_with_target_locale_core(
+    paths: &AppPaths,
+    sources: &[PathBuf],
+    instance_path: Option<&Path>,
+    include_modpack: bool,
+    target_locale: &str,
     cancellation: &CancellationToken,
     on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
 ) -> Result<CreatedProject, AppError> {
@@ -2798,21 +2927,23 @@ pub(crate) fn create_project_from_sources_core(
             path,
         })
         .collect::<Vec<_>>();
-    create_project_from_source_inputs_core(
+    create_project_from_source_inputs_with_target_locale_core(
         paths,
         &sources,
         instance_path,
         include_modpack,
+        target_locale,
         cancellation,
         on_progress,
     )
 }
 
-pub(crate) fn create_project_from_source_inputs_core(
+pub(crate) fn create_project_from_source_inputs_with_target_locale_core(
     paths: &AppPaths,
     sources: &[ProjectSource],
     instance_path: Option<&Path>,
     include_modpack: bool,
+    target_locale: &str,
     cancellation: &CancellationToken,
     mut on_progress: impl FnMut(AnalysisProgress, usize, usize, String),
 ) -> Result<CreatedProject, AppError> {
@@ -2846,9 +2977,14 @@ pub(crate) fn create_project_from_source_inputs_core(
             game_directory,
             files,
         });
-    let summary =
-        create_project_with_sources(&paths.projects_dir, sources, instance_path, modpack_source)
-            .map_err(|error| database_error(error.to_string()))?;
+    let summary = create_project_with_sources_and_target_locale(
+        &paths.projects_dir,
+        sources,
+        instance_path,
+        modpack_source,
+        target_locale,
+    )
+    .map_err(|error| database_error(error.to_string()))?;
     let project_id = summary.id.clone();
     let result = (|| {
         let opened = open_project_file(
@@ -3022,15 +3158,29 @@ pub(crate) fn save_review_settings_core(
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
         .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let analysis = match unit.source_kind {
-        ModUnitSourceKind::Jar => {
-            yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), |_| {})
-                .map_err(analysis_error)?
+        ModUnitSourceKind::Jar => yc_analysis::analyze_jar_with_target_locale(
+            &source_path,
+            &target_locale,
+            &CancellationToken::default(),
+            |_| {},
+        )
+        .map_err(analysis_error)?,
+        ModUnitSourceKind::Modpack => {
+            super::modpack::analyze_modpack_archive_with_target_locale(
+                &source_path,
+                &target_locale,
+            )?
+            .0
         }
-        ModUnitSourceKind::Modpack => super::modpack::analyze_modpack_archive(&source_path)?.0,
-        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack(
+        ModUnitSourceKind::Shaderpack => yc_analysis::analyze_shaderpack_with_target_locale(
             &source_path,
             &shaderpack_namespace(&unit.source_filename),
+            &target_locale,
         )
         .map_err(analysis_error)?,
     };
@@ -3089,7 +3239,7 @@ fn save_review_settings_core_with_cached_asset_index(
         "Review save phase completed"
     );
     let merge_counts = (
-        merged.existing_japanese_translation_count,
+        merged.existing_target_translation_count,
         merged.missing_source_keys_count,
     );
     let project_analysis = project_analysis_data(analysis, merged.entries, &settings);
@@ -3196,8 +3346,17 @@ pub(crate) fn review_asset_summary_core(
         .repository()
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| database_error(error.to_string()))?;
-    let analysis = yc_analysis::analyze_jar(&source_path, &CancellationToken::default(), |_| {})
-        .map_err(analysis_error)?;
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
+    let analysis = yc_analysis::analyze_jar_with_target_locale(
+        &source_path,
+        &target_locale,
+        &CancellationToken::default(),
+        |_| {},
+    )
+    .map_err(analysis_error)?;
     review_asset_summary_core_with_analysis(opened, mod_unit_id, input, &analysis)
 }
 
@@ -3249,7 +3408,8 @@ fn review_asset_summary_core_with_index_and_progress(
         on_progress(Some(85), "確認項目を整えています");
         return Ok((
             ReviewSetupSummary {
-                existing_japanese_translation_count: merged.existing_japanese_translation_count,
+                existing_target_translation_count: merged.existing_target_translation_count,
+                same_language_entry_count: merged.same_language_entry_count,
                 missing_source_keys_count: merged.missing_source_keys_count,
                 assets: ProjectAssetSummary {
                     total: 0,
@@ -3300,7 +3460,8 @@ fn review_asset_summary_core_with_index_and_progress(
         .count();
     Ok((
         ReviewSetupSummary {
-            existing_japanese_translation_count: merged.existing_japanese_translation_count,
+            existing_target_translation_count: merged.existing_target_translation_count,
+            same_language_entry_count: merged.same_language_entry_count,
             missing_source_keys_count: merged.missing_source_keys_count,
             assets: summary,
         },
@@ -3334,33 +3495,47 @@ fn review_settings_from_input(
     Ok(ReviewSettings {
         source_locale,
         fallback_priority: input.fallback_priority.clone(),
-        preserve_existing_japanese: input.preserve_existing_japanese,
+        preserve_existing_target: input.preserve_existing_target,
         fill_missing_from_other_languages: input.fill_missing_from_other_languages,
         included_namespaces,
+        target_locale: analysis.default_review_settings().target_locale,
     })
 }
 
 fn resolve_source_locale(analysis: &AnalysisData, requested_locale: &str) -> String {
     let normalized_requested = normalize_locale(requested_locale);
-    if let Some(language) = analysis
-        .result
-        .language_files
-        .iter()
-        .find(|language| normalize_locale(&language.locale) == normalized_requested)
+    if !requested_locale.trim().is_empty()
+        && let Some(language) = analysis
+            .result
+            .language_files
+            .iter()
+            .find(|language| normalize_locale(&language.locale) == normalized_requested)
     {
         return language.locale.clone();
     }
-    if let Some(language) = analysis
+    let target_locale = analysis.default_review_settings().target_locale;
+    let available = analysis
         .result
         .language_files
         .iter()
-        .find(|language| normalize_locale(&language.locale) == "en_us")
+        .map(|language| normalize_locale(&language.locale))
+        .collect::<HashSet<_>>();
+    let has_non_target = available.iter().any(|locale| locale != &target_locale);
+    if target_locale != "en_us"
+        && let Some(language) = analysis
+            .result
+            .language_files
+            .iter()
+            .find(|language| normalize_locale(&language.locale) == "en_us")
     {
         return language.locale.clone();
     }
     let mut counts = BTreeMap::<String, (usize, String)>::new();
     for language in &analysis.result.language_files {
         let normalized = normalize_locale(&language.locale);
+        if has_non_target && normalized == target_locale {
+            continue;
+        }
         let entry = counts
             .entry(normalized)
             .or_insert((0, language.locale.clone()));
@@ -3381,8 +3556,17 @@ pub(crate) fn project_details_core(opened: &OpenedProject) -> Result<ProjectDeta
         .repository()
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| database_error(error.to_string()))?;
-    let analysis = yc_analysis::analyze_jar(&source_jar, &CancellationToken::default(), |_| {})
-        .map_err(analysis_error)?;
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
+    let analysis = yc_analysis::analyze_jar_with_target_locale(
+        &source_jar,
+        &target_locale,
+        &CancellationToken::default(),
+        |_| {},
+    )
+    .map_err(analysis_error)?;
     project_details_core_with_analysis(opened, mod_unit_id, &analysis)
 }
 
@@ -3391,6 +3575,10 @@ fn project_details_core_with_analysis(
     mod_unit_id: i64,
     analysis: &AnalysisData,
 ) -> Result<ProjectDetails, AppError> {
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let review = project_review_settings_for_unit(opened, mod_unit_id)?;
     let settings = review_settings_from_record(&review, analysis, mod_unit_id);
     let merged = merge_for_review(analysis, &settings);
@@ -3518,7 +3706,12 @@ fn project_details_core_with_analysis(
         });
     let (target_language_file_name, target_language_format) = first_namespace
         .and_then(|namespace| {
-            yc_language::language_export_filename(&discovered, namespace, &source_locale)
+            yc_language::language_export_filename(
+                &discovered,
+                namespace,
+                &source_locale,
+                &target_locale,
+            )
         })
         .map(|file_name| {
             let format = if file_name.to_ascii_lowercase().ends_with(".lang") {
@@ -3528,10 +3721,11 @@ fn project_details_core_with_analysis(
             };
             (file_name, format.to_owned())
         })
-        .unwrap_or_else(|| ("ja_jp.json".to_owned(), "json".to_owned()));
+        .unwrap_or_else(|| (format!("{target_locale}.json"), "json".to_owned()));
 
     Ok(ProjectDetails {
         project: opened.summary().clone(),
+        target_locale,
         mods: analysis
             .result
             .mods
@@ -3567,11 +3761,11 @@ fn project_details_core_with_analysis(
         recommended_source_locale: analysis.result.recommended_source_locale.clone(),
         source_locale,
         fallback_priority: settings.fallback_priority,
-        preserve_existing_japanese: settings.preserve_existing_japanese,
+        preserve_existing_target: settings.preserve_existing_target,
         fill_missing_from_other_languages: settings.fill_missing_from_other_languages,
         included_namespaces,
         setup_completed: review.setup_completed,
-        existing_japanese_translation_count: merged.existing_japanese_translation_count
+        existing_target_translation_count: merged.existing_target_translation_count
             + existing_document_translation_count,
         missing_source_keys_count: merged.missing_source_keys_count,
         counts,
@@ -3600,7 +3794,7 @@ pub(crate) fn project_review_settings_for_unit(
     project_settings.source_locale =
         (!unit_settings.source_locale.is_empty()).then_some(unit_settings.source_locale);
     project_settings.fallback_priority = unit_settings.fallback_priority;
-    project_settings.preserve_existing_japanese = unit_settings.preserve_existing_japanese;
+    project_settings.preserve_existing_target = unit_settings.preserve_existing_target;
     project_settings.fill_missing_from_other_languages =
         unit_settings.fill_missing_from_other_languages;
     Ok(project_settings)
@@ -3635,8 +3829,8 @@ fn project_details_for_all_units(
             aggregate.counts.translated += unit_details.counts.translated;
             aggregate.counts.missing += unit_details.counts.missing;
             aggregate.counts.needs_review += unit_details.counts.needs_review;
-            aggregate.existing_japanese_translation_count +=
-                unit_details.existing_japanese_translation_count;
+            aggregate.existing_target_translation_count +=
+                unit_details.existing_target_translation_count;
             aggregate.missing_source_keys_count += unit_details.missing_source_keys_count;
             aggregate.asset_summary.total += unit_details.asset_summary.total;
             aggregate.asset_summary.block_models += unit_details.asset_summary.block_models;
@@ -3663,6 +3857,9 @@ fn project_details_from_stored_data(
     is_signed: Option<bool>,
 ) -> Result<ProjectDetails, AppError> {
     let repository = opened.repository();
+    let target_locale = repository
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
     let metadata = repository
         .project_metadata()
         .map_err(|error| database_error(error.to_string()))?;
@@ -3754,7 +3951,12 @@ fn project_details_from_stored_data(
         .or_else(|| namespaces.first().map(|namespace| &namespace.namespace));
     let (target_language_file_name, target_language_format) = first_namespace
         .and_then(|namespace| {
-            yc_language::language_export_filename(&discovered, namespace, &source_locale)
+            yc_language::language_export_filename(
+                &discovered,
+                namespace,
+                &source_locale,
+                &target_locale,
+            )
         })
         .map(|file_name| {
             let format = if file_name.to_ascii_lowercase().ends_with(".lang") {
@@ -3764,7 +3966,7 @@ fn project_details_from_stored_data(
             };
             (file_name, format.to_owned())
         })
-        .unwrap_or_else(|| ("ja_jp.json".to_owned(), "json".to_owned()));
+        .unwrap_or_else(|| (format!("{target_locale}.json"), "json".to_owned()));
     let metadata_ranges: Vec<_> = metadata
         .mods
         .iter()
@@ -3813,6 +4015,7 @@ fn project_details_from_stored_data(
 
     Ok(ProjectDetails {
         project: opened.summary().clone(),
+        target_locale,
         mods: metadata
             .mods
             .iter()
@@ -3843,11 +4046,11 @@ fn project_details_from_stored_data(
         recommended_source_locale: Some(source_locale.clone()),
         source_locale,
         fallback_priority: review.fallback_priority,
-        preserve_existing_japanese: review.preserve_existing_japanese,
+        preserve_existing_target: review.preserve_existing_target,
         fill_missing_from_other_languages: review.fill_missing_from_other_languages,
         included_namespaces,
         setup_completed: review.setup_completed,
-        existing_japanese_translation_count: entry_summary.existing_japanese,
+        existing_target_translation_count: entry_summary.existing_target,
         missing_source_keys_count: 0,
         counts: project_counts_from_summary(entry_summary),
         target_language_file_name,
@@ -3932,12 +4135,13 @@ pub(crate) fn review_settings_from_record(
         )
         .collect();
     ReviewSettings {
+        target_locale: analysis.default_review_settings().target_locale,
         source_locale: resolve_source_locale(
             analysis,
             review.source_locale.as_deref().unwrap_or_default(),
         ),
         fallback_priority: review.fallback_priority.clone(),
-        preserve_existing_japanese: review.preserve_existing_japanese,
+        preserve_existing_target: review.preserve_existing_target,
         fill_missing_from_other_languages: review.fill_missing_from_other_languages,
         // 保存済み選択が言語Entryのない名前空間を指しても、ReviewやExportの対象へ戻さない。
         included_namespaces: review
@@ -4464,7 +4668,7 @@ pub(crate) fn project_analysis_data(
                 container_path: language.container_path.clone(),
                 archive_path: language.archive_path.clone(),
                 entry_count: language.entry_count,
-                is_target: normalize_locale(&language.locale) == "ja_jp",
+                is_target: normalize_locale(&language.locale) == settings.target_locale,
             })
             .collect(),
         entries,
@@ -4482,7 +4686,7 @@ fn document_entries_for_analysis(
         .enumerate()
         .map(|(sort_index, entry)| {
             let target_text = settings
-                .preserve_existing_japanese
+                .preserve_existing_target
                 .then(|| entry.target_text.clone())
                 .flatten();
             let existing = target_text.is_some();
@@ -4530,7 +4734,7 @@ fn modpack_document_entries(
         .enumerate()
         .map(|(sort_index, entry)| {
             let target_text = settings
-                .preserve_existing_japanese
+                .preserve_existing_target
                 .then(|| entry.existing_translation.clone())
                 .flatten();
             let existing = target_text.is_some();
