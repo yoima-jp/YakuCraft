@@ -227,6 +227,176 @@ fn send_operation_progress(
     }
 }
 
+fn localized_analysis_progress(
+    mut progress: AnalysisProgress,
+    target_locale: &str,
+) -> AnalysisProgress {
+    if progress.stage == yc_analysis::AnalysisStage::DetectTargetTranslation
+        && progress.current == 2
+    {
+        let language = yc_locale::find_minecraft_language(target_locale)
+            .map(|language| language.name.as_str())
+            .unwrap_or(target_locale);
+        progress.message = yc_locale::t!(
+            "project.analysis.existing_target_count",
+            language = language
+        );
+        return progress;
+    }
+    if yc_locale::ui_language() == yc_locale::UiLanguage::Ja {
+        return progress;
+    }
+    let complete = progress
+        .total
+        .is_some_and(|total| progress.current >= total);
+    let key = match progress.stage {
+        yc_analysis::AnalysisStage::ValidateJar => {
+            if complete {
+                "project.analysis.validate_done"
+            } else {
+                "project.analysis.validate_start"
+            }
+        }
+        yc_analysis::AnalysisStage::Sha256 => {
+            if complete {
+                "project.analysis.hash_done"
+            } else {
+                "project.analysis.hash_start"
+            }
+        }
+        yc_analysis::AnalysisStage::ScanZipPaths => {
+            if complete {
+                "project.analysis.zip_paths_done"
+            } else {
+                "project.analysis.zip_paths"
+            }
+        }
+        yc_analysis::AnalysisStage::ParseMetadata => {
+            if complete {
+                "project.analysis.metadata_done"
+            } else {
+                "project.analysis.metadata"
+            }
+        }
+        yc_analysis::AnalysisStage::ScanNestedJars => {
+            if progress.total.is_some() {
+                "project.analysis.nested_jars_done"
+            } else {
+                "project.analysis.nested_jars"
+            }
+        }
+        yc_analysis::AnalysisStage::DiscoverNamespaces => {
+            if progress.total.is_some() && complete {
+                "project.analysis.namespaces_done"
+            } else {
+                "project.analysis.namespaces"
+            }
+        }
+        yc_analysis::AnalysisStage::ParseLanguages => match progress.total {
+            Some(0) => "project.analysis.languages_none",
+            Some(total) if progress.current >= total => "project.analysis.languages_done",
+            _ => "project.analysis.languages",
+        },
+        yc_analysis::AnalysisStage::DetectTargetTranslation => match progress.current {
+            0 => "project.analysis.detect_start",
+            1 => "project.analysis.source_recommended",
+            2 => "project.analysis.existing_target_count",
+            _ if complete => "project.analysis.detect_done",
+            _ => "project.analysis.missing_keys_count",
+        },
+    };
+    progress.message = if progress.stage == yc_analysis::AnalysisStage::DetectTargetTranslation
+        && progress.current == 2
+    {
+        let language = yc_locale::find_minecraft_language(target_locale)
+            .map(|language| language.name.as_str())
+            .unwrap_or(target_locale);
+        yc_locale::t!(key, language = language)
+    } else {
+        yc_locale::t!(key)
+    };
+    progress
+}
+
+fn localize_mod_scan_results(results: &mut [ModScanResult]) {
+    if yc_locale::ui_language() != yc_locale::UiLanguage::Ja {
+        for result in results {
+            if let yc_analysis::ModLanguageStatus::Failed { reason } = &mut result.status {
+                *reason = yc_locale::t!("project.scan_failed");
+            }
+        }
+    }
+}
+
+fn localize_shaderpack_scan_results(results: &mut [yc_analysis::ShaderpackScanResult]) {
+    if yc_locale::ui_language() != yc_locale::UiLanguage::Ja {
+        for result in results {
+            if let yc_analysis::ModLanguageStatus::Failed { reason } = &mut result.status {
+                *reason = yc_locale::t!("project.scan_failed");
+            }
+        }
+    }
+}
+
+fn localize_modpack_scan_issue(issue: &str, safe: bool) -> String {
+    if safe {
+        if let Some(path) = issue.strip_prefix("unsafe or invalid instance-relative path: ") {
+            return yc_locale::t!("modpack.scan_invalid_path", path = path);
+        }
+        if let Some((kind, location)) = issue.split_once(": ") {
+            if kind == "SNBT" {
+                return yc_locale::t!("modpack.scan_snbt_safe_detail", location = location);
+            }
+            if kind.starts_with("JSON ") {
+                return yc_locale::t!("modpack.scan_json_safe_detail", location = location);
+            }
+        }
+        if let Some(detail) = issue.strip_prefix("KubeJS language file ") {
+            let path = detail
+                .split_once(" must be a JSON object containing only string values")
+                .map_or(detail, |(path, _)| path);
+            return yc_locale::t!("modpack.scan_invalid_language_json", path = path);
+        }
+        let path = issue.rsplit_once(": ").map_or(issue, |(path, _)| path);
+        return yc_locale::t!("modpack.scan_generic_safe_detail", path = path);
+    }
+    if let Some(detail) = issue.strip_prefix("unsafe or invalid instance-relative path: ") {
+        return yc_locale::t!("modpack.scan_invalid_path", path = detail);
+    }
+    if let Some(detail) = issue.strip_prefix("invalid FTB Quests SNBT in ") {
+        let path = detail
+            .split_once(" at byte ")
+            .map_or(detail, |(path, _)| path);
+        return yc_locale::t!("modpack.scan_snbt_error", path = path);
+    }
+    if let Some(detail) = issue.strip_prefix("invalid KubeJS language JSON in ") {
+        let path = detail.split_once(": ").map_or(detail, |(path, _)| path);
+        return yc_locale::t!("modpack.scan_json_error", path = path);
+    }
+    if let Some(detail) = issue.strip_prefix("KubeJS language file ") {
+        let path = detail
+            .split_once(" must be a JSON object")
+            .map_or(detail, |(path, _)| path);
+        return yc_locale::t!("modpack.scan_invalid_language_json", path = path);
+    }
+    let path = issue.rsplit_once(": ").map_or(issue, |(path, _)| path);
+    yc_locale::t!("modpack.scan_issue", path = path)
+}
+
+fn localize_modpack_scan(mut scan: yc_modpack::ModpackScan) -> yc_modpack::ModpackScan {
+    scan.issues = scan
+        .issues
+        .iter()
+        .map(|issue| localize_modpack_scan_issue(issue, false))
+        .collect();
+    scan.safe_issues = scan
+        .safe_issues
+        .iter()
+        .map(|issue| localize_modpack_scan_issue(issue, true))
+        .collect();
+    scan
+}
+
 fn cached_project_analysis(
     cache: &Arc<std::sync::Mutex<Option<CachedProjectAnalysis>>>,
     project_id: &str,
@@ -379,7 +549,7 @@ fn load_project_analysis(
         .map_err(|error| database_error(error.to_string()))?
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
-        .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+        .ok_or_else(|| database_error(yc_locale::t!("project.mod_not_found")))?;
     let target_locale = opened
         .repository()
         .target_locale()
@@ -417,7 +587,7 @@ fn first_mod_unit_id(opened: &OpenedProject) -> Result<i64, AppError> {
         .map_err(|error| database_error(error.to_string()))?
         .first()
         .map(|unit| unit.id)
-        .ok_or_else(|| database_error("プロジェクトにmodがありません".to_owned()))
+        .ok_or_else(|| database_error(yc_locale::t!("project.no_mods")))
 }
 
 fn unit_source_kind(
@@ -431,7 +601,7 @@ fn unit_source_kind(
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
         .map(|unit| unit.source_kind)
-        .ok_or_else(|| database_error("modが見つかりません".to_owned()))
+        .ok_or_else(|| database_error(yc_locale::t!("project.mod_not_found")))
 }
 
 pub(crate) fn shaderpack_namespace(filename: &str) -> String {
@@ -771,7 +941,10 @@ pub fn scan_mods_folder(
             });
 
         let event = match result {
-            Ok((scanned_folder, instance_dir, results, modpack_scan, shaderpacks)) => {
+            Ok((scanned_folder, instance_dir, mut results, modpack_scan, mut shaderpacks)) => {
+                localize_mod_scan_results(&mut results);
+                localize_shaderpack_scan_results(&mut shaderpacks);
+                let modpack_scan = modpack_scan.map(localize_modpack_scan);
                 let looks_like_instance_dir = instance_dir.is_some();
                 ScanModsFolderEvent::Completed {
                     job_id: task_job_id.clone(),
@@ -789,7 +962,7 @@ pub fn scan_mods_folder(
                     yc_analysis::AnalysisError::Cancelled => cancelled_error(),
                     yc_analysis::AnalysisError::ScanFolderIo { .. } => AppError::new(
                         "mods_folder_read",
-                        "フォルダを読み込めませんでした。選択したフォルダを確認してください。",
+                        &yc_locale::t!("project.folder_read_failed"),
                         Some(detail),
                     ),
                     other => analysis_error(other),
@@ -832,7 +1005,10 @@ pub fn scan_project_instance_sources(
             .as_ref()
             .filter(|opened| opened.summary().id == project_id)
             .ok_or_else(|| {
-                AppError::simple("project_not_open", "プロジェクトを開けませんでした。")
+                AppError::simple(
+                    "project_not_open",
+                    &yc_locale::t!("common.project_open_failed"),
+                )
             })?;
         let instance_path = opened
             .summary()
@@ -843,7 +1019,7 @@ pub fn scan_project_instance_sources(
             .ok_or_else(|| {
                 AppError::simple(
                     "instance_path_missing",
-                    "このプロジェクトにはインスタンスが設定されていません。",
+                    &yc_locale::t!("project.instance_not_configured"),
                 )
             })?;
         let units = opened
@@ -904,13 +1080,15 @@ pub fn scan_project_instance_sources(
             },
         );
         let event = match scan_result {
-            Ok((results, shaderpacks)) => {
+            Ok((mut results, mut shaderpacks)) => {
                 if cancellation.is_cancelled() {
                     AddInstanceScanEvent::Failed {
                         job_id: task_job_id.clone(),
                         error: cancelled_error(),
                     }
                 } else {
+                    localize_mod_scan_results(&mut results);
+                    localize_shaderpack_scan_results(&mut shaderpacks);
                     AddInstanceScanEvent::Completed {
                         job_id: task_job_id.clone(),
                         results,
@@ -922,18 +1100,21 @@ pub fn scan_project_instance_sources(
                 job_id: task_job_id.clone(),
                 error: cancelled_error(),
             },
-            Err(error) => AddInstanceScanEvent::Failed {
-                job_id: task_job_id.clone(),
-                error: AppError::new(
-                    "mods_folder_read",
-                    if selected_folder.is_some() {
-                        "選択したフォルダを読み込めませんでした。"
-                    } else {
-                        "インスタンスの mods フォルダを読み込めませんでした。"
-                    },
-                    Some(error.to_string()),
-                ),
-            },
+            Err(error) => {
+                let user_message = if selected_folder.is_some() {
+                    yc_locale::t!("project.selected_folder_read_failed")
+                } else {
+                    yc_locale::t!("project.instance_mods_folder_read_failed")
+                };
+                AddInstanceScanEvent::Failed {
+                    job_id: task_job_id.clone(),
+                    error: AppError::new(
+                        "mods_folder_read",
+                        &user_message,
+                        Some(error.to_string()),
+                    ),
+                }
+            }
         };
         if let Err(error) = channel.send(event) {
             tracing::debug!(%error, "instance scan result channel closed");
@@ -1122,7 +1303,7 @@ pub fn add_mod_units(
     if paths.is_empty() {
         return Err(AppError::simple(
             "no_mod_source_selected",
-            "追加する JAR またはシェーダーパックを選んでください。",
+            &yc_locale::t!("project.add_source_select"),
         ));
     }
     let job_id = Uuid::new_v4().to_string();
@@ -1155,14 +1336,21 @@ pub fn add_mod_units(
                 .as_mut()
                 .filter(|opened| opened.summary().id == project_id)
                 .ok_or_else(|| {
-                    AppError::simple("project_not_open", "プロジェクトを開けませんでした。")
+                    AppError::simple(
+                        "project_not_open",
+                        &yc_locale::t!("common.project_open_failed"),
+                    )
                 })?;
             if deleting.contains(&project_id) {
                 return Err(AppError::simple(
                     "project_delete_in_progress",
-                    "このプロジェクトは削除中です。",
+                    &yc_locale::t!("common.project_deleting"),
                 ));
             }
+            let target_locale = opened
+                .repository()
+                .target_locale()
+                .map_err(|error| database_error(error.to_string()))?;
             let added = add_project_sources_core(
                 opened,
                 &paths.iter().map(PathBuf::from).collect::<Vec<_>>(),
@@ -1170,7 +1358,7 @@ pub fn add_mod_units(
                 |progress, mod_index, mod_count, mod_filename| {
                     if let Err(error) = channel.send(AddUnitsChannelEvent::Progress {
                         job_id: task_job_id.clone(),
-                        progress,
+                        progress: localized_analysis_progress(progress, &target_locale),
                         mod_index,
                         mod_count,
                         mod_filename,
@@ -1253,7 +1441,7 @@ pub fn create_project_from_jars(
     if paths.is_empty() && !include_modpack {
         return Err(AppError::simple(
             "no_jar_selected",
-            "JARファイルを選んでください。",
+            &yc_locale::t!("project.no_jar_selected"),
         ));
     }
 
@@ -1300,7 +1488,7 @@ pub fn create_project_from_jars(
             |progress, mod_index, mod_count, mod_filename| {
                 if let Err(error) = channel.send(AnalysisChannelEvent::Progress {
                     job_id: task_job_id.clone(),
-                    progress,
+                    progress: localized_analysis_progress(progress, &target_locale),
                     mod_index,
                     mod_count,
                     mod_filename,
@@ -1406,7 +1594,7 @@ pub async fn open_project(
     let id = Uuid::parse_str(&project_id).map_err(|error| {
         AppError::new(
             "project_not_found",
-            "プロジェクトを開けませんでした。",
+            &yc_locale::t!("common.project_open_failed"),
             Some(error.to_string()),
         )
     })?;
@@ -1418,7 +1606,7 @@ pub async fn open_project(
     let preview_context = Arc::clone(&state.preview_context);
     let recent_lock = Arc::clone(&state.recent_lock);
     tauri::async_runtime::spawn_blocking(move || {
-        send_operation_progress(&channel, Some(0), "プロジェクトを開いています");
+        send_operation_progress(&channel, Some(0), &yc_locale::t!("project.progress.opening"));
         let _project_io = project_io_lock
             .lock()
             .map_err(|_| internal_state_error("Project file operations"))?;
@@ -1445,17 +1633,21 @@ pub async fn open_project(
 
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("Projectを開けませんでした".to_owned()))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_open_failed")))?;
+        let target_locale = opened
+            .repository()
+            .target_locale()
+            .map_err(|error| database_error(error.to_string()))?;
         let review = opened
             .repository()
             .review_settings()
             .map_err(|error| database_error(error.to_string()))?;
         let details = if review.setup_completed {
             // 完了済みProjectは保存済みのunit別情報を使い、JARを再解析しない。
-            send_operation_progress(&channel, Some(70), "保存済み情報を読み込んでいます");
+            send_operation_progress(&channel, Some(70), &yc_locale::t!("project.progress.loading_saved_data"));
             project_details_from_stored_data(opened, review, None)?
         } else {
-            send_operation_progress(&channel, Some(10), "JARを確認しています");
+            send_operation_progress(&channel, Some(10), &yc_locale::t!("project.progress.checking_jars"));
             let details = project_details_for_all_units(
                 opened,
                 &project_analysis_cache,
@@ -1463,11 +1655,11 @@ pub async fn open_project(
                     send_operation_progress(
                         &channel,
                         analysis_progress_percent(&progress),
-                        &progress.message,
+                        &localized_analysis_progress(progress, &target_locale).message,
                     );
                 },
             )?;
-            send_operation_progress(&channel, Some(70), "Review情報を整えています");
+            send_operation_progress(&channel, Some(70), &yc_locale::t!("project.progress.preparing_review"));
             details
         };
         let mod_version = details
@@ -1482,7 +1674,7 @@ pub async fn open_project(
             }
             Err(_) => tracing::warn!("recent projects lock was poisoned"),
         }
-        send_operation_progress(&channel, Some(100), "プロジェクトを開きました");
+        send_operation_progress(&channel, Some(100), &yc_locale::t!("project.progress.opened"));
         Ok(details)
     })
     .await
@@ -1499,7 +1691,7 @@ pub async fn get_project_summary(state: State<'_, AppState>) -> Result<ProjectDe
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
         let review = opened
             .repository()
             .review_settings()
@@ -1523,7 +1715,7 @@ pub async fn list_mod_units(state: State<'_, AppState>) -> Result<Vec<ModUnitSum
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
         let repository = opened.repository();
         let units = repository
             .list_mod_units()
@@ -1582,7 +1774,7 @@ pub async fn refresh_modpack_unit(
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_mut()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
         let project_id = opened.summary().id.clone();
         if ai_job_tokens
             .lock()
@@ -1592,7 +1784,7 @@ pub async fn refresh_modpack_unit(
         {
             return Err(AppError::simple(
                 "ai_job_in_progress",
-                "AI翻訳中は Modpack を再取り込みできません。",
+                &yc_locale::t!("project.modpack_ai_running"),
             ));
         }
         refresh_modpack_unit_core(opened, mod_unit_id)?;
@@ -1648,7 +1840,12 @@ fn refresh_modpack_unit_core(opened: &mut OpenedProject, mod_unit_id: i64) -> Re
         .map_err(|error| database_error(error.to_string()))?
         .into_iter()
         .find(|unit| unit.id == mod_unit_id && unit.source_kind == ModUnitSourceKind::Modpack)
-        .ok_or_else(|| AppError::simple("modpack_unit_required", "Modpack が見つかりません。"))?;
+        .ok_or_else(|| {
+            AppError::simple(
+                "modpack_unit_required",
+                &yc_locale::t!("project.modpack_not_found"),
+            )
+        })?;
     let recorded_game_directory = PathBuf::from(&unit.original_path);
     let instance_root = match recorded_game_directory
         .file_name()
@@ -1662,7 +1859,7 @@ fn refresh_modpack_unit_core(opened: &mut OpenedProject, mod_unit_id: i64) -> Re
             .ok_or_else(|| {
                 AppError::simple(
                     "modpack_instance_missing",
-                    "Modpack のインスタンスフォルダーを確認できません。",
+                    &yc_locale::t!("project.modpack_instance_folder_missing"),
                 )
             })?,
         _ => recorded_game_directory,
@@ -1707,13 +1904,11 @@ fn check_optional_modpack_directory(path: &Path) -> Result<(), AppError> {
 
 fn modpack_directory_access_error(path: &Path, error: impl std::fmt::Display) -> AppError {
     let detail = format!("{}: {error}", path.display());
-    AppError::new(
-        "modpack_scan_incomplete",
-        &format!(
-            "Modpack の翻訳ディレクトリを確認できませんでした。アクセス権を確認して再試行してください: {detail}"
-        ),
-        Some(detail),
-    )
+    let user_message = yc_locale::t!(
+        "project.modpack_translation_directory_failed",
+        detail = detail
+    );
+    AppError::new("modpack_scan_incomplete", &user_message, Some(detail))
 }
 
 fn refresh_modpack_unit_from_scan(
@@ -1722,23 +1917,25 @@ fn refresh_modpack_unit_from_scan(
     instance_root: &Path,
     scan: yc_modpack::ModpackScan,
 ) -> Result<(), AppError> {
+    let scan = localize_modpack_scan(scan);
     let repository = opened.repository();
     if !scan.issues.is_empty() {
         let detail = scan.issues.join("\n");
         let mut error = AppError::new(
             "modpack_scan_incomplete",
-            "Modpack の翻訳ファイルを確認できませんでした。",
+            &yc_locale::t!("project.modpack_translation_check_failed"),
             Some(scan.safe_issues.join("\n")),
         );
-        error.user_message = format!(
-            "Modpack の翻訳ファイルを確認できませんでした。次のファイルを確認して再試行してください: {detail}"
+        error.user_message = yc_locale::t!(
+            "project.modpack_translation_check_failed_detail",
+            detail = detail
         );
         return Err(error);
     }
     if scan.files.is_empty() {
         return Err(AppError::simple(
             "modpack_files_missing",
-            "Modpack の翻訳ファイルが見つかりません。インスタンスを確認してください。",
+            &yc_locale::t!("project.modpack_translation_files_missing"),
         ));
     }
     let files = super::modpack::collect_instance_files(instance_root, &scan)?;
@@ -1869,8 +2066,16 @@ pub async fn get_review_asset_summary(
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
-        send_operation_progress(&channel, Some(0), "確認項目を読み込んでいます");
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
+        let target_locale = opened
+            .repository()
+            .target_locale()
+            .map_err(|error| database_error(error.to_string()))?;
+        send_operation_progress(
+            &channel,
+            Some(0),
+            &yc_locale::t!("project.progress.loading_review_items"),
+        );
         let units = opened
             .repository()
             .list_mod_units()
@@ -1882,7 +2087,7 @@ pub async fn get_review_asset_summary(
                     send_operation_progress(
                         &channel,
                         analysis_progress_percent(&progress),
-                        &progress.message,
+                        &localized_analysis_progress(progress, &target_locale).message,
                     );
                 })?;
             if unit.source_kind == ModUnitSourceKind::Modpack {
@@ -1965,8 +2170,12 @@ pub async fn get_review_asset_summary(
                 index,
             )?;
         }
-        send_operation_progress(&channel, Some(100), "確認項目を読み込みました");
-        aggregate.ok_or_else(|| database_error("プロジェクトにmodがありません".to_owned()))
+        send_operation_progress(
+            &channel,
+            Some(100),
+            &yc_locale::t!("project.progress.review_items_loaded"),
+        );
+        aggregate.ok_or_else(|| database_error(yc_locale::t!("project.no_mods")))
     })
     .await
     .map_err(|error| task_error(error.to_string()))?
@@ -2014,8 +2223,12 @@ pub async fn save_review_settings(
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません".to_owned()))?;
-        send_operation_progress(&channel, Some(0), "翻訳設定を保存しています");
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
+        let target_locale = opened
+            .repository()
+            .target_locale()
+            .map_err(|error| database_error(error.to_string()))?;
+        send_operation_progress(&channel, Some(0), &yc_locale::t!("project.progress.saving_review_settings"));
         let units = opened
             .repository()
             .list_mod_units()
@@ -2033,7 +2246,7 @@ pub async fn save_review_settings(
                     send_operation_progress(
                         &channel,
                         analysis_progress_percent(&progress),
-                        &progress.message,
+                        &localized_analysis_progress(progress, &target_locale).message,
                     );
                 },
             )?;
@@ -2144,7 +2357,7 @@ pub async fn save_review_settings(
             }
             Err(_) => tracing::warn!("recent projects lock was poisoned"),
         }
-        send_operation_progress(&channel, Some(100), "翻訳設定を保存しました");
+        send_operation_progress(&channel, Some(100), &yc_locale::t!("project.progress.review_settings_saved"));
         Ok(details)
     })
     .await
@@ -2181,12 +2394,26 @@ pub async fn rename_project(
     let id = Uuid::parse_str(&project_id).map_err(|error| {
         AppError::new(
             "project_not_found",
-            "プロジェクト名を変更できませんでした。",
+            &yc_locale::t!("project.rename_failed"),
             Some(error.to_string()),
         )
     })?;
-    let name = normalize_project_name(&name)
-        .map_err(|error| AppError::simple("invalid_project_name", &error.to_string()))?;
+    let name = normalize_project_name(&name).map_err(|error| {
+        let user_message = match error {
+            yc_project::ProjectError::InvalidProjectName(reason)
+                if reason == "プロジェクト名は1〜100文字で入力してください。" =>
+            {
+                yc_locale::t!("project.name_length_invalid")
+            }
+            yc_project::ProjectError::InvalidProjectName(reason)
+                if reason == "プロジェクト名に制御文字は使えません。" =>
+            {
+                yc_locale::t!("project.name_control_character")
+            }
+            _ => yc_locale::t!("project.rename_failed"),
+        };
+        AppError::simple("invalid_project_name", &user_message)
+    })?;
     let project_key = id.to_string();
     let paths = state.paths.clone();
     let active_project = Arc::clone(&state.active_project);
@@ -2200,7 +2427,7 @@ pub async fn rename_project(
         if deleting.contains(&project_key) {
             return Err(AppError::simple(
                 "project_delete_in_progress",
-                "このプロジェクトは削除中です。",
+                &yc_locale::t!("common.project_deleting"),
             ));
         }
         let _project_io = project_io_lock
@@ -2214,7 +2441,7 @@ pub async fn rename_project(
                 opened.rename(&name).map_err(|error| {
                     AppError::new(
                         "project_rename_failed",
-                        "プロジェクト名を変更できませんでした。",
+                        &yc_locale::t!("project.rename_failed"),
                         Some(error.to_string()),
                     )
                 })?
@@ -2222,7 +2449,7 @@ pub async fn rename_project(
             _ => rename_project_file(&paths.projects_dir, id, &name).map_err(|error| {
                 AppError::new(
                     "project_rename_failed",
-                    "プロジェクト名を変更できませんでした。",
+                    &yc_locale::t!("project.rename_failed"),
                     Some(error.to_string()),
                 )
             })?,
@@ -2255,7 +2482,7 @@ pub async fn rename_project(
         save_recent_projects(&paths.recent_file, &recent).map_err(|error| {
             AppError::new(
                 "recent_update_failed",
-                "プロジェクト名は変更されましたが、最近の一覧を更新できませんでした。",
+                &yc_locale::t!("project.rename_recent_refresh_failed"),
                 Some(error.to_string()),
             )
         })?;
@@ -2280,7 +2507,10 @@ pub async fn get_mod_unit_removal_info(
             .lock()
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active.as_ref().ok_or_else(|| {
-            AppError::simple("project_not_open", "プロジェクトを開けませんでした。")
+            AppError::simple(
+                "project_not_open",
+                &yc_locale::t!("common.project_open_failed"),
+            )
         })?;
         let has_unrestored_replacements = opened
             .repository()
@@ -2326,12 +2556,12 @@ pub async fn remove_mod_unit(
             .map_err(|_| internal_state_error("active Project state"))?;
         let opened = active
             .as_mut()
-            .ok_or_else(|| AppError::simple("project_not_open", "プロジェクトを開けませんでした。"))?;
+            .ok_or_else(|| AppError::simple("project_not_open", &yc_locale::t!("common.project_open_failed")))?;
         let project_id = opened.summary().id.clone();
         if deleting.contains(&project_id) {
             return Err(AppError::simple(
                 "project_delete_in_progress",
-                "このプロジェクトは削除中です。",
+                &yc_locale::t!("common.project_deleting"),
             ));
         }
         if ai_job_tokens
@@ -2340,7 +2570,10 @@ pub async fn remove_mod_unit(
             .values()
             .any(|job| job.project_id == project_id)
         {
-            return Err(AppError::simple("ai_job_in_progress", "AI翻訳中はmodを外せません。"));
+            return Err(AppError::simple(
+                "ai_job_in_progress",
+                &yc_locale::t!("project.ai_running_remove_mod"),
+            ));
         }
 
         let repository = opened.repository();
@@ -2348,7 +2581,10 @@ pub async fn remove_mod_unit(
             .iter()
             .any(|unit| unit.id == mod_unit_id)
         {
-            return Err(AppError::simple("mod_unit_not_found", "modを見つけられませんでした。"));
+            return Err(AppError::simple(
+                "mod_unit_not_found",
+                &yc_locale::t!("project.mod_not_found_display"),
+            ));
         }
         let has_unrestored_replacements = repository
             .has_unrestored_jar_replacements(mod_unit_id)
@@ -2361,11 +2597,14 @@ pub async fn remove_mod_unit(
         {
             return Err(AppError::simple(
                 "unit_deployments_pending",
-                "配置したファイルのバックアップを復元できなくなります。",
+                &yc_locale::t!("project.remove_mod_backup_warning"),
             ));
         }
         if repository.list_mod_units().map_err(|error| database_error(error.to_string()))?.len() <= 1 {
-            return Err(AppError::simple("last_mod_unit", "最後のmodはプロジェクトから外せません。"));
+            return Err(AppError::simple(
+                "last_mod_unit",
+                &yc_locale::t!("project.last_mod_remove"),
+            ));
         }
 
         {
@@ -2399,7 +2638,7 @@ pub async fn remove_mod_unit(
 
         let summary = opened.remove_mod_unit(mod_unit_id).map_err(|error| match error {
             yc_project::ProjectError::LastModUnit => {
-                AppError::simple("last_mod_unit", "最後のmodはプロジェクトから外せません。")
+                AppError::simple("last_mod_unit", &yc_locale::t!("project.last_mod_remove"))
             }
             _ => database_error(error.to_string()),
         })?;
@@ -2425,7 +2664,7 @@ pub async fn delete_project(
     let id = Uuid::parse_str(&project_id).map_err(|error| {
         AppError::new(
             "project_not_found",
-            "プロジェクトを削除できませんでした。",
+            &yc_locale::t!("project.delete_failed"),
             Some(error.to_string()),
         )
     })?;
@@ -2533,18 +2772,17 @@ fn project_delete_error(error: yc_project::ProjectError) -> AppError {
             tracing::warn!(%source, "Project could not be moved to trash");
             AppError::simple(
                 "project_delete_rename_failed",
-                "ほかのアプリがファイルを使用しています。しばらくしてからもう一度お試しください。",
+                &yc_locale::t!("project.file_in_use_retry"),
             )
         }
-        yc_project::ProjectError::ProjectAlreadyOpen => AppError::simple(
-            "project_in_use",
-            "別のアプリでプロジェクトが開かれています。閉じてからもう一度お試しください。",
-        ),
+        yc_project::ProjectError::ProjectAlreadyOpen => {
+            AppError::simple("project_in_use", &yc_locale::t!("project.opened_elsewhere"))
+        }
         other => {
             tracing::warn!(%other, "Project deletion failed before the move to trash");
             AppError::simple(
                 "project_delete_failed",
-                "プロジェクトを削除できませんでした。もう一度お試しください。",
+                &yc_locale::t!("project.delete_failed_retry"),
             )
         }
     }
@@ -2606,7 +2844,7 @@ fn analyze_and_save_project_unit(
             if analysis.result.source_sha256 != unit.source_sha256 {
                 return Err(AppError::simple(
                     "source_changed",
-                    "読み込み中にファイルの内容が変わりました。",
+                    &yc_locale::t!("project.source_changed"),
                 ));
             }
             validate_analysis(&analysis)?;
@@ -2634,7 +2872,7 @@ fn analyze_and_save_project_unit(
             if analysis.result.source_sha256 != unit.source_sha256 {
                 return Err(AppError::simple(
                     "source_changed",
-                    "読み込み中にファイルの内容が変わりました。",
+                    &yc_locale::t!("project.source_changed"),
                 ));
             }
             validate_analysis(&analysis)?;
@@ -2757,7 +2995,7 @@ pub(crate) fn add_project_sources_core(
     if sources.is_empty() {
         return Err(AppError::simple(
             "unsupported_mod_source",
-            "JAR、シェーダーパック ZIP またはシェーダーパックフォルダを選んでください。",
+            &yc_locale::t!("project.unsupported_source"),
         ));
     }
 
@@ -2805,7 +3043,7 @@ pub(crate) fn add_project_sources_core(
                     {
                         return Err(AppError::new(
                             "mod_id_already_exists",
-                            "同じ Mod が既にあります。更新版への置き換えは現在未対応です。",
+                            &yc_locale::t!("project.mod_id_duplicate"),
                             Some(format!("Mod ID: {duplicate_id}")),
                         ));
                     }
@@ -2951,14 +3189,14 @@ pub(crate) fn create_project_from_source_inputs_with_target_locale_core(
         let instance_root = instance_path.ok_or_else(|| {
             AppError::simple(
                 "modpack_instance_required",
-                "インスタンスを選び直してください。",
+                &yc_locale::t!("project.choose_instance_again"),
             )
         })?;
         let scan = yc_modpack::scan_instance(instance_root);
         if scan.files.is_empty() {
             return Err(AppError::simple(
                 "modpack_files_missing",
-                "Modpack の翻訳ファイルが見つかりません。再スキャンしてください。",
+                &yc_locale::t!("project.modpack_translation_rescan"),
             ));
         }
         let files = super::modpack::collect_instance_files(instance_root, &scan)?;
@@ -3033,7 +3271,7 @@ pub(crate) fn create_project_from_source_inputs_with_target_locale_core(
                         .mod_unit_source_path(unit.id)
                         .map_err(|source| database_error(source.to_string()))?;
                     let reason = if error.code == "source_changed" {
-                        "読み込み中にファイルの内容が変わりました。".to_owned()
+                        yc_locale::t!("project.source_changed")
                     } else {
                         error.user_message
                     };
@@ -3054,7 +3292,7 @@ pub(crate) fn create_project_from_source_inputs_with_target_locale_core(
                 .join("\n");
             return Err(AppError::new(
                 "all_mods_failed",
-                "JARを読み込めませんでした。ファイルを確認してもう一度お試しください。",
+                &yc_locale::t!("project.jar_read_failed"),
                 Some(detail),
             ));
         }
@@ -3157,7 +3395,7 @@ pub(crate) fn save_review_settings_core(
         .map_err(|error| database_error(error.to_string()))?
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
-        .ok_or_else(|| database_error("modが見つかりません".to_owned()))?;
+        .ok_or_else(|| database_error(yc_locale::t!("project.mod_not_found")))?;
     let target_locale = opened
         .repository()
         .target_locale()
@@ -3205,7 +3443,10 @@ fn save_review_settings_core_with_cached_asset_index(
     setup_completed: bool,
     mut on_progress: impl FnMut(Option<u8>, &str),
 ) -> Result<(usize, usize), AppError> {
-    on_progress(Some(5), "翻訳内容をまとめています");
+    on_progress(
+        Some(5),
+        &yc_locale::t!("project.progress.preparing_translations"),
+    );
     let validation_started = Instant::now();
     let settings = review_settings_from_input(analysis, input, mod_unit_id)?;
     tracing::info!(
@@ -3245,7 +3486,10 @@ fn save_review_settings_core_with_cached_asset_index(
     let project_analysis = project_analysis_data(analysis, merged.entries, &settings);
 
     if source_kind == ModUnitSourceKind::Shaderpack {
-        on_progress(Some(65), "翻訳データを保存しています");
+        on_progress(
+            Some(65),
+            &yc_locale::t!("project.progress.saving_translations"),
+        );
         opened
             .writer()
             .save_analysis(mod_unit_id, project_analysis)
@@ -3262,11 +3506,17 @@ fn save_review_settings_core_with_cached_asset_index(
             .writer()
             .save_asset_index(mod_unit_id, ProjectAssetIndex::default())
             .map_err(|error| database_error(error.to_string()))?;
-        on_progress(Some(90), "翻訳データを保存しました");
+        on_progress(
+            Some(90),
+            &yc_locale::t!("project.progress.translations_saved"),
+        );
         return Ok(merge_counts);
     }
 
-    on_progress(Some(30), "アセットとの対応を調べています");
+    on_progress(
+        Some(30),
+        &yc_locale::t!("project.progress.checking_asset_matches"),
+    );
     let asset_index_started = Instant::now();
     let source_path = opened
         .repository()
@@ -3294,7 +3544,10 @@ fn save_review_settings_core_with_cached_asset_index(
         "Review save phase completed"
     );
 
-    on_progress(Some(65), "翻訳データを保存しています");
+    on_progress(
+        Some(65),
+        &yc_locale::t!("project.progress.saving_translations"),
+    );
     let analysis_save_started = Instant::now();
     opened
         .writer()
@@ -3324,7 +3577,7 @@ fn save_review_settings_core_with_cached_asset_index(
         "Review save phase completed"
     );
 
-    on_progress(None, "アセット情報を保存しています");
+    on_progress(None, &yc_locale::t!("project.progress.saving_assets"));
     let asset_save_started = Instant::now();
     save_asset_index_or_warn(opened, mod_unit_id, asset_index, &opened.summary().id);
     tracing::info!(
@@ -3332,7 +3585,10 @@ fn save_review_settings_core_with_cached_asset_index(
         elapsed_ms = asset_save_started.elapsed().as_millis(),
         "Review save phase completed"
     );
-    on_progress(Some(90), "Reviewを整えています");
+    on_progress(
+        Some(90),
+        &yc_locale::t!("project.progress.preparing_review_short"),
+    );
     Ok(merge_counts)
 }
 
@@ -3394,7 +3650,10 @@ fn review_asset_summary_core_with_index_and_progress(
     analysis: &AnalysisData,
     mut on_progress: impl FnMut(Option<u8>, &str),
 ) -> Result<(ReviewSetupSummary, ProjectAssetIndex), AppError> {
-    on_progress(Some(5), "翻訳内容をまとめています");
+    on_progress(
+        Some(5),
+        &yc_locale::t!("project.progress.preparing_translations"),
+    );
     let merge_started = Instant::now();
     let settings = review_settings_from_input(analysis, input, mod_unit_id)?;
     let merged = merge_for_review(analysis, &settings);
@@ -3405,7 +3664,10 @@ fn review_asset_summary_core_with_index_and_progress(
         "Review summary phase completed"
     );
     if unit_source_kind(opened, mod_unit_id)? == ModUnitSourceKind::Shaderpack {
-        on_progress(Some(85), "確認項目を整えています");
+        on_progress(
+            Some(85),
+            &yc_locale::t!("project.progress.preparing_review_items"),
+        );
         return Ok((
             ReviewSetupSummary {
                 existing_target_translation_count: merged.existing_target_translation_count,
@@ -3423,7 +3685,10 @@ fn review_asset_summary_core_with_index_and_progress(
             ProjectAssetIndex::default(),
         ));
     }
-    on_progress(Some(30), "アセットとの対応を調べています");
+    on_progress(
+        Some(30),
+        &yc_locale::t!("project.progress.checking_asset_matches"),
+    );
     let asset_index_started = Instant::now();
     let source_path = opened
         .repository()
@@ -3433,7 +3698,7 @@ fn review_asset_summary_core_with_index_and_progress(
         .map_err(|detail| {
             AppError::new(
                 "asset_index_unavailable",
-                "アセット情報を読み込めませんでした。同梱Modの選択を変えて再試行してください。",
+                &yc_locale::t!("project.asset_read_failed"),
                 Some(detail),
             )
         })?;
@@ -3444,7 +3709,10 @@ fn review_asset_summary_core_with_index_and_progress(
         match_count = index.matches.len(),
         "Review summary phase completed"
     );
-    on_progress(Some(85), "確認項目を整えています");
+    on_progress(
+        Some(85),
+        &yc_locale::t!("project.progress.preparing_review_items"),
+    );
     let asset_type_counts = index
         .assets
         .iter()
@@ -3487,7 +3755,7 @@ fn review_settings_from_input(
     {
         return Err(AppError::simple(
             "invalid_review_settings",
-            "同梱Modの選択を読み込めませんでした。名前空間を選び直してください。",
+            &yc_locale::t!("project.included_mod_selection_failed"),
         ));
     }
     let source_locale = resolve_source_locale(analysis, &input.source_locale);
@@ -3848,7 +4116,7 @@ fn project_details_for_all_units(
             aggregate = Some(unit_details);
         }
     }
-    aggregate.ok_or_else(|| database_error("プロジェクトにmodがありません".to_owned()))
+    aggregate.ok_or_else(|| database_error(yc_locale::t!("project.no_mods")))
 }
 
 fn project_details_from_stored_data(
@@ -4945,7 +5213,7 @@ fn format_label(format: &LanguageFileFormat) -> &'static str {
 fn modpack_refresh_io_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "modpack_refresh",
-        "Modpack のファイルを再取り込みできませんでした。",
+        &yc_locale::t!("project.modpack_refresh_failed"),
         Some(error.to_string()),
     )
 }
@@ -4955,17 +5223,17 @@ fn analysis_error(error: yc_analysis::AnalysisError) -> AppError {
         yc_analysis::AnalysisError::Cancelled => cancelled_error(),
         yc_analysis::AnalysisError::NoLanguageFiles => AppError::new(
             "no_language_files",
-            "翻訳できる言語ファイルが見つかりませんでした。",
+            &yc_locale::t!("project.language_files_missing"),
             Some(error.to_string()),
         ),
         yc_analysis::AnalysisError::Shaderpack(_) => AppError::new(
             "shaderpack_read",
-            "シェーダーパックを読み込めませんでした。ZIP または shaders フォルダを確認してください。",
+            &yc_locale::t!("project.shaderpack_read_failed"),
             Some(error.to_string()),
         ),
         other => AppError::new(
             "archive_read",
-            "ファイルを読み込めませんでした。破損していないか確認してください。",
+            &yc_locale::t!("project.file_read_failed"),
             Some(other.to_string()),
         ),
     }
@@ -4974,22 +5242,19 @@ fn analysis_error(error: yc_analysis::AnalysisError) -> AppError {
 fn database_error(detail: String) -> AppError {
     AppError::new(
         "database",
-        "プロジェクトを読み込めませんでした。アプリを再起動してもう一度お試しください。",
+        &yc_locale::t!("common.project_load_failed"),
         Some(detail),
     )
 }
 
 fn cancelled_error() -> AppError {
-    AppError::simple(
-        "cancelled",
-        "処理を中止しました。必要であればもう一度お試しください。",
-    )
+    AppError::simple("cancelled", &yc_locale::t!("common.cancelled"))
 }
 
 fn task_error(detail: String) -> AppError {
     AppError::new(
         "task_failed",
-        "処理に失敗しました。もう一度お試しください。",
+        &yc_locale::t!("common.task_failed"),
         Some(detail),
     )
 }
@@ -4997,7 +5262,7 @@ fn task_error(detail: String) -> AppError {
 fn internal_state_error(label: &str) -> AppError {
     AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("common.state_read_failed"),
         Some(label.to_owned()),
     )
 }

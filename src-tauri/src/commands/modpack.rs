@@ -21,9 +21,9 @@ pub(crate) fn collect_instance_files(
             let bytes = fs::read(&path).map_err(|error| {
                 AppError::new(
                     "modpack_file_read",
-                    &format!(
-                        "Modpack の翻訳ファイルを読み込めませんでした。ファイルを確認して再試行してください: {}",
-                        path.display()
+                    &yc_locale::t!(
+                        "modpack.translation_file_read_failed",
+                        path = path.display()
                     ),
                     Some(format!("{}: {error}", path.display())),
                 )
@@ -87,7 +87,7 @@ pub(crate) fn analyze_modpack_archive_with_target_locale(
     let modpack = analyze_files(&files, target_locale).map_err(|error| {
         AppError::new(
             "modpack_analysis",
-            "Modpack の翻訳ファイルを解析できませんでした。",
+            &yc_locale::t!("modpack.analysis_failed"),
             Some(error.safe_detail()),
         )
     })?;
@@ -134,7 +134,7 @@ pub(crate) fn analyze_modpack_archive_with_target_locale(
         .map_err(|error| {
             AppError::new(
                 "modpack_analysis",
-                "KubeJS の言語ファイルを解析できませんでした。",
+                &yc_locale::t!("modpack.kubejs_analysis_failed"),
                 Some(error.to_string()),
             )
         })?;
@@ -172,7 +172,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, AppError> {
     {
         return Err(AppError::new(
             "invalid_modpack_path",
-            "Modpack のファイルパスが不正です。",
+            &yc_locale::t!("modpack.invalid_path"),
             Some(value.to_owned()),
         ));
     }
@@ -182,7 +182,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, AppError> {
 fn modpack_archive_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "modpack_archive_read",
-        "保存した Modpack ファイルを読み込めませんでした。",
+        &yc_locale::t!("modpack.archive_read_failed"),
         Some(error.to_string()),
     )
 }

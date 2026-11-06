@@ -1,1 +1,4 @@
-{}
+{
+  "settings.cache_delete_failed": {"ja":"キャッシュを削除できませんでした。","en":"Could not clear the cache.","zh-Hans":"无法清除缓存。","zh-Hant":"無法清除快取。","ko":"캐시를 지우지 못했습니다."},
+  "settings.read_write_failed": {"ja":"設定を読み書きできませんでした。","en":"Could not read or write the settings.","zh-Hans":"无法读取或写入设置。","zh-Hant":"無法讀取或寫入設定。","ko":"설정을 읽거나 저장하지 못했습니다."}
+}

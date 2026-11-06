@@ -196,7 +196,7 @@ fn active_project_for_id<'a>(
 ) -> Result<&'a OpenedProject, AppError> {
     let opened = active
         .as_ref()
-        .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+        .ok_or_else(|| project_error(yc_locale::t!("common.project_not_open")))?;
     ensure_project_id_matches(&opened.summary().id, project_id)?;
     Ok(opened)
 }
@@ -210,7 +210,7 @@ fn ensure_project_id_matches(
     if active_project_id != requested_project_id {
         return Err(AppError::simple(
             "project_changed",
-            "プロジェクトが切り替わりました。",
+            &yc_locale::t!("export.project_switched"),
         ));
     }
     Ok(())
@@ -271,7 +271,7 @@ pub async fn validate_project(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(yc_locale::t!("common.project_not_open")))?;
         validate_project_core(
             opened,
             kind,
@@ -333,7 +333,7 @@ pub async fn export_resource_pack(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(yc_locale::t!("common.project_not_open")))?;
         let output = Path::new(&path);
         export_resource_pack_core(opened, output, &minecraft_version, manual_format)?;
         record_exported_path(&exported_paths, output)?;
@@ -356,7 +356,7 @@ pub async fn export_modified_jar(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(yc_locale::t!("common.project_not_open")))?;
         let output = Path::new(&path);
         let result = export_modified_jar_core(opened, output)?;
         record_exported_path(&exported_paths, &result)?;
@@ -655,12 +655,15 @@ pub fn open_output_folder(
     if !exported.contains(&requested) {
         return Err(AppError::simple(
             "invalid_output_path",
-            "このファイルの保存先は開けません。",
+            &yc_locale::t!("export.file_destination_unavailable"),
         ));
     }
-    let folder = requested
-        .parent()
-        .ok_or_else(|| AppError::simple("invalid_output_path", "保存先フォルダーを開けません。"))?;
+    let folder = requested.parent().ok_or_else(|| {
+        AppError::simple(
+            "invalid_output_path",
+            &yc_locale::t!("export.destination_folder_unavailable"),
+        )
+    })?;
     app.opener()
         .open_path(folder.to_string_lossy().into_owned(), None::<&str>)
         .map_err(export_error)?;
@@ -774,7 +777,7 @@ pub(crate) fn export_modified_jar_core(
     {
         return Err(AppError::simple(
             "jar_unit_required",
-            "Mod JAR を選んでください。",
+            &yc_locale::t!("export.select_mod_jar"),
         ));
     }
     first_output.ok_or_else(invalid_export_selection_error)
@@ -783,7 +786,7 @@ pub(crate) fn export_modified_jar_core(
 fn invalid_export_selection_error() -> AppError {
     AppError::simple(
         "invalid_export_selection",
-        "翻訳対象のNamespaceを選んでください。",
+        &yc_locale::t!("export.select_target_namespace"),
     )
 }
 
@@ -837,7 +840,7 @@ fn validate_project_core_for_units(
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?;
     if units.is_empty() {
-        return Err(project_error("プロジェクトにmodがありません"));
+        return Err(project_error(yc_locale::t!("project.no_mods")));
     }
     let selected_ids: Option<HashSet<_>> =
         selected_mod_unit_ids.map(|ids| ids.iter().copied().collect());
@@ -902,7 +905,7 @@ fn validate_project_core_for_units(
                     code: "modUnavailable".to_owned(),
                     message: error.user_message,
                     mod_unit_id: Some(unit.id),
-                    mod_name: Some(export_unit_label(&unit)),
+                    mod_name: Some(export_unit_display_label(&unit)),
                     count: None,
                     namespace: None,
                     key: None,
@@ -969,15 +972,17 @@ fn validate_project_core_for_units(
             severity: "error".to_owned(),
             code: "invalidExportSelection".to_owned(),
             message: if selected_shaderpack_only
-                && matches!(kind, ExportKindInput::ResourcePack | ExportKindInput::ModifiedJar)
-            {
-                "シェーダーパックはリソースパックや Mod JAR には含められません。シェーダーパック形式で書き出してください。".to_owned()
+                && matches!(
+                    kind,
+                    ExportKindInput::ResourcePack | ExportKindInput::ModifiedJar
+                ) {
+                yc_locale::t!("export.shaderpack_export_as_shaderpack")
             } else if selected_mod_unit_ids.is_some() {
-                "書き出すmodを選んでください。".to_owned()
+                yc_locale::t!("export.select_mod_to_export")
             } else if kind == ExportKindInput::LanguageFile {
-                "書き出すNamespaceを選び直してください。".to_owned()
+                yc_locale::t!("export.select_export_namespace_again")
             } else {
-                "翻訳対象のNamespaceを選んでください。".to_owned()
+                yc_locale::t!("export.select_target_namespace")
             },
             mod_unit_id: None,
             mod_name: None,
@@ -995,7 +1000,7 @@ fn validate_project_core_for_units(
 fn invalid_selected_mods_error() -> AppError {
     AppError::simple(
         "invalid_export_selection",
-        "書き出すmodを選び直してください。",
+        &yc_locale::t!("export.select_mod_again"),
     )
 }
 
@@ -1038,17 +1043,26 @@ fn export_selected_merged_resource_pack_core(
         overwrite,
     } = request;
     let units = selected_units(opened, selected_ids)?;
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| project_error(error.to_string()))?;
+    let target_language = yc_locale::find_minecraft_language(&target_locale)
+        .map(|language| language.name.as_str())
+        .unwrap_or(&target_locale);
     let mut contexts = Vec::with_capacity(units.len());
     let mut failed_mod_results = Vec::new();
     for unit in units {
         if unit.source_kind == ModUnitSourceKind::Shaderpack {
             failed_mod_results.push(mod_export_result(
                 unit.id,
-                export_unit_label(&unit),
+                export_unit_display_label(&unit),
                 "skipped",
                 None,
-                "シェーダーパックはリソースパックに含めません。「日本語化したシェーダーパック」から書き出してください。"
-                    .to_owned(),
+                yc_locale::t!(
+                    "export.shaderpack_not_in_resource_pack",
+                    language = target_language
+                ),
             ));
             continue;
         }
@@ -1056,7 +1070,7 @@ fn export_selected_merged_resource_pack_core(
             Ok(context) => contexts.push((unit, context)),
             Err(error) => failed_mod_results.push(mod_export_result(
                 unit.id,
-                export_unit_label(&unit),
+                export_unit_display_label(&unit),
                 "failed",
                 None,
                 error.user_message,
@@ -1094,7 +1108,7 @@ fn export_selected_merged_resource_pack_core(
         }
         return Err(AppError::simple(
             "export_mods_unavailable",
-            "選択したmodを読み込めませんでした。保存済みJARを確認してください。",
+            &yc_locale::t!("export.selected_mod_read_failed"),
         ));
     }
 
@@ -1110,7 +1124,7 @@ fn export_selected_merged_resource_pack_core(
         let instance_path = summary.instance_path.as_deref().ok_or_else(|| {
             AppError::simple(
                 "invalid_output_path",
-                "インスタンスの保存先がありません。通常の保存先を選んでください。",
+                &yc_locale::t!("export.instance_save_missing"),
             )
         })?;
         PathBuf::from(instance_path)
@@ -1121,13 +1135,21 @@ fn export_selected_merged_resource_pack_core(
             ))
     } else {
         requested_output
-            .ok_or_else(|| AppError::simple("invalid_output_path", "保存先を選んでください。"))?
+            .ok_or_else(|| {
+                AppError::simple(
+                    "invalid_output_path",
+                    &yc_locale::t!("export.select_destination"),
+                )
+            })?
             .to_path_buf()
     };
     ensure_file_extension(&output, "zip")?;
     if direct_install {
         let parent = output.parent().ok_or_else(|| {
-            AppError::simple("invalid_output_path", "保存先フォルダを確認してください。")
+            AppError::simple(
+                "invalid_output_path",
+                &yc_locale::t!("export.check_destination_folder"),
+            )
         })?;
         fs::create_dir_all(parent).map_err(export_error)?;
     }
@@ -1195,13 +1217,13 @@ fn export_selected_merged_resource_pack_core(
                     .any(|namespace| namespace.included);
                 mod_export_result(
                     unit.id,
-                    export_unit_label(unit),
+                    export_unit_display_label(unit),
                     if included { "success" } else { "skipped" },
                     included.then(|| output.to_string_lossy().into_owned()),
                     if included {
-                        "リソースパックに含めました。".to_owned()
+                        yc_locale::t!("export.resource_pack_included")
                     } else {
-                        "翻訳対象のNamespaceがありません。".to_owned()
+                        yc_locale::t!("export.no_target_namespace")
                     },
                 )
             })
@@ -1252,13 +1274,13 @@ fn export_selected_modified_jars_core(
     if units.is_empty() {
         return Err(AppError::simple(
             "jar_unit_required",
-            "Mod JAR を選んでください。",
+            &yc_locale::t!("export.select_mod_jar"),
         ));
     }
     if replace_in_place && opened.summary().instance_path.is_none() {
         return Err(AppError::simple(
             "invalid_output_path",
-            "このプロジェクトにはインスタンスの保存先がありません。",
+            &yc_locale::t!("export.project_instance_save_missing"),
         ));
     }
     if !replace_in_place {
@@ -1267,7 +1289,7 @@ fn export_selected_modified_jars_core(
     let repository = opened.repository();
     let mut results = Vec::with_capacity(units.len());
     for unit in units {
-        let label = export_unit_label(&unit);
+        let label = export_unit_display_label(&unit);
         if replace_in_place
             && Path::new(&unit.original_path).is_file()
             && opened
@@ -1286,7 +1308,7 @@ fn export_selected_modified_jars_core(
                 label,
                 "skipped",
                 None,
-                "インスタンスの mods フォルダ外のため直接置き換えできません。".to_owned(),
+                yc_locale::t!("export.instance_mods_folder_only"),
             ));
             continue;
         }
@@ -1313,7 +1335,7 @@ fn export_selected_modified_jars_core(
                 label,
                 "skipped",
                 None,
-                "翻訳対象のNamespaceがありません。".to_owned(),
+                yc_locale::t!("export.no_target_namespace"),
             ));
             continue;
         }
@@ -1326,19 +1348,24 @@ fn export_selected_modified_jars_core(
                     label,
                     "skipped",
                     None,
-                    "元のJARが見つかりません。".to_owned(),
+                    yc_locale::t!("export.original_jar_missing"),
                 ));
                 continue;
             }
             let active = match repository.active_jar_replacement(unit.id, &unit.original_path) {
                 Ok(active) => active,
                 Err(error) => {
+                    tracing::error!(
+                        mod_unit_id = unit.id,
+                        detail = %error,
+                        "failed to read active JAR replacement"
+                    );
                     results.push(mod_export_result(
                         unit.id,
                         label,
                         "failed",
                         None,
-                        error.to_string(),
+                        yc_locale::t!("export.replacement_status_read_failed"),
                     ));
                     continue;
                 }
@@ -1383,8 +1410,7 @@ fn export_selected_modified_jars_core(
                         label,
                         "skipped",
                         None,
-                        "元のJARが更新されています。現在のファイルは変更しませんでした。"
-                            .to_owned(),
+                        yc_locale::t!("export.original_jar_changed"),
                     ));
                     continue;
                 }
@@ -1442,11 +1468,11 @@ fn export_selected_modified_jars_core(
                 let restore = restore_jar_from_backup(Path::new(&backup_path), &target);
                 let message = match restore {
                     Ok(()) => {
-                        "書き出し記録を保存できなかったため、元のJARへ戻しました。".to_owned()
+                        yc_locale::t!("export.record_save_failed_restored")
                     }
-                    Err(restore_error) => format!(
-                        "書き出し記録を保存できませんでした。元のJARへの復元にも失敗しました: {}",
-                        export_operation_error(restore_error).user_message
+                    Err(restore_error) => yc_locale::t!(
+                        "export.record_save_and_restore_failed",
+                        detail = export_operation_error(restore_error).user_message
                     ),
                 };
                 tracing::error!(mod_unit_id = unit.id, error = %error, "failed to persist in-place JAR replacement");
@@ -1468,7 +1494,7 @@ fn export_selected_modified_jars_core(
                 label,
                 "success",
                 Some(target.to_string_lossy().into_owned()),
-                "JARを上書きしました。元のJARはプロジェクト内に保存されています。".to_owned(),
+                yc_locale::t!("export.jar_overwritten"),
             ));
         } else {
             let file_stem = Path::new(&unit.source_filename)
@@ -1493,7 +1519,7 @@ fn export_selected_modified_jars_core(
                     label,
                     "skipped",
                     None,
-                    "同名のファイルが既にあります。既存ファイルは変更していません。".to_owned(),
+                    yc_locale::t!("export.same_name_exists"),
                 ));
                 continue;
             }
@@ -1512,7 +1538,7 @@ fn export_selected_modified_jars_core(
                     label,
                     "success",
                     Some(output.to_string_lossy().into_owned()),
-                    "JARを書き出しました。".to_owned(),
+                    yc_locale::t!("export.jar_exported"),
                 )),
                 Err(error) => results.push(mod_export_result(
                     unit.id,
@@ -1554,7 +1580,7 @@ fn export_selected_language_files_core(
     fs::create_dir_all(output_directory).map_err(export_error)?;
     let mut results = Vec::with_capacity(units.len());
     for unit in units {
-        let label = export_unit_label(&unit);
+        let label = export_unit_display_label(&unit);
         let context = match export_context(opened, unit.id) {
             Ok(context) => context,
             Err(error) => {
@@ -1582,7 +1608,7 @@ fn export_selected_language_files_core(
                 label,
                 "skipped",
                 None,
-                "このmodに選択したNamespaceはありません。".to_owned(),
+                yc_locale::t!("export.no_namespace_in_mod"),
             ));
             continue;
         }
@@ -1613,7 +1639,7 @@ fn export_selected_language_files_core(
                     label,
                     "skipped",
                     None,
-                    "同名のファイルが既にあります。既存ファイルは変更していません。".to_owned(),
+                    yc_locale::t!("export.same_name_exists"),
                 ));
                 continue;
             }
@@ -1630,7 +1656,7 @@ fn export_selected_language_files_core(
                     label,
                     "success",
                     Some(output.to_string_lossy().into_owned()),
-                    "言語ファイルを書き出しました。".to_owned(),
+                    yc_locale::t!("export.language_file_exported"),
                 )),
                 Err(error) => results.push(mod_export_result(
                     unit.id,
@@ -1678,7 +1704,7 @@ fn export_selected_language_files_core(
                 label,
                 "skipped",
                 None,
-                "書き出す翻訳がありません。".to_owned(),
+                yc_locale::t!("export.no_translations"),
             ));
             continue;
         }
@@ -1703,7 +1729,7 @@ fn export_selected_language_files_core(
                 label,
                 "skipped",
                 None,
-                "同名のファイルが既にあります。既存ファイルは変更していません。".to_owned(),
+                yc_locale::t!("export.same_name_exists"),
             ));
             continue;
         }
@@ -1750,7 +1776,7 @@ fn export_selected_language_files_core(
                     label,
                     "success",
                     result_path.map(|path| path.to_string_lossy().into_owned()),
-                    "翻訳データを書き出しました。".to_owned(),
+                    yc_locale::t!("export.translations_exported"),
                 ))
             }
             Err(error) => results.push(mod_export_result(
@@ -1781,7 +1807,7 @@ pub(crate) fn export_modpack_files_core(
     if units.is_empty() {
         return Err(AppError::simple(
             "modpack_unit_required",
-            "Modpack 固有の項目を選んでください。",
+            &yc_locale::t!("export.select_modpack_items"),
         ));
     }
     let repository = opened.repository();
@@ -1822,7 +1848,7 @@ pub(crate) fn export_modpack_files_core(
             {
                 return Err(AppError::new(
                     "modpack_output_conflict",
-                    "選択した Modpack の出力先が重複しています。",
+                    &yc_locale::t!("export.modpack_output_duplicate"),
                     Some(output.path.clone()),
                 ));
             }
@@ -1837,7 +1863,7 @@ pub(crate) fn export_modpack_files_core(
             if !seen.insert(target.clone()) {
                 return Err(AppError::new(
                     "modpack_output_conflict",
-                    "選択した Modpack の配置先が重複しています。",
+                    &yc_locale::t!("export.modpack_target_duplicate"),
                     Some(target.to_string_lossy().into_owned()),
                 ));
             }
@@ -1880,7 +1906,7 @@ pub(crate) fn export_modpack_files_core(
     let output_path = output_path.ok_or_else(|| {
         AppError::simple(
             "invalid_output_path",
-            "Modpack ZIP の保存先を選んでください。",
+            &yc_locale::t!("export.select_modpack_zip_destination"),
         )
     })?;
     ensure_file_extension(output_path, "zip")?;
@@ -1921,7 +1947,7 @@ pub(crate) fn export_selected_shaderpacks_core(
     if units.is_empty() {
         return Err(AppError::simple(
             "shaderpack_unit_required",
-            "シェーダーパックを選んでください。",
+            &yc_locale::t!("export.select_shaderpack"),
         ));
     }
     let instance_root = if direct_install {
@@ -1933,7 +1959,10 @@ pub(crate) fn export_selected_shaderpacks_core(
         None
     } else {
         Some(output_directory.ok_or_else(|| {
-            AppError::simple("invalid_output_path", "保存先フォルダを選んでください。")
+            AppError::simple(
+                "invalid_output_path",
+                &yc_locale::t!("export.select_destination_folder"),
+            )
         })?)
     };
     if let Some(output_directory) = output_directory {
@@ -1959,7 +1988,10 @@ pub(crate) fn export_selected_shaderpacks_core(
             .find(|candidate| candidate.included)
             .map(|candidate| candidate.namespace.as_str())
             .ok_or_else(|| {
-                AppError::simple("invalid_export_selection", "翻訳対象を選んでください。")
+                AppError::simple(
+                    "invalid_export_selection",
+                    &yc_locale::t!("export.select_target_namespace"),
+                )
             })?;
         let source_lang = context
             .language_files
@@ -1972,7 +2004,7 @@ pub(crate) fn export_selected_shaderpacks_core(
             .ok_or_else(|| {
                 AppError::simple(
                     "shaderpack_source_language_missing",
-                    "翻訳元の言語ファイルが見つかりません。",
+                    &yc_locale::t!("export.source_language_file_missing"),
                 )
             })?;
         let translations = context
@@ -2001,7 +2033,7 @@ pub(crate) fn export_selected_shaderpacks_core(
             let _ = fs::remove_file(&staging);
             return Err(AppError::new(
                 "shaderpack_export",
-                "シェーダーパックを書き出せませんでした。",
+                &yc_locale::t!("export.shaderpack_export_failed"),
                 Some(error.to_string()),
             ));
         }
@@ -2076,7 +2108,7 @@ pub(crate) fn export_selected_shaderpacks_core(
             if !seen.insert(target.clone()) {
                 return Err(AppError::simple(
                     "shaderpack_output_conflict",
-                    "選択したシェーダーパックの配置先が重複しています。",
+                    &yc_locale::t!("export.shaderpack_target_duplicate"),
                 ));
             }
             let target_string = target.to_string_lossy();
@@ -2117,7 +2149,7 @@ pub(crate) fn export_selected_shaderpacks_core(
     let mut output_paths = Vec::new();
     let mut mod_results = Vec::with_capacity(prepared.len());
     for (unit, _, target, bytes) in prepared {
-        let label = export_unit_label(&unit);
+        let label = export_unit_display_label(&unit);
         let result = if direct_install {
             deploy_modpack_file(
                 opened,
@@ -2141,7 +2173,7 @@ pub(crate) fn export_selected_shaderpacks_core(
                     label,
                     "success",
                     Some(output_path),
-                    "シェーダーパックを書き出しました。".to_owned(),
+                    yc_locale::t!("export.shaderpack_exported"),
                 ));
             }
             Err(error) => mod_results.push(mod_export_result(
@@ -2174,15 +2206,17 @@ fn shaderpack_output_filename(unit: &ModUnitRecord, target_locale: &str) -> Stri
 }
 
 fn shaderpack_instance_root(opened: &OpenedProject) -> Result<PathBuf, AppError> {
-    let instance_path =
-        opened.summary().instance_path.as_deref().ok_or_else(|| {
-            AppError::simple("instance_required", "インスタンスを検出できません。")
-        })?;
+    let instance_path = opened.summary().instance_path.as_deref().ok_or_else(|| {
+        AppError::simple(
+            "instance_required",
+            &yc_locale::t!("export.instance_not_detected"),
+        )
+    })?;
     let root = yc_modpack::resolve_game_directory(Path::new(instance_path));
     if !root.is_dir() {
         return Err(AppError::simple(
             "instance_required",
-            "インスタンスを検出できません。",
+            &yc_locale::t!("export.instance_not_detected"),
         ));
     }
     Ok(root)
@@ -2202,7 +2236,7 @@ fn shaderpack_lang_export(
         .ok_or_else(|| {
             AppError::simple(
                 "shaderpack_source_language_missing",
-                "翻訳元の言語ファイルが見つかりません。",
+                &yc_locale::t!("export.source_language_file_missing"),
             )
         })?;
     let english_target = normalize_locale(&context.target_locale) == "en_us";
@@ -2222,7 +2256,7 @@ fn shaderpack_lang_export(
         let mut archive = yc_archive::Archive::open(&context.source_jar).map_err(|error| {
             AppError::new(
                 "shaderpack_read",
-                "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                &yc_locale::t!("export.shaderpack_reopen"),
                 Some(error.to_string()),
             )
         })?;
@@ -2231,7 +2265,7 @@ fn shaderpack_lang_export(
             .map_err(|error| {
                 AppError::new(
                     "shaderpack_read",
-                    "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                    &yc_locale::t!("export.shaderpack_reopen"),
                     Some(error.to_string()),
                 )
             })?;
@@ -2244,7 +2278,7 @@ fn shaderpack_lang_export(
                 |error| {
                     AppError::new(
                         "shaderpack_read",
-                        "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                        &yc_locale::t!("export.shaderpack_reopen"),
                         Some(error.to_string()),
                     )
                 },
@@ -2430,12 +2464,16 @@ fn validate_modpack_files_for_units(
                 PlaceholderSeverity::Error => (
                     "error",
                     "placeholderError",
-                    format!("Placeholderの書式エラー: {namespace}:{key}"),
+                    yc_locale::t!("export.placeholder_error", namespace = namespace, key = key),
                 ),
                 PlaceholderSeverity::Warning => (
                     "warning",
                     "placeholderWarning",
-                    format!("引数が表示されない可能性があります: {namespace}:{key}"),
+                    yc_locale::t!(
+                        "export.placeholder_warning",
+                        namespace = namespace,
+                        key = key
+                    ),
                 ),
             };
             issues.push(ExportIssue {
@@ -2443,7 +2481,7 @@ fn validate_modpack_files_for_units(
                 code: code.to_owned(),
                 message,
                 mod_unit_id: Some(unit.id),
-                mod_name: Some(export_unit_label(unit)),
+                mod_name: Some(export_unit_display_label(unit)),
                 count: None,
                 namespace: Some(namespace.to_owned()),
                 key: Some(key),
@@ -2457,7 +2495,7 @@ fn validate_modpack_files_for_units(
         issues.push(ExportIssue {
             severity: "error".to_owned(),
             code: "invalidExportSelection".to_owned(),
-            message: "Modpack 固有の項目を選んでください。".to_owned(),
+            message: yc_locale::t!("export.select_modpack_items"),
             mod_unit_id: None,
             mod_name: None,
             count: None,
@@ -2514,9 +2552,7 @@ fn modpack_deployment_changed_error(target: &Path) -> AppError {
         .unwrap_or_else(|| target.as_os_str().to_string_lossy());
     AppError::new(
         "modpack_file_changed",
-        &format!(
-            "配置後に変更されたファイル「{name}」は上書きできません。手動で解決してください。"
-        ),
+        &yc_locale::t!("export.file_changed_after_deployment", name = name),
         Some(target.to_string_lossy().into_owned()),
     )
 }
@@ -2526,10 +2562,9 @@ fn modpack_instance_root(unit: &ModUnitRecord, game_directory: &str) -> Result<P
     if game_directory == "." {
         Ok(game_path)
     } else {
-        game_path
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| project_error("Modpack のインスタンスフォルダーを確認できません"))
+        game_path.parent().map(Path::to_path_buf).ok_or_else(|| {
+            project_error(yc_locale::t!("export.modpack_instance_folder_check_failed"))
+        })
     }
 }
 
@@ -2547,7 +2582,7 @@ fn safe_modpack_relative_path(value: &str) -> Result<PathBuf, AppError> {
     {
         return Err(AppError::new(
             "invalid_modpack_path",
-            "Modpack のファイルパスが不正です。",
+            &yc_locale::t!("export.modpack_path_invalid"),
             Some(value.to_owned()),
         ));
     }
@@ -2559,8 +2594,12 @@ fn validate_modpack_target_path(
     target: &Path,
     create_missing_parents: bool,
 ) -> Result<(), AppError> {
-    let invalid_path =
-        || AppError::simple("invalid_modpack_path", "インスタンス外には配置できません。");
+    let invalid_path = || {
+        AppError::simple(
+            "invalid_modpack_path",
+            &yc_locale::t!("export.outside_instance_deploy"),
+        )
+    };
     let canonical_root = fs::canonicalize(instance_root).map_err(export_error)?;
     let parent = target.parent().unwrap_or(instance_root);
     let relative_parent = parent
@@ -2596,7 +2635,7 @@ fn validate_modpack_target_path(
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(AppError::simple(
                 "invalid_modpack_path",
-                "シンボリックリンクには配置できません。",
+                &yc_locale::t!("export.symlink_deploy"),
             ));
         }
         Ok(_) => {
@@ -2710,7 +2749,7 @@ fn deploy_modpack_file(
             tracing::error!(target = %target.display(), %error, rollback_error = %rollback_error.user_message, "modpack deployment record failed and target rollback also failed");
             return Err(AppError::new(
                 "file_deployment_record",
-                "配置記録を保存できず、ファイルの復元にも失敗しました。",
+                &yc_locale::t!("export.deployment_record_restore_failed"),
                 Some(format!("{}; {}", error, rollback_error.user_message)),
             ));
         }
@@ -2742,7 +2781,10 @@ pub(crate) fn restore_modpack_file_core(
         .into_iter()
         .find(|record| record.id == deployment_id)
         .ok_or_else(|| {
-            AppError::simple("deployment_not_found", "復元するファイルが見つかりません。")
+            AppError::simple(
+                "deployment_not_found",
+                &yc_locale::t!("export.restore_file_missing"),
+            )
         })?;
     let unit = repository
         .list_mod_units()
@@ -2756,7 +2798,10 @@ pub(crate) fn restore_modpack_file_core(
                 )
         })
         .ok_or_else(|| {
-            AppError::simple("deployment_not_found", "復元するファイルが見つかりません。")
+            AppError::simple(
+                "deployment_not_found",
+                &yc_locale::t!("export.restore_file_missing"),
+            )
         })?;
     let target = PathBuf::from(&deployment.target_path);
     let instance_root = match unit.source_kind {
@@ -2782,14 +2827,14 @@ pub(crate) fn restore_modpack_file_core(
     if !canonical_target.starts_with(&canonical_root) {
         return Err(AppError::simple(
             "invalid_deployment_path",
-            "インスタンス外のファイルは復元できません。",
+            &yc_locale::t!("export.outside_instance_restore"),
         ));
     }
     if deployment.existed_before {
         let backup_path = deployment.backup_path.as_deref().ok_or_else(|| {
             AppError::simple(
                 "invalid_deployment_backup",
-                "バックアップを確認できません。",
+                &yc_locale::t!("export.backup_unavailable"),
             )
         })?;
         let backup_path = Path::new(backup_path);
@@ -2838,7 +2883,10 @@ fn restore_modified_jar_core(
         .into_iter()
         .find(|record| record.id == replacement_id)
         .ok_or_else(|| {
-            AppError::simple("replacement_not_found", "復元するJARが見つかりません。")
+            AppError::simple(
+                "replacement_not_found",
+                &yc_locale::t!("export.replacement_jar_missing"),
+            )
         })?;
     let unit = repository
         .list_mod_units()
@@ -2846,12 +2894,15 @@ fn restore_modified_jar_core(
         .into_iter()
         .find(|unit| unit.id == replacement.mod_unit_id)
         .ok_or_else(|| {
-            AppError::simple("replacement_not_found", "復元するmodが見つかりません。")
+            AppError::simple(
+                "replacement_not_found",
+                &yc_locale::t!("export.replacement_mod_missing"),
+            )
         })?;
     if replacement.target_path != unit.original_path {
         return Err(AppError::simple(
             "invalid_replacement_path",
-            "JARの保存先を確認できません。",
+            &yc_locale::t!("export.jar_destination_unavailable"),
         ));
     }
     validate_project_backup_path(
@@ -2884,7 +2935,7 @@ fn restore_modified_jar_core(
         .map_err(|error| {
             AppError::new(
                 "restore_record",
-                "JARは元に戻しましたが、復元記録を保存できませんでした。",
+                &yc_locale::t!("export.jar_restored_record_save_failed"),
                 Some(error.to_string()),
             )
         })?;
@@ -2914,6 +2965,17 @@ fn export_unit_label(unit: &ModUnitRecord) -> String {
     {
         Some(version) => format!("{name} {version}"),
         None => name.to_owned(),
+    }
+}
+
+fn export_unit_display_label(unit: &ModUnitRecord) -> String {
+    match unit.source_kind {
+        ModUnitSourceKind::Modpack => yc_locale::t!("export.modpack_unit_label"),
+        ModUnitSourceKind::Shaderpack => yc_locale::t!(
+            "export.shaderpack_unit_label",
+            filename = unit.source_filename.as_str()
+        ),
+        ModUnitSourceKind::Jar => export_unit_label(unit),
     }
 }
 
@@ -3004,13 +3066,13 @@ fn validate_project_backup_path(
     if !backup_path.starts_with(&backup_directory) || !backup_path.is_file() {
         return Err(AppError::simple(
             "invalid_backup_path",
-            "プロジェクト内のバックアップを確認できません。",
+            &yc_locale::t!("export.project_backup_unavailable"),
         ));
     }
     if sha256_file_hex(&backup_path)? != expected_sha256 {
         return Err(AppError::simple(
             "invalid_backup_hash",
-            "元のJARバックアップを確認できません。",
+            &yc_locale::t!("export.original_jar_backup_unavailable"),
         ));
     }
     Ok(())
@@ -3027,7 +3089,7 @@ fn export_operation_error(error: ExportError) -> AppError {
     match error {
         ExportError::TargetLocked(path) => AppError::new(
             "target_locked",
-            "Minecraft が起動中の可能性があります。Minecraft を終了してからもう一度お試しください。",
+            &yc_locale::t!("export.minecraft_may_be_running"),
             Some(path.to_string_lossy().into_owned()),
         ),
         other => export_error(other),
@@ -3109,6 +3171,9 @@ fn validate_export_context(
         let target_text = lang_entry
             .map(|entry| entry.target_text.as_str())
             .or_else(|| document_entry.and_then(|entry| entry.target_text.as_deref()));
+        let count = (issue.code == ValidationIssueCode::UntranslatedEntries)
+            .then(|| issue.message.split_whitespace().next()?.parse().ok())
+            .flatten();
         let placeholder_comparison = (issue.code == ValidationIssueCode::PlaceholderWarning
             && context.source_kind != ModUnitSourceKind::Shaderpack)
             .then(|| {
@@ -3137,17 +3202,19 @@ fn validate_export_context(
             Some(PlaceholderSeverity::Error) => (
                 "error",
                 "placeholderError",
-                format!(
-                    "Placeholderの書式エラー: {}",
-                    issue.message.trim_start_matches("placeholder mismatch: ")
+                yc_locale::t!(
+                    "export.placeholder_error",
+                    namespace = namespace.as_deref().unwrap_or_default(),
+                    key = key.as_deref().unwrap_or_default()
                 ),
             ),
             Some(PlaceholderSeverity::Warning) => (
                 "warning",
                 "placeholderWarning",
-                format!(
-                    "引数が表示されない可能性があります: {}",
-                    issue.message.trim_start_matches("placeholder mismatch: ")
+                yc_locale::t!(
+                    "export.placeholder_warning",
+                    namespace = namespace.as_deref().unwrap_or_default(),
+                    key = key.as_deref().unwrap_or_default()
                 ),
             ),
             None => (
@@ -3159,18 +3226,23 @@ fn validate_export_context(
                 if issue.code == ValidationIssueCode::PlaceholderWarning
                     && context.source_kind == ModUnitSourceKind::Shaderpack
                 {
-                    format!(
-                        "OptiFineで表示が崩れる可能性があります: {}",
-                        issue.message.trim_start_matches("placeholder mismatch: ")
+                    yc_locale::t!(
+                        "export.optifine_warning",
+                        namespace = namespace.as_deref().unwrap_or_default(),
+                        key = key.as_deref().unwrap_or_default()
                     )
                 } else {
-                    issue_message(&issue.code, &issue.message)
+                    issue_message(
+                        &issue.code,
+                        &issue.message,
+                        namespace.as_deref().unwrap_or_default(),
+                        key.as_deref().unwrap_or_default(),
+                        count,
+                        &context.target_locale,
+                    )
                 },
             ),
         };
-        let count = (issue.code == ValidationIssueCode::UntranslatedEntries)
-            .then(|| issue.message.split_whitespace().next()?.parse().ok())
-            .flatten();
         ExportIssue {
             severity: severity.to_owned(),
             code: code.to_owned(),
@@ -3193,7 +3265,7 @@ fn validate_export_context(
             .map(|(path, message)| ExportIssue {
                 severity: "warning".to_owned(),
                 code: "duplicateKeys".to_owned(),
-                message: format!("{path}: {message}"),
+                message: duplicate_key_warning_message(path, message),
                 mod_unit_id: Some(context.mod_unit_id),
                 mod_name: Some(context.mod_name.clone()),
                 count: None,
@@ -3212,7 +3284,7 @@ fn validate_export_context(
         issues.push(ExportIssue {
             severity: "error".to_owned(),
             code: "invalidExportSelection".to_owned(),
-            message: "翻訳対象のNamespaceを選んでください。".to_owned(),
+            message: yc_locale::t!("export.select_target_namespace"),
             mod_unit_id: Some(context.mod_unit_id),
             mod_name: Some(context.mod_name.clone()),
             count: None,
@@ -3232,7 +3304,7 @@ fn validate_export_context(
         issues.push(ExportIssue {
             severity: "error".to_owned(),
             code: "invalidExportSelection".to_owned(),
-            message: "書き出すNamespaceを選び直してください。".to_owned(),
+            message: yc_locale::t!("export.select_export_namespace_again"),
             mod_unit_id: Some(context.mod_unit_id),
             mod_name: Some(context.mod_name.clone()),
             count: None,
@@ -3373,7 +3445,7 @@ pub(crate) fn export_language_file_core(
     first_output.ok_or_else(|| {
         AppError::simple(
             "invalid_export_selection",
-            "書き出すNamespaceを選び直してください。",
+            &yc_locale::t!("export.select_export_namespace_again"),
         )
     })
 }
@@ -3388,7 +3460,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .map_err(|error| project_error(error.to_string()))?
         .into_iter()
         .find(|unit| unit.id == mod_unit_id)
-        .ok_or_else(|| project_error("modが見つかりません"))?;
+        .ok_or_else(|| project_error(yc_locale::t!("project.mod_not_found")))?;
     let source_jar = repository
         .mod_unit_source_path(mod_unit_id)
         .map_err(|error| project_error(error.to_string()))?;
@@ -3402,7 +3474,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .map_err(|error| {
             AppError::new(
                 "archive_read",
-                "JARを読み込めませんでした。プロジェクトを開き直してください。",
+                &yc_locale::t!("export.jar_language_file_read_failed"),
                 Some(error.to_string()),
             )
         })?,
@@ -3418,7 +3490,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
         .map_err(|error| {
             AppError::new(
                 "shaderpack_read",
-                "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+                &yc_locale::t!("export.shaderpack_reopen"),
                 Some(error.to_string()),
             )
         })?,
@@ -3568,7 +3640,7 @@ fn export_context(opened: &OpenedProject, mod_unit_id: i64) -> Result<ExportCont
     Ok(ExportContext {
         mod_unit_id,
         source_kind: unit.source_kind,
-        mod_name: export_unit_label(&unit),
+        mod_name: export_unit_display_label(&unit),
         source_jar,
         source_jar_filename: unit.source_filename,
         mods: analysis
@@ -3615,8 +3687,9 @@ fn patchouli_document_exports(
         let target_path =
             yc_language::patchouli_target_document_path(document_path, "en_us", target_locale)
                 .ok_or_else(|| {
-                    export_error(format!(
-                        "Patchouli文書のパスを確認できません: {document_path}"
+                    export_error(yc_locale::t!(
+                        "export.patchouli_document_path_check_failed",
+                        path = document_path
                     ))
                 })?;
         let translations = grouped
@@ -3660,8 +3733,9 @@ fn patchouli_document_exports(
                 .find(|nested| nested.path == container_path)
                 .and_then(|nested| nested.archive.as_mut())
             else {
-                return Err(export_error(format!(
-                    "同梱JARを読み込めません: {container_path}"
+                return Err(export_error(yc_locale::t!(
+                    "export.nested_jar_read_failed",
+                    path = container_path
                 )));
             };
             nested.read_entry(&source_path, yc_archive::EntryKind::Text)
@@ -3672,8 +3746,9 @@ fn patchouli_document_exports(
             .and_then(|path| path.split_once('/'))
             .map(|(namespace, _)| namespace)
             .ok_or_else(|| {
-                export_error(format!(
-                    "Patchouli文書のnamespaceを確認できません: {source_path}"
+                export_error(yc_locale::t!(
+                    "export.patchouli_namespace_check_failed",
+                    path = source_path
                 ))
             })?
             .to_owned();
@@ -3730,7 +3805,7 @@ fn legacy_parse_escapes_namespaces(
     let mut archive = yc_archive::Archive::open(source_jar).map_err(|error| {
         AppError::new(
             "archive_read",
-            "JAR内の言語ファイルを読み込めませんでした。プロジェクトを開き直してください。",
+            &yc_locale::t!("export.jar_language_file_read_failed"),
             Some(error.to_string()),
         )
     })?;
@@ -3740,7 +3815,7 @@ fn legacy_parse_escapes_namespaces(
         archive.discover_nested(&nested_paths).map_err(|error| {
             AppError::new(
                 "archive_read",
-                "JAR内の言語ファイルを読み込めませんでした。プロジェクトを開き直してください。",
+                &yc_locale::t!("export.jar_language_file_read_failed"),
                 Some(error.to_string()),
             )
         })?
@@ -3767,7 +3842,7 @@ fn legacy_parse_escapes_namespaces(
         .map_err(|error| {
             AppError::new(
                 "archive_read",
-                "JAR内の言語ファイルを読み込めませんでした。プロジェクトを開き直してください。",
+                &yc_locale::t!("export.jar_language_file_read_failed"),
                 Some(error.to_string()),
             )
         })?;
@@ -3812,7 +3887,7 @@ fn export_kind(kind: ExportKindInput) -> Result<ExportKind, AppError> {
         ExportKindInput::ShaderpackZip => Ok(ExportKind::LanguageFile),
         ExportKindInput::ModpackFiles => Err(AppError::simple(
             "invalid_export_kind",
-            "Modpack ファイルの検証方法が不正です。",
+            &yc_locale::t!("export.modpack_validation_method_invalid"),
         )),
     }
 }
@@ -3833,50 +3908,72 @@ fn issue_code(code: &ValidationIssueCode) -> &'static str {
     }
 }
 
-fn issue_message(code: &ValidationIssueCode, detail: &str) -> String {
+fn issue_message(
+    code: &ValidationIssueCode,
+    detail: &str,
+    namespace: &str,
+    key: &str,
+    count: Option<usize>,
+    target_locale: &str,
+) -> String {
     match code {
-        ValidationIssueCode::MalformedTranslationFile => {
-            format!(
-                "言語ファイルを読み込めませんでした: {}",
-                detail.trim_start_matches("translation file could not be parsed: ")
-            )
-        }
-        ValidationIssueCode::PlaceholderWarning => format!(
-            "Placeholderが一致しません: {}",
-            detail.trim_start_matches("placeholder mismatch: ")
+        ValidationIssueCode::MalformedTranslationFile => yc_locale::t!(
+            "export.validation.malformed_translation_file",
+            detail = detail.trim_start_matches("translation file could not be parsed: ")
         ),
-        ValidationIssueCode::UntranslatedEntries => {
-            let count = detail.split_whitespace().next().unwrap_or_default();
-            format!("{count}件は未翻訳です")
-        }
-        ValidationIssueCode::DuplicateKeys => format!(
-            "重複する翻訳キーがあります: {}",
-            detail.trim_start_matches("duplicate translation keys in ")
+        ValidationIssueCode::PlaceholderWarning => yc_locale::t!(
+            "export.validation.placeholder_entry",
+            namespace = namespace,
+            key = key
+        ),
+        ValidationIssueCode::UntranslatedEntries => yc_locale::t!(
+            "export.validation.untranslated_entries",
+            count = count.unwrap_or_default()
+        ),
+        ValidationIssueCode::DuplicateKeys => yc_locale::t!(
+            "export.validation.duplicate_keys",
+            detail = detail.trim_start_matches("duplicate translation keys in ")
         ),
         ValidationIssueCode::UnsupportedTargetFormat => {
-            "この言語ファイル形式には対応していません。".to_owned()
+            yc_locale::t!("export.validation.unsupported_format")
         }
         ValidationIssueCode::MissingMinecraftVersion => {
-            "Minecraft バージョンを選んでください。".to_owned()
+            yc_locale::t!("export.validation.select_minecraft_version")
         }
         ValidationIssueCode::UnknownPackFormat => {
-            "リソースパックの形式を判定できません。Minecraft バージョンを確認してください。"
-                .to_owned()
+            yc_locale::t!("export.validation.unknown_pack_format")
         }
         ValidationIssueCode::UnsafeTargetPath => {
-            "言語ファイルの保存パスを確認してください。".to_owned()
+            yc_locale::t!("export.validation.language_save_path")
         }
         ValidationIssueCode::SignedJar => {
-            "署名済みのJARは変更できません。Resource Packを選んでください。".to_owned()
+            yc_locale::t!("export.validation.signed_jar")
         }
         ValidationIssueCode::NestedJarAlreadyHasTarget => {
-            "同梱Modに日本語ファイルが含まれています。Resource Packの使用をおすすめします。"
-                .to_owned()
+            let language = yc_locale::find_minecraft_language(target_locale)
+                .map(|language| language.name.as_str())
+                .unwrap_or(target_locale);
+            yc_locale::t!(
+                "export.validation.nested_mod_target_language",
+                language = language
+            )
         }
         ValidationIssueCode::SourceJarUnavailable => {
-            "元のJARを読み込めません。プロジェクトを開き直してください。".to_owned()
+            yc_locale::t!("export.validation.source_jar_unavailable")
         }
     }
+}
+
+fn duplicate_key_warning_message(path: &str, message: &str) -> String {
+    let key = message
+        .strip_prefix("重複キー「")
+        .and_then(|message| message.strip_suffix("」は最後の値を使用しました"))
+        .unwrap_or(message);
+    yc_locale::t!(
+        "export.validation.duplicate_key_warning",
+        path = path,
+        key = key
+    )
 }
 
 fn ensure_has_included_namespaces(context: &ExportContext) -> Result<(), AppError> {
@@ -3889,7 +3986,7 @@ fn ensure_has_included_namespaces(context: &ExportContext) -> Result<(), AppErro
     } else {
         Err(AppError::simple(
             "invalid_export_selection",
-            "翻訳対象のNamespaceを選んでください。",
+            &yc_locale::t!("export.select_target_namespace"),
         ))
     }
 }
@@ -3904,7 +4001,7 @@ fn ensure_file_extension(path: &Path, expected: &str) -> Result<(), AppError> {
     } else {
         Err(AppError::simple(
             "invalid_output_path",
-            &format!("保存先の拡張子を .{expected} にしてください。"),
+            &yc_locale::t!("export.choose_expected_extension", expected = expected),
         ))
     }
 }
@@ -3914,13 +4011,13 @@ fn ensure_output_is_safe(source: &Path, output: &Path) -> Result<(), AppError> {
     if canonical_path_with_missing_leaf(source)? == canonical_path_with_missing_leaf(output)? {
         return Err(AppError::simple(
             "source_overwrite",
-            "元のJARを保存先に選べません。別の保存先を選んでください。",
+            &yc_locale::t!("export.original_jar_destination"),
         ));
     }
     if output.file_name().is_none() {
         return Err(AppError::simple(
             "invalid_output_path",
-            "保存先ファイル名を選んでください。",
+            &yc_locale::t!("export.select_destination_filename"),
         ));
     }
     Ok(())
@@ -3932,7 +4029,7 @@ fn ensure_output_is_within_directory(directory: &Path, output: &Path) -> Result<
     if !canonical_output.starts_with(&canonical_directory) {
         return Err(AppError::simple(
             "invalid_output_path",
-            "保存先フォルダーの外には書き出せません。",
+            &yc_locale::t!("export.outside_destination_folder"),
         ));
     }
     Ok(())
@@ -3943,7 +4040,10 @@ fn normalized_shaderpack_path(path: &Path) -> Result<String, AppError> {
     let mut existing = path;
     while !existing.exists() {
         missing.push(existing.file_name().ok_or_else(|| {
-            AppError::simple("invalid_output_path", "保存先ファイル名を選んでください。")
+            AppError::simple(
+                "invalid_output_path",
+                &yc_locale::t!("export.select_destination_filename"),
+            )
         })?);
         existing = existing
             .parent()
@@ -4005,7 +4105,10 @@ fn canonical_path_with_missing_leaf(path: &Path) -> Result<PathBuf, AppError> {
         .unwrap_or(Path::new("."));
     let parent = fs::canonicalize(parent).map_err(export_error)?;
     Ok(parent.join(path.file_name().ok_or_else(|| {
-        AppError::simple("invalid_output_path", "保存先ファイル名を選んでください。")
+        AppError::simple(
+            "invalid_output_path",
+            &yc_locale::t!("export.select_destination_filename"),
+        )
     })?))
 }
 
@@ -4173,7 +4276,7 @@ fn forget_exported_path(
 fn export_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "export",
-        "ファイルを書き出せませんでした。保存先を確認してもう一度お試しください。",
+        &yc_locale::t!("export.file_export_failed"),
         Some(error.to_string()),
     )
 }
@@ -4181,7 +4284,7 @@ fn export_error(error: impl std::fmt::Display) -> AppError {
 fn project_error(detail: impl Into<String>) -> AppError {
     AppError::new(
         "database",
-        "プロジェクトを読み込めませんでした。アプリを再起動してもう一度お試しください。",
+        &yc_locale::t!("common.project_load_failed"),
         Some(detail.into()),
     )
 }
@@ -4189,7 +4292,7 @@ fn project_error(detail: impl Into<String>) -> AppError {
 fn task_error(detail: String) -> AppError {
     AppError::new(
         "task_failed",
-        "処理に失敗しました。もう一度お試しください。",
+        &yc_locale::t!("common.task_failed"),
         Some(detail),
     )
 }
@@ -4197,7 +4300,7 @@ fn task_error(detail: String) -> AppError {
 fn state_error(detail: &str) -> AppError {
     AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("common.state_read_failed"),
         Some(detail.to_owned()),
     )
 }
@@ -4526,7 +4629,9 @@ mod export_path_regression_tests {
         assert_eq!(outside_result.status, "skipped");
         assert_eq!(
             outside_result.message.as_deref(),
-            Some("インスタンスの mods フォルダ外のため直接置き換えできません。")
+            Some(
+                "Can't replace this file directly because it's outside the instance's mods folder."
+            )
         );
 
         let nested = instance.join("mods/nested");

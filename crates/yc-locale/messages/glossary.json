@@ -1,1 +1,8 @@
-{}
+{
+  "glossary.input_required": {"ja":"原文と訳語を入力してください。","en":"Enter the source text and translation.","zh-Hans":"请输入原文和译文。","zh-Hant":"請輸入原文和譯文。","ko":"원문과 번역을 입력하세요."},
+  "glossary.duplicate": {"ja":"重複しています","en":"This entry already exists.","zh-Hans":"此条目已存在。","zh-Hant":"此項目已存在。","ko":"이미 있는 항목입니다."},
+  "glossary.load_failed": {"ja":"用語集を読み込めませんでした。","en":"Could not load the glossary.","zh-Hans":"无法加载术语表。","zh-Hant":"無法載入詞彙表。","ko":"용어집을 불러오지 못했습니다."},
+  "glossary.csv_invalid": {"ja":"CSVまたはTSVの内容を確認してください。","en":"Check the CSV or TSV content.","zh-Hans":"请检查 CSV 或 TSV 内容。","zh-Hant":"請檢查 CSV 或 TSV 內容。","ko":"CSV 또는 TSV 내용을 확인하세요."},
+  "glossary.export_failed": {"ja":"用語集を書き出せませんでした。","en":"Could not export the glossary.","zh-Hans":"无法导出术语表。","zh-Hant":"無法匯出詞彙表。","ko":"용어집을 내보내지 못했습니다."},
+  "glossary.save_failed": {"ja":"用語集を保存できませんでした。もう一度お試しください。","en":"Could not save the glossary. Try again.","zh-Hans":"无法保存术语表，请重试。","zh-Hant":"無法儲存詞彙表，請再試一次。","ko":"용어집을 저장하지 못했습니다. 다시 시도하세요."}
+}

@@ -33,7 +33,7 @@ pub(crate) fn clear_mod_icon_cache() -> Result<(), AppError> {
         .map_err(|_| {
             preview_error(
                 "preview_state",
-                "Modアイコンキャッシュを破棄できませんでした。",
+                &yc_locale::t!("preview.icon_cache_clear_failed"),
             )
         })?
         .clear();
@@ -163,19 +163,21 @@ pub async fn get_asset_preview_manifest(
     tauri::async_runtime::spawn_blocking(move || {
         let _project_io = project_io_lock
             .lock()
-            .map_err(|_| preview_error("preview_state", "プレビューを読み込めませんでした。"))?;
+            .map_err(|_| preview_error("preview_state", &yc_locale::t!("preview.load_failed")))?;
         let (project_id, project_directory) = active_project_directory(&active_project)?;
         let repository = yc_project::Repository::new(project_directory.join("project.sqlite"));
         let entry = repository
             .list_entries(None)
-            .map_err(|_| preview_error("preview_entry", "プレビューを読み込めませんでした。"))?
+            .map_err(|_| preview_error("preview_entry", &yc_locale::t!("preview.load_failed")))?
             .into_iter()
             .find(|entry| entry.id == entry_id)
-            .ok_or_else(|| preview_error("preview_entry", "翻訳項目が見つかりません。"))?;
+            .ok_or_else(|| {
+                preview_error("preview_entry", &yc_locale::t!("preview.entry_not_found"))
+            })?;
 
         let mut cached = context_cache
             .lock()
-            .map_err(|_| preview_error("preview_state", "プレビューを読み込めませんでした。"))?;
+            .map_err(|_| preview_error("preview_state", &yc_locale::t!("preview.load_failed")))?;
         if cached.as_ref().is_none_or(|context| {
             context.project_id != project_id || context.mod_unit_id != entry.mod_unit_id
         }) {
@@ -184,7 +186,7 @@ pub async fn get_asset_preview_manifest(
                 .map_err(|_| {
                     preview_error(
                         "preview_source",
-                        "プロジェクトのアセットを読み込めませんでした。",
+                        &yc_locale::t!("preview.project_assets_load_failed"),
                     )
                 })?;
             let minecraft_path = read_minecraft_jar_setting(&paths.settings_file)
@@ -209,7 +211,7 @@ pub async fn get_asset_preview_manifest(
         Ok(manifest)
     })
     .await
-    .map_err(|_| preview_error("preview_task", "プレビューを読み込めませんでした。"))?
+    .map_err(|_| preview_error("preview_task", &yc_locale::t!("preview.load_failed")))?
 }
 
 #[tauri::command]
@@ -222,38 +224,44 @@ pub async fn get_asset_bytes(
     let project_io_lock = Arc::clone(&state.project_io_lock);
     let context_cache = state.preview_context.clone();
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        let _project_io = project_io_lock
-            .lock()
-            .map_err(|_| preview_error("preview_state", "アセットを読み込めませんでした。"))?;
+        let _project_io = project_io_lock.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.assets_load_failed"),
+            )
+        })?;
         let active_project_id = active_project_id(&active_project)?;
-        let cached = context_cache
-            .lock()
-            .map_err(|_| preview_error("preview_state", "アセットを読み込めませんでした。"))?;
+        let cached = context_cache.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.assets_load_failed"),
+            )
+        })?;
         let context = cached
             .as_ref()
             .filter(|context| context.project_id == active_project_id)
             .ok_or_else(|| {
                 preview_error(
                     "preview_asset_not_allowed",
-                    "アセットを読み込めませんでした。",
+                    &yc_locale::t!("preview.assets_load_failed"),
                 )
             })?;
         if !is_manifest_path_allowed(&context.allowed_asset_paths, &source, &path) {
             return Err(preview_error(
                 "preview_asset_not_allowed",
-                "このプレビューからアセットを読み込めません。",
+                &yc_locale::t!("preview.asset_not_in_preview"),
             ));
         }
         let reader = context.readers.get(&source).ok_or_else(|| {
             preview_error(
                 "preview_asset_not_allowed",
-                "アセットを読み込めませんでした。",
+                &yc_locale::t!("preview.assets_load_failed"),
             )
         })?;
         read_preview_asset(reader.as_ref(), &path)
     })
     .await
-    .map_err(|_| preview_error("preview_task", "アセットを読み込めませんでした。"))??;
+    .map_err(|_| preview_error("preview_task", &yc_locale::t!("preview.assets_load_failed")))??;
     Ok(Response::new(bytes))
 }
 
@@ -268,20 +276,20 @@ pub async fn get_mod_icon(
     tauri::async_runtime::spawn_blocking(move || {
         let _project_io = project_io_lock
             .lock()
-            .map_err(|_| preview_error("preview_state", "Modアイコンを読み込めませんでした。"))?;
+            .map_err(|_| preview_error("preview_state", &yc_locale::t!("preview.icon_load_failed")))?;
         if clear_cache.unwrap_or(false) {
             clear_mod_icon_cache()?;
             return Ok(None);
         }
         let mod_unit_id = mod_unit_id.ok_or_else(|| {
-            preview_error("preview_source", "Modアイコンを読み込めませんでした。")
+            preview_error("preview_source", &yc_locale::t!("preview.icon_load_failed"))
         })?;
         let (project_id, project_directory) = active_project_directory(&active_project)?;
         let cache = MOD_ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         {
             let mut cache = cache
                 .lock()
-                .map_err(|_| preview_error("preview_state", "Modアイコンを読み込めませんでした。"))?;
+                .map_err(|_| preview_error("preview_state", &yc_locale::t!("preview.icon_load_failed")))?;
             // プロジェクト切り替え時に前の画像bytesを解放し、同じunit IDの取り違えを防ぐ。
             cache.retain(|(cached_project_id, _), _| cached_project_id == &project_id);
             if let Some(icon) = cache.get(&(project_id.clone(), mod_unit_id)) {
@@ -294,7 +302,7 @@ pub async fn get_mod_icon(
             .list_mod_units()
             .map_err(|error| {
                 tracing::error!(%error, "Mod units could not be read for icon lookup");
-                preview_error("preview_source", "Modアイコンを読み込めませんでした。")
+                preview_error("preview_source", &yc_locale::t!("preview.icon_load_failed"))
             })?
             .into_iter()
             .find(|unit| unit.id == mod_unit_id);
@@ -303,7 +311,7 @@ pub async fn get_mod_icon(
                 .mod_unit_source_path(mod_unit_id)
                 .map_err(|error| {
                     tracing::error!(%error, mod_unit_id, "Mod source path could not be read for icon lookup");
-                    preview_error("preview_source", "Modアイコンを読み込めませんでした。")
+                    preview_error("preview_source", &yc_locale::t!("preview.icon_load_failed"))
                 })?;
             match Archive::open(source_path) {
                 Ok(archive) => find_mod_icon(&ModIconArchive(Mutex::new(archive)), unit.mod_id.as_deref())
@@ -319,12 +327,12 @@ pub async fn get_mod_icon(
 
         cache
             .lock()
-            .map_err(|_| preview_error("preview_state", "Modアイコンを読み込めませんでした。"))?
+            .map_err(|_| preview_error("preview_state", &yc_locale::t!("preview.icon_load_failed")))?
             .insert((project_id, mod_unit_id), icon.clone());
         Ok(icon)
     })
     .await
-    .map_err(|_| preview_error("preview_task", "Modアイコンを読み込めませんでした。"))?
+    .map_err(|_| preview_error("preview_task", &yc_locale::t!("preview.icon_load_failed")))?
 }
 
 #[tauri::command]
@@ -336,9 +344,12 @@ pub async fn load_thumbnail(
     let active_project = Arc::clone(&state.active_project);
     let project_io_lock = Arc::clone(&state.project_io_lock);
     tauri::async_runtime::spawn_blocking(move || {
-        let _project_io = project_io_lock
-            .lock()
-            .map_err(|_| preview_error("preview_state", "サムネイルを読み込めませんでした。"))?;
+        let _project_io = project_io_lock.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.thumbnail_load_failed"),
+            )
+        })?;
         let directory = thumbnail_cache_directory(&active_project, &project_id)?;
         let path = thumbnail_path(&directory, &key);
         match fs::read(&path) {
@@ -351,12 +362,17 @@ pub async fn load_thumbnail(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(_) => Err(preview_error(
                 "thumbnail_read",
-                "サムネイルを読み込めませんでした。",
+                &yc_locale::t!("preview.thumbnail_load_failed"),
             )),
         }
     })
     .await
-    .map_err(|_| preview_error("thumbnail_task", "サムネイルを読み込めませんでした。"))?
+    .map_err(|_| {
+        preview_error(
+            "thumbnail_task",
+            &yc_locale::t!("preview.thumbnail_load_failed"),
+        )
+    })?
 }
 
 #[tauri::command]
@@ -369,46 +385,65 @@ pub async fn save_thumbnail(
     if !valid_thumbnail_png(&bytes) {
         return Err(preview_error(
             "thumbnail_format",
-            "サムネイルを保存できませんでした。",
+            &yc_locale::t!("preview.thumbnail_save_failed"),
         ));
     }
     let active_project = Arc::clone(&state.active_project);
     let project_io_lock = Arc::clone(&state.project_io_lock);
     tauri::async_runtime::spawn_blocking(move || {
-        let _project_io = project_io_lock
-            .lock()
-            .map_err(|_| preview_error("preview_state", "サムネイルを保存できませんでした。"))?;
+        let _project_io = project_io_lock.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.thumbnail_save_failed"),
+            )
+        })?;
         let directory = thumbnail_cache_directory(&active_project, &project_id)?;
-        fs::create_dir_all(&directory)
-            .map_err(|_| preview_error("thumbnail_write", "サムネイルを保存できませんでした。"))?;
+        fs::create_dir_all(&directory).map_err(|_| {
+            preview_error(
+                "thumbnail_write",
+                &yc_locale::t!("preview.thumbnail_save_failed"),
+            )
+        })?;
         let path = thumbnail_path(&directory, &key);
         let temporary_path = directory.join(format!(
             "{}.{}.tmp",
             thumbnail_file_name(&key),
             std::process::id()
         ));
-        fs::write(&temporary_path, bytes)
-            .map_err(|_| preview_error("thumbnail_write", "サムネイルを保存できませんでした。"))?;
+        fs::write(&temporary_path, bytes).map_err(|_| {
+            preview_error(
+                "thumbnail_write",
+                &yc_locale::t!("preview.thumbnail_save_failed"),
+            )
+        })?;
         if fs::rename(&temporary_path, &path).is_err() {
             // Windowsでは既存ファイルの置き換えrenameが失敗する場合があるため、キャッシュだけを入れ替える。
             if path.exists() {
                 fs::remove_file(&path)
                     .and_then(|()| fs::rename(&temporary_path, &path))
                     .map_err(|_| {
-                        preview_error("thumbnail_write", "サムネイルを保存できませんでした。")
+                        preview_error(
+                            "thumbnail_write",
+                            &yc_locale::t!("preview.thumbnail_save_failed"),
+                        )
                     })?;
             } else {
                 let _ = fs::remove_file(&temporary_path);
                 return Err(preview_error(
                     "thumbnail_write",
-                    "サムネイルを保存できませんでした。",
+                    &yc_locale::t!("preview.thumbnail_save_failed"),
                 ));
             }
         }
         Ok(())
     })
     .await
-    .map_err(|_| preview_error("thumbnail_task", "サムネイルを保存できませんでした。"))?
+    .map_err(|_| {
+        preview_error(
+            "thumbnail_task",
+            &yc_locale::t!("preview.thumbnail_save_failed"),
+        )
+    })?
 }
 
 fn thumbnail_cache_directory(
@@ -419,7 +454,7 @@ fn thumbnail_cache_directory(
     if active_project_id != project_id {
         return Err(preview_error(
             "project_changed",
-            "プロジェクトを読み込めませんでした。",
+            &yc_locale::t!("preview.project_load_failed"),
         ));
     }
     Ok(project_cache_directory(&directory).join("thumbnails"))
@@ -454,9 +489,12 @@ pub async fn detect_minecraft_jars(
     let project_io_lock = Arc::clone(&state.project_io_lock);
     let context_cache = state.preview_context.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _project_io = project_io_lock
-            .lock()
-            .map_err(|_| preview_error("preview_state", "Minecraft JARを検索できませんでした。"))?;
+        let _project_io = project_io_lock.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.minecraft_jar_search_failed"),
+            )
+        })?;
         let project = active_project_location(&active_project)?;
         let preferred_version = project.and_then(|(project_id, source_jar)| {
             context_cache
@@ -478,7 +516,7 @@ pub async fn detect_minecraft_jars(
     .map_err(|_| {
         preview_error(
             "minecraft_jar_detection",
-            "Minecraft JARを検索できませんでした。",
+            &yc_locale::t!("preview.minecraft_jar_search_failed"),
         )
     })?
 }
@@ -492,9 +530,12 @@ pub async fn set_minecraft_jar(
     let project_io_lock = Arc::clone(&state.project_io_lock);
     let context_cache = state.preview_context.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _project_io = project_io_lock
-            .lock()
-            .map_err(|_| preview_error("preview_state", "設定を保存できませんでした。"))?;
+        let _project_io = project_io_lock.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.settings_save_failed"),
+            )
+        })?;
         let selected_path = path
             .as_deref()
             .map(|path| validate_selected_minecraft_jar(Path::new(path)))
@@ -512,7 +553,7 @@ pub async fn set_minecraft_jar(
                 let Some(preview) = preview.as_object_mut() else {
                     return Err(preview_error(
                         "settings_read",
-                        "設定を保存できませんでした。",
+                        &yc_locale::t!("preview.settings_save_failed"),
                     ));
                 };
                 preview.insert(
@@ -523,19 +564,37 @@ pub async fn set_minecraft_jar(
                 );
                 Ok(())
             },
-            |_| preview_error("settings_read", "設定を保存できませんでした。"),
-            |_| preview_error("settings_write", "設定を保存できませんでした。"),
+            |_| {
+                preview_error(
+                    "settings_read",
+                    &yc_locale::t!("preview.settings_save_failed"),
+                )
+            },
+            |_| {
+                preview_error(
+                    "settings_write",
+                    &yc_locale::t!("preview.settings_save_failed"),
+                )
+            },
         )?;
-        let mut cached = context_cache
-            .lock()
-            .map_err(|_| preview_error("preview_state", "設定を保存できませんでした。"))?;
+        let mut cached = context_cache.lock().map_err(|_| {
+            preview_error(
+                "preview_state",
+                &yc_locale::t!("preview.settings_save_failed"),
+            )
+        })?;
         if let Some(context) = cached.as_mut() {
             configure_minecraft_pack(context, selected_path.as_deref());
         }
         Ok(())
     })
     .await
-    .map_err(|_| preview_error("preview_task", "設定を保存できませんでした。"))?
+    .map_err(|_| {
+        preview_error(
+            "preview_task",
+            &yc_locale::t!("preview.settings_save_failed"),
+        )
+    })?
 }
 
 #[tauri::command]
@@ -545,18 +604,29 @@ pub async fn get_minecraft_jar_setting(
     let settings_file = state.paths.settings_file.clone();
     tauri::async_runtime::spawn_blocking(move || read_minecraft_jar_setting(&settings_file))
         .await
-        .map_err(|_| preview_error("preview_task", "設定を読み込めませんでした。"))?
+        .map_err(|_| {
+            preview_error(
+                "preview_task",
+                &yc_locale::t!("preview.settings_read_failed"),
+            )
+        })?
 }
 
 fn active_project_directory(
     active_project: &Mutex<Option<OpenedProject>>,
 ) -> Result<(String, PathBuf), AppError> {
-    let active = active_project
-        .lock()
-        .map_err(|_| preview_error("preview_state", "プロジェクトを読み込めませんでした。"))?;
-    let project = active
-        .as_ref()
-        .ok_or_else(|| preview_error("no_open_project", "先にプロジェクトを開いてください。"))?;
+    let active = active_project.lock().map_err(|_| {
+        preview_error(
+            "preview_state",
+            &yc_locale::t!("preview.project_load_failed"),
+        )
+    })?;
+    let project = active.as_ref().ok_or_else(|| {
+        preview_error(
+            "no_open_project",
+            &yc_locale::t!("preview.project_required"),
+        )
+    })?;
     Ok((
         project.summary().id.clone(),
         project.directory().to_path_buf(),
@@ -566,9 +636,12 @@ fn active_project_directory(
 fn active_project_location(
     active_project: &Mutex<Option<OpenedProject>>,
 ) -> Result<Option<(String, PathBuf)>, AppError> {
-    let active = active_project
-        .lock()
-        .map_err(|_| preview_error("preview_state", "プロジェクトを読み込めませんでした。"))?;
+    let active = active_project.lock().map_err(|_| {
+        preview_error(
+            "preview_state",
+            &yc_locale::t!("preview.project_load_failed"),
+        )
+    })?;
     active
         .as_ref()
         .map(|project| {
@@ -578,7 +651,7 @@ fn active_project_location(
                 .map_err(|_| {
                     preview_error(
                         "preview_source",
-                        "Minecraftのバージョンを判定できませんでした。",
+                        &yc_locale::t!("preview.minecraft_version_detect_failed"),
                     )
                 })?
                 .into_iter()
@@ -589,7 +662,7 @@ fn active_project_location(
                 .map_err(|_| {
                     preview_error(
                         "preview_source",
-                        "Minecraftのバージョンを判定できませんでした。",
+                        &yc_locale::t!("preview.minecraft_version_detect_failed"),
                     )
                 })?;
             Ok(source_path.map(|source_path| (project.summary().id.clone(), source_path)))
@@ -631,7 +704,7 @@ fn build_preview_context(
     let root_archive = Archive::open(source_jar).map_err(|_| {
         preview_error(
             "preview_source",
-            "プロジェクトのアセットを読み込めませんでした。",
+            &yc_locale::t!("preview.project_assets_load_failed"),
         )
     })?;
     let root_source = Arc::new(ArchiveAssetSource::new(root_archive));
@@ -688,7 +761,7 @@ fn build_preview_context(
             let mut root = root_source.archive.lock().map_err(|_| {
                 preview_error(
                     "preview_source",
-                    "プロジェクトのアセットを読み込めませんでした。",
+                    &yc_locale::t!("preview.project_assets_load_failed"),
                 )
             })?;
             if let Ok(nested_archives) = root.discover_nested(&nested_paths) {
@@ -818,15 +891,18 @@ fn is_manifest_path_allowed(
 }
 
 fn read_preview_asset(reader: &dyn AssetSource, path: &str) -> Result<Vec<u8>, AppError> {
-    let bytes = reader
-        .read(path)
-        .map_err(|_| preview_error("preview_asset_read", "アセットを読み込めませんでした。"))?;
+    let bytes = reader.read(path).map_err(|_| {
+        preview_error(
+            "preview_asset_read",
+            &yc_locale::t!("preview.assets_load_failed"),
+        )
+    })?;
     match bytes {
         Some(bytes) => Ok(bytes),
         None if path.ends_with(".png.mcmeta") => Ok(Vec::new()),
         None => Err(preview_error(
             "preview_asset_read",
-            "アセットを読み込めませんでした。",
+            &yc_locale::t!("preview.assets_load_failed"),
         )),
     }
 }
@@ -946,8 +1022,12 @@ fn version_matches(preferred: Option<&str>, candidate: &str) -> bool {
 }
 
 fn validate_minecraft_jar(path: &Path) -> Result<(), AppError> {
-    let archive = Archive::open(path)
-        .map_err(|_| preview_error("invalid_minecraft_jar", "Minecraft JARを開けませんでした。"))?;
+    let archive = Archive::open(path).map_err(|_| {
+        preview_error(
+            "invalid_minecraft_jar",
+            &yc_locale::t!("preview.minecraft_jar_open_failed"),
+        )
+    })?;
     if archive.list_entries().iter().any(|entry| {
         entry
             .normalized_path
@@ -958,7 +1038,7 @@ fn validate_minecraft_jar(path: &Path) -> Result<(), AppError> {
     } else {
         Err(preview_error(
             "invalid_minecraft_jar",
-            "Minecraftのモデルを含むJARを選んでください。",
+            &yc_locale::t!("preview.select_minecraft_jar_with_models"),
         ))
     }
 }
@@ -967,7 +1047,7 @@ fn validate_selected_minecraft_jar(path: &Path) -> Result<PathBuf, AppError> {
     let invalid_selection = || {
         preview_error(
             "invalid_minecraft_jar",
-            "検出済みのMinecraft JARを選んでください。",
+            &yc_locale::t!("preview.select_detected_minecraft_jar"),
         )
     };
     let selected_path = fs::canonicalize(path).map_err(|_| invalid_selection())?;
@@ -998,12 +1078,16 @@ fn read_minecraft_jar_setting(path: &Path) -> Result<Option<String>, AppError> {
         Err(_) => {
             return Err(preview_error(
                 "settings_read",
-                "設定を読み込めませんでした。",
+                &yc_locale::t!("preview.settings_read_failed"),
             ));
         }
     };
-    let settings: Value = serde_json::from_str(&contents)
-        .map_err(|_| preview_error("settings_read", "設定を読み込めませんでした。"))?;
+    let settings: Value = serde_json::from_str(&contents).map_err(|_| {
+        preview_error(
+            "settings_read",
+            &yc_locale::t!("preview.settings_read_failed"),
+        )
+    })?;
     let Some(path) = settings
         .get("preview")
         .and_then(|preview| preview.get("minecraftJarPath"))

@@ -1,1 +1,93 @@
-{}
+{
+  "modpack.translation_file_read_failed": {
+    "ja": "Modpack の翻訳ファイルを読み込めませんでした。ファイルを確認して再試行してください: {path}",
+    "en": "Could not read a Modpack translation file. Check the file and try again: {path}",
+    "zh-Hans": "无法读取整合包翻译文件。请检查文件后重试：{path}",
+    "zh-Hant": "無法讀取模組包翻譯檔案。請檢查檔案後再試一次：{path}",
+    "ko": "모드팩 번역 파일을 읽지 못했습니다. 파일을 확인한 후 다시 시도하세요: {path}"
+  },
+  "modpack.analysis_failed": {
+    "ja": "Modpack の翻訳ファイルを解析できませんでした。",
+    "en": "Could not analyze the Modpack translation files.",
+    "zh-Hans": "无法解析整合包翻译文件。",
+    "zh-Hant": "無法分析模組包翻譯檔案。",
+    "ko": "모드팩 번역 파일을 분석하지 못했습니다."
+  },
+  "modpack.kubejs_analysis_failed": {
+    "ja": "KubeJS の言語ファイルを解析できませんでした。",
+    "en": "Could not analyze the KubeJS language files.",
+    "zh-Hans": "无法解析 KubeJS 语言文件。",
+    "zh-Hant": "無法分析 KubeJS 語言檔案。",
+    "ko": "KubeJS 언어 파일을 분석하지 못했습니다."
+  },
+  "modpack.invalid_path": {
+    "ja": "Modpack のファイルパスが不正です。",
+    "en": "The Modpack file path is invalid.",
+    "zh-Hans": "整合包文件路径无效。",
+    "zh-Hant": "模組包檔案路徑無效。",
+    "ko": "모드팩 파일 경로가 올바르지 않습니다."
+  },
+  "modpack.archive_read_failed": {
+    "ja": "保存した Modpack ファイルを読み込めませんでした。",
+    "en": "Could not read the saved Modpack file.",
+    "zh-Hans": "无法读取已保存的整合包文件。",
+    "zh-Hant": "無法讀取已儲存的模組包檔案。",
+    "ko": "저장된 모드팩 파일을 읽지 못했습니다."
+  },
+  "modpack.scan_issue": {
+    "ja": "Modpack のファイルを読み込めませんでした: {path}",
+    "en": "Could not read a Modpack file: {path}",
+    "zh-Hans": "无法读取整合包文件：{path}",
+    "zh-Hant": "無法讀取模組包檔案：{path}",
+    "ko": "모드팩 파일을 읽지 못했습니다: {path}"
+  },
+  "modpack.scan_invalid_path": {
+    "ja": "Modpack のファイルパスが不正です: {path}",
+    "en": "Invalid Modpack file path: {path}",
+    "zh-Hans": "整合包文件路径无效：{path}",
+    "zh-Hant": "模組包檔案路徑無效：{path}",
+    "ko": "모드팩 파일 경로가 올바르지 않습니다: {path}"
+  },
+  "modpack.scan_snbt_error": {
+    "ja": "FTB Quests の SNBT を解析できませんでした: {path}",
+    "en": "Could not parse FTB Quests SNBT: {path}",
+    "zh-Hans": "无法解析 FTB Quests SNBT：{path}",
+    "zh-Hant": "無法解析 FTB Quests SNBT：{path}",
+    "ko": "FTB Quests SNBT를 분석하지 못했습니다: {path}"
+  },
+  "modpack.scan_json_error": {
+    "ja": "KubeJS の言語 JSON を解析できませんでした: {path}",
+    "en": "Could not parse KubeJS language JSON: {path}",
+    "zh-Hans": "无法解析 KubeJS 语言 JSON：{path}",
+    "zh-Hant": "無法解析 KubeJS 語言 JSON：{path}",
+    "ko": "KubeJS 언어 JSON을 분석하지 못했습니다: {path}"
+  },
+  "modpack.scan_invalid_language_json": {
+    "ja": "KubeJS の言語ファイルの形式が正しくありません: {path}",
+    "en": "Invalid KubeJS language file format: {path}",
+    "zh-Hans": "KubeJS 语言文件格式无效：{path}",
+    "zh-Hant": "KubeJS 語言檔案格式無效：{path}",
+    "ko": "KubeJS 언어 파일 형식이 올바르지 않습니다: {path}"
+  },
+  "modpack.scan_snbt_safe_detail": {
+    "ja": "SNBTのエラー: {location}",
+    "en": "SNBT error: {location}",
+    "zh-Hans": "SNBT 错误：{location}",
+    "zh-Hant": "SNBT 錯誤：{location}",
+    "ko": "SNBT 오류: {location}"
+  },
+  "modpack.scan_json_safe_detail": {
+    "ja": "JSONのエラー: {location}",
+    "en": "JSON error: {location}",
+    "zh-Hans": "JSON 错误：{location}",
+    "zh-Hant": "JSON 錯誤：{location}",
+    "ko": "JSON 오류: {location}"
+  },
+  "modpack.scan_generic_safe_detail": {
+    "ja": "読み込みエラー: {path}",
+    "en": "Read error: {path}",
+    "zh-Hans": "读取错误：{path}",
+    "zh-Hant": "讀取錯誤：{path}",
+    "ko": "읽기 오류: {path}"
+  }
+}

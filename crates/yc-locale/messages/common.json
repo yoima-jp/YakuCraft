@@ -1,1 +1,65 @@
-{}
+{
+  "common.project_not_open": {
+    "ja": "開いているプロジェクトがありません",
+    "en": "No project is open.",
+    "zh-Hans": "没有打开的项目。",
+    "zh-Hant": "沒有開啟的專案。",
+    "ko": "열려 있는 프로젝트가 없습니다."
+  },
+  "common.project_open_failed": {
+    "ja": "プロジェクトを開けませんでした。",
+    "en": "Could not open the project.",
+    "zh-Hans": "无法打开项目。",
+    "zh-Hant": "無法開啟專案。",
+    "ko": "프로젝트를 열 수 없습니다."
+  },
+  "common.project_load_failed": {
+    "ja": "プロジェクトを読み込めませんでした。アプリを再起動してもう一度お試しください。",
+    "en": "Could not load the project. Restart the app and try again.",
+    "zh-Hans": "无法加载项目。请重启应用后重试。",
+    "zh-Hant": "無法載入專案。請重新啟動應用程式後再試一次。",
+    "ko": "프로젝트를 불러오지 못했습니다. 앱을 다시 시작한 후 다시 시도하세요."
+  },
+  "common.state_read_failed": {
+    "ja": "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+    "en": "Could not read the app state. Restart the app and try again.",
+    "zh-Hans": "无法读取应用状态。请重启应用后重试。",
+    "zh-Hant": "無法讀取應用程式狀態。請重新啟動應用程式後再試一次。",
+    "ko": "앱 상태를 읽지 못했습니다. 앱을 다시 시작한 후 다시 시도하세요."
+  },
+  "common.task_failed": {
+    "ja": "処理に失敗しました。もう一度お試しください。",
+    "en": "The operation failed. Try again.",
+    "zh-Hans": "操作失败，请重试。",
+    "zh-Hant": "操作失敗，請再試一次。",
+    "ko": "작업에 실패했습니다. 다시 시도하세요."
+  },
+  "common.cancelled": {
+    "ja": "処理を中止しました。必要であればもう一度お試しください。",
+    "en": "The operation was canceled. Try again if needed.",
+    "zh-Hans": "操作已取消。如有需要，请重试。",
+    "zh-Hant": "操作已取消。如有需要，請再試一次。",
+    "ko": "작업이 취소되었습니다. 필요하면 다시 시도하세요."
+  },
+  "common.project_deleting": {
+    "ja": "このプロジェクトは削除中です。",
+    "en": "This project is being deleted.",
+    "zh-Hans": "此项目正在删除。",
+    "zh-Hant": "此專案正在刪除。",
+    "ko": "이 프로젝트를 삭제하고 있습니다."
+  },
+  "common.logs_read_failed": {
+    "ja": "ログを読み込めませんでした。",
+    "en": "Could not load the logs.",
+    "zh-Hans": "无法加载日志。",
+    "zh-Hant": "無法載入記錄。",
+    "ko": "로그를 불러오지 못했습니다."
+  },
+  "common.logs_folder_open_failed": {
+    "ja": "ログフォルダーを開けませんでした。",
+    "en": "Could not open the logs folder.",
+    "zh-Hans": "无法打开日志文件夹。",
+    "zh-Hant": "無法開啟記錄資料夾。",
+    "ko": "로그 폴더를 열지 못했습니다."
+  }
+}

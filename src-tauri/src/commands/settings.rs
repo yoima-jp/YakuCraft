@@ -225,7 +225,7 @@ fn remove_cache_directory(path: &Path) -> Result<(), AppError> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(AppError::simple(
             "cache_unavailable",
-            "キャッシュを削除できませんでした。",
+            &yc_locale::t!("settings.cache_delete_failed"),
         ));
     }
     fs::remove_dir_all(path).map_err(|error| cache_error(error.to_string()))
@@ -234,7 +234,7 @@ fn remove_cache_directory(path: &Path) -> Result<(), AppError> {
 fn cache_error(detail: impl std::fmt::Display) -> AppError {
     AppError::new(
         "cache_unavailable",
-        "キャッシュを削除できませんでした。",
+        &yc_locale::t!("settings.cache_delete_failed"),
         Some(detail.to_string()),
     )
 }
@@ -242,7 +242,7 @@ fn cache_error(detail: impl std::fmt::Display) -> AppError {
 fn settings_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "settings_unavailable",
-        "設定を読み書きできませんでした。",
+        &yc_locale::t!("settings.read_write_failed"),
         Some(error.to_string()),
     )
 }
