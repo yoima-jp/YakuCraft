@@ -25,7 +25,7 @@ pub fn get_recent_log(state: State<'_, AppState>) -> Result<String, AppError> {
     read_recent_log(&state.paths.logs_dir).map_err(|error| {
         AppError::new(
             "log_read_failed",
-            "ログを読み込めませんでした。",
+            &yc_locale::t!("common.logs_read_failed"),
             Some(error.to_string()),
         )
     })
@@ -41,7 +41,7 @@ pub fn open_log_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(),
         .map_err(|error| {
             AppError::new(
                 "log_folder_open_failed",
-                "ログフォルダーを開けませんでした。",
+                &yc_locale::t!("common.logs_folder_open_failed"),
                 Some(error.to_string()),
             )
         })

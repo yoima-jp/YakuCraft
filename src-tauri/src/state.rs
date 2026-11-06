@@ -140,7 +140,7 @@ impl AppState {
             if !deleting.insert(project_id.to_owned()) {
                 return Err(crate::error::AppError::simple(
                     "project_delete_in_progress",
-                    "このプロジェクトは削除中です。",
+                    &yc_locale::t!("common.project_deleting"),
                 ));
             }
             ProjectDeletionGuard {
@@ -259,7 +259,7 @@ impl CredentialBackend for E2eCredentialBackend {
 fn internal_state_error(label: &str) -> crate::error::AppError {
     crate::error::AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("common.state_read_failed"),
         Some(label.to_owned()),
     )
 }

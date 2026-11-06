@@ -1,1 +1,534 @@
-{}
+{
+  "project.mod_not_found": {
+    "ja": "modが見つかりません",
+    "en": "Mod not found.",
+    "zh-Hans": "未找到模组。",
+    "zh-Hant": "找不到模組。",
+    "ko": "모드를 찾을 수 없습니다."
+  },
+  "project.no_mods": {
+    "ja": "プロジェクトにmodがありません",
+    "en": "The project has no Mods.",
+    "zh-Hans": "项目中没有模组。",
+    "zh-Hant": "專案中沒有模組。",
+    "ko": "프로젝트에 모드가 없습니다."
+  },
+  "project.folder_read_failed": {
+    "ja": "フォルダを読み込めませんでした。選択したフォルダを確認してください。",
+    "en": "Could not read the folder. Check the selected folder.",
+    "zh-Hans": "无法读取文件夹。请检查所选文件夹。",
+    "zh-Hant": "無法讀取資料夾。請檢查所選資料夾。",
+    "ko": "폴더를 읽지 못했습니다. 선택한 폴더를 확인하세요."
+  },
+  "project.instance_not_configured": {
+    "ja": "このプロジェクトにはインスタンスが設定されていません。",
+    "en": "This project has no instance set.",
+    "zh-Hans": "此项目未设置实例。",
+    "zh-Hant": "此專案尚未設定實例。",
+    "ko": "이 프로젝트에는 인스턴스가 설정되어 있지 않습니다."
+  },
+  "project.selected_folder_read_failed": {
+    "ja": "選択したフォルダを読み込めませんでした。",
+    "en": "Could not read the selected folder.",
+    "zh-Hans": "无法读取所选文件夹。",
+    "zh-Hant": "無法讀取所選資料夾。",
+    "ko": "선택한 폴더를 읽지 못했습니다."
+  },
+  "project.instance_mods_folder_read_failed": {
+    "ja": "インスタンスの mods フォルダを読み込めませんでした。",
+    "en": "Could not read the instance's mods folder.",
+    "zh-Hans": "无法读取实例的 mods 文件夹。",
+    "zh-Hant": "無法讀取實例的 mods 資料夾。",
+    "ko": "인스턴스의 mods 폴더를 읽지 못했습니다."
+  },
+  "project.no_jar_selected": {
+    "ja": "JARファイルを選んでください。",
+    "en": "Select a JAR file.",
+    "zh-Hans": "请选择 JAR 文件。",
+    "zh-Hant": "請選擇 JAR 檔案。",
+    "ko": "JAR 파일을 선택하세요."
+  },
+  "project.add_source_select": {
+    "ja": "追加する JAR またはシェーダーパックを選んでください。",
+    "en": "Select a JAR or Shader Pack to add.",
+    "zh-Hans": "请选择要添加的 JAR 或光影包。",
+    "zh-Hant": "請選擇要新增的 JAR 或光影包。",
+    "ko": "추가할 JAR 또는 셰이더 팩을 선택하세요."
+  },
+  "project.mod_id_duplicate": {
+    "ja": "同じ Mod が既にあります。更新版への置き換えは現在未対応です。",
+    "en": "This Mod is already in the project. Replacing it with an update isn't supported yet.",
+    "zh-Hans": "项目中已有此模组。目前不支持替换为更新版本。",
+    "zh-Hant": "專案中已有此模組。目前不支援以更新版本取代。",
+    "ko": "이미 같은 모드가 있습니다. 업데이트 버전으로 교체하는 기능은 아직 지원되지 않습니다."
+  },
+  "project.modpack_ai_running": {
+    "ja": "AI翻訳中は Modpack を再取り込みできません。",
+    "en": "You can't reimport a Modpack while AI translation is running.",
+    "zh-Hans": "AI 翻译进行期间无法重新导入整合包。",
+    "zh-Hant": "AI 翻譯進行期間無法重新匯入模組包。",
+    "ko": "AI 번역이 진행되는 동안에는 모드팩을 다시 가져올 수 없습니다."
+  },
+  "project.modpack_not_found": {
+    "ja": "Modpack が見つかりません。",
+    "en": "Modpack not found.",
+    "zh-Hans": "未找到整合包。",
+    "zh-Hant": "找不到模組包。",
+    "ko": "모드팩을 찾을 수 없습니다."
+  },
+  "project.modpack_instance_folder_missing": {
+    "ja": "Modpack のインスタンスフォルダーを確認できません。",
+    "en": "Could not find the Modpack instance folder.",
+    "zh-Hans": "无法找到整合包实例文件夹。",
+    "zh-Hant": "找不到模組包實例資料夾。",
+    "ko": "모드팩 인스턴스 폴더를 찾을 수 없습니다."
+  },
+  "project.modpack_translation_directory_failed": {
+    "ja": "Modpack の翻訳ディレクトリを確認できませんでした。アクセス権を確認して再試行してください: {detail}",
+    "en": "Could not check the Modpack translation folder. Check its permissions and try again: {detail}",
+    "zh-Hans": "无法检查整合包翻译文件夹。请检查访问权限后重试：{detail}",
+    "zh-Hant": "無法檢查模組包翻譯資料夾。請檢查存取權限後再試一次：{detail}",
+    "ko": "모드팩 번역 폴더를 확인할 수 없습니다. 접근 권한을 확인한 후 다시 시도하세요: {detail}"
+  },
+  "project.modpack_translation_check_failed": {
+    "ja": "Modpack の翻訳ファイルを確認できませんでした。",
+    "en": "Could not check the Modpack translation files.",
+    "zh-Hans": "无法检查整合包翻译文件。",
+    "zh-Hant": "無法檢查模組包翻譯檔案。",
+    "ko": "모드팩 번역 파일을 확인할 수 없습니다."
+  },
+  "project.modpack_translation_check_failed_detail": {
+    "ja": "Modpack の翻訳ファイルを確認できませんでした。次のファイルを確認して再試行してください: {detail}",
+    "en": "Could not check the Modpack translation files. Check these files and try again: {detail}",
+    "zh-Hans": "无法检查整合包翻译文件。请检查以下文件后重试：{detail}",
+    "zh-Hant": "無法檢查模組包翻譯檔案。請檢查下列檔案後再試一次：{detail}",
+    "ko": "모드팩 번역 파일을 확인할 수 없습니다. 다음 파일을 확인한 후 다시 시도하세요: {detail}"
+  },
+  "project.modpack_translation_files_missing": {
+    "ja": "Modpack の翻訳ファイルが見つかりません。インスタンスを確認してください。",
+    "en": "No Modpack translation files were found. Check the instance.",
+    "zh-Hans": "未找到整合包翻译文件。请检查实例。",
+    "zh-Hant": "找不到模組包翻譯檔案。請檢查實例。",
+    "ko": "모드팩 번역 파일을 찾을 수 없습니다. 인스턴스를 확인하세요."
+  },
+  "project.rename_failed": {
+    "ja": "プロジェクト名を変更できませんでした。",
+    "en": "Could not rename the project.",
+    "zh-Hans": "无法重命名项目。",
+    "zh-Hant": "無法重新命名專案。",
+    "ko": "프로젝트 이름을 변경할 수 없습니다."
+  },
+  "project.name_length_invalid": {
+    "ja": "プロジェクト名は1〜100文字で入力してください。",
+    "en": "Enter a project name between 1 and 100 characters.",
+    "zh-Hans": "项目名称须为 1 至 100 个字符。",
+    "zh-Hant": "專案名稱須為 1 至 100 個字元。",
+    "ko": "프로젝트 이름은 1~100자로 입력하세요."
+  },
+  "project.name_control_character": {
+    "ja": "プロジェクト名に制御文字は使えません。",
+    "en": "Project names can't contain control characters.",
+    "zh-Hans": "项目名称不能包含控制字符。",
+    "zh-Hant": "專案名稱不能包含控制字元。",
+    "ko": "프로젝트 이름에는 제어 문자를 사용할 수 없습니다."
+  },
+  "project.rename_recent_refresh_failed": {
+    "ja": "プロジェクト名は変更されましたが、最近の一覧を更新できませんでした。",
+    "en": "The project was renamed, but the recent list couldn't be updated.",
+    "zh-Hans": "项目已重命名，但无法更新最近项目列表。",
+    "zh-Hant": "專案已重新命名，但無法更新最近使用清單。",
+    "ko": "프로젝트 이름은 변경했지만 최근 목록을 업데이트하지 못했습니다."
+  },
+  "project.ai_running_remove_mod": {
+    "ja": "AI翻訳中はmodを外せません。",
+    "en": "You can't remove a Mod while AI translation is running.",
+    "zh-Hans": "AI 翻译进行期间无法移除模组。",
+    "zh-Hant": "AI 翻譯進行期間無法移除模組。",
+    "ko": "AI 번역이 진행되는 동안에는 모드를 제거할 수 없습니다."
+  },
+  "project.mod_not_found_display": {
+    "ja": "modを見つけられませんでした。",
+    "en": "Could not find the Mod.",
+    "zh-Hans": "找不到模组。",
+    "zh-Hant": "找不到模組。",
+    "ko": "모드를 찾을 수 없습니다."
+  },
+  "project.remove_mod_backup_warning": {
+    "ja": "配置したファイルのバックアップを復元できなくなります。",
+    "en": "You won't be able to restore backups of deployed files.",
+    "zh-Hans": "之后将无法恢复已部署文件的备份。",
+    "zh-Hant": "之後將無法還原已部署檔案的備份。",
+    "ko": "배포한 파일의 백업을 더 이상 복원할 수 없습니다."
+  },
+  "project.last_mod_remove": {
+    "ja": "最後のmodはプロジェクトから外せません。",
+    "en": "You can't remove the last Mod from the project.",
+    "zh-Hans": "无法从项目中移除最后一个模组。",
+    "zh-Hant": "無法從專案中移除最後一個模組。",
+    "ko": "프로젝트에서 마지막 모드를 제거할 수 없습니다."
+  },
+  "project.delete_failed": {
+    "ja": "プロジェクトを削除できませんでした。",
+    "en": "Could not delete the project.",
+    "zh-Hans": "无法删除项目。",
+    "zh-Hant": "無法刪除專案。",
+    "ko": "프로젝트를 삭제할 수 없습니다."
+  },
+  "project.file_in_use_retry": {
+    "ja": "ほかのアプリがファイルを使用しています。しばらくしてからもう一度お試しください。",
+    "en": "Another app is using a file. Wait a moment and try again.",
+    "zh-Hans": "其他应用正在使用该文件。请稍后重试。",
+    "zh-Hant": "其他應用程式正在使用此檔案。請稍後再試一次。",
+    "ko": "다른 앱에서 파일을 사용 중입니다. 잠시 후 다시 시도하세요."
+  },
+  "project.opened_elsewhere": {
+    "ja": "別のアプリでプロジェクトが開かれています。閉じてからもう一度お試しください。",
+    "en": "The project is open in another app. Close it and try again.",
+    "zh-Hans": "项目已在其他应用中打开。请关闭后重试。",
+    "zh-Hant": "專案已在其他應用程式中開啟。請關閉後再試一次。",
+    "ko": "프로젝트가 다른 앱에서 열려 있습니다. 닫은 후 다시 시도하세요."
+  },
+  "project.delete_failed_retry": {
+    "ja": "プロジェクトを削除できませんでした。もう一度お試しください。",
+    "en": "Could not delete the project. Try again.",
+    "zh-Hans": "无法删除项目，请重试。",
+    "zh-Hant": "無法刪除專案，請再試一次。",
+    "ko": "프로젝트를 삭제하지 못했습니다. 다시 시도하세요."
+  },
+  "project.source_changed": {
+    "ja": "読み込み中にファイルの内容が変わりました。",
+    "en": "The file changed while it was being read.",
+    "zh-Hans": "读取过程中，文件内容已更改。",
+    "zh-Hant": "讀取期間，檔案內容已變更。",
+    "ko": "파일을 읽는 동안 내용이 변경되었습니다."
+  },
+  "project.unsupported_source": {
+    "ja": "JAR、シェーダーパック ZIP またはシェーダーパックフォルダを選んでください。",
+    "en": "Select a JAR, Shader Pack ZIP, or Shader Pack folder.",
+    "zh-Hans": "请选择 JAR、光影包 ZIP 或光影包文件夹。",
+    "zh-Hant": "請選擇 JAR、光影包 ZIP 或光影包資料夾。",
+    "ko": "JAR, 셰이더 팩 ZIP 또는 셰이더 팩 폴더를 선택하세요."
+  },
+  "project.choose_instance_again": {
+    "ja": "インスタンスを選び直してください。",
+    "en": "Select the instance again.",
+    "zh-Hans": "请重新选择实例。",
+    "zh-Hant": "請重新選擇實例。",
+    "ko": "인스턴스를 다시 선택하세요."
+  },
+  "project.modpack_translation_rescan": {
+    "ja": "Modpack の翻訳ファイルが見つかりません。再スキャンしてください。",
+    "en": "No Modpack translation files were found. Scan again.",
+    "zh-Hans": "未找到整合包翻译文件。请重新扫描。",
+    "zh-Hant": "找不到模組包翻譯檔案。請重新掃描。",
+    "ko": "모드팩 번역 파일을 찾을 수 없습니다. 다시 스캔하세요."
+  },
+  "project.jar_read_failed": {
+    "ja": "JARを読み込めませんでした。ファイルを確認してもう一度お試しください。",
+    "en": "Could not read the JAR. Check the file and try again.",
+    "zh-Hans": "无法读取 JAR。请检查文件后重试。",
+    "zh-Hant": "無法讀取 JAR。請檢查檔案後再試一次。",
+    "ko": "JAR을 읽지 못했습니다. 파일을 확인한 후 다시 시도하세요."
+  },
+  "project.asset_read_failed": {
+    "ja": "アセット情報を読み込めませんでした。同梱Modの選択を変えて再試行してください。",
+    "en": "Could not read asset information. Change the included Mod selection and try again.",
+    "zh-Hans": "无法读取资源信息。请更改随附模组的选择后重试。",
+    "zh-Hant": "無法讀取資產資訊。請變更隨附模組的選取項目後再試一次。",
+    "ko": "에셋 정보를 읽지 못했습니다. 포함된 모드 선택을 변경한 후 다시 시도하세요."
+  },
+  "project.included_mod_selection_failed": {
+    "ja": "同梱Modの選択を読み込めませんでした。名前空間を選び直してください。",
+    "en": "Could not load the included Mod selection. Select the namespaces again.",
+    "zh-Hans": "无法加载随附模组的选择。请重新选择命名空间。",
+    "zh-Hant": "無法載入隨附模組的選取項目。請重新選擇命名空間。",
+    "ko": "포함된 모드 선택을 불러오지 못했습니다. 네임스페이스를 다시 선택하세요."
+  },
+  "project.modpack_refresh_failed": {
+    "ja": "Modpack のファイルを再取り込みできませんでした。",
+    "en": "Could not reimport the Modpack files.",
+    "zh-Hans": "无法重新导入整合包文件。",
+    "zh-Hant": "無法重新匯入模組包檔案。",
+    "ko": "모드팩 파일을 다시 가져오지 못했습니다."
+  },
+  "project.language_files_missing": {
+    "ja": "翻訳できる言語ファイルが見つかりませんでした。",
+    "en": "No translatable language files were found.",
+    "zh-Hans": "未找到可翻译的语言文件。",
+    "zh-Hant": "找不到可翻譯的語言檔案。",
+    "ko": "번역할 수 있는 언어 파일을 찾지 못했습니다."
+  },
+  "project.shaderpack_read_failed": {
+    "ja": "シェーダーパックを読み込めませんでした。ZIP または shaders フォルダを確認してください。",
+    "en": "Could not read the Shader Pack. Check the ZIP or shaders folder.",
+    "zh-Hans": "无法读取光影包。请检查 ZIP 或 shaders 文件夹。",
+    "zh-Hant": "無法讀取光影包。請檢查 ZIP 或 shaders 資料夾。",
+    "ko": "셰이더 팩을 읽지 못했습니다. ZIP 또는 shaders 폴더를 확인하세요."
+  },
+  "project.file_read_failed": {
+    "ja": "ファイルを読み込めませんでした。破損していないか確認してください。",
+    "en": "Could not read the file. Check that it isn't damaged.",
+    "zh-Hans": "无法读取文件。请检查文件是否损坏。",
+    "zh-Hant": "無法讀取檔案。請確認檔案是否損毀。",
+    "ko": "파일을 읽지 못했습니다. 손상되지 않았는지 확인하세요."
+  },
+  "project.scan_failed": {
+    "ja": "ファイルをスキャンできませんでした。",
+    "en": "Could not scan the file.",
+    "zh-Hans": "无法扫描文件。",
+    "zh-Hant": "無法掃描檔案。",
+    "ko": "파일을 스캔하지 못했습니다."
+  },
+  "project.progress.opening": {
+    "ja": "プロジェクトを開いています",
+    "en": "Opening project",
+    "zh-Hans": "正在打开项目",
+    "zh-Hant": "正在開啟專案",
+    "ko": "프로젝트 여는 중"
+  },
+  "project.progress.loading_saved_data": {
+    "ja": "保存済み情報を読み込んでいます",
+    "en": "Loading saved data",
+    "zh-Hans": "正在加载已保存的信息",
+    "zh-Hant": "正在載入已儲存的資訊",
+    "ko": "저장된 정보 불러오는 중"
+  },
+  "project.progress.checking_jars": {
+    "ja": "JARを確認しています",
+    "en": "Checking JARs",
+    "zh-Hans": "正在检查 JAR",
+    "zh-Hant": "正在檢查 JAR",
+    "ko": "JAR 확인 중"
+  },
+  "project.progress.preparing_review": {
+    "ja": "Review情報を整えています",
+    "en": "Preparing review data",
+    "zh-Hans": "正在准备复核信息",
+    "zh-Hant": "正在準備複核資訊",
+    "ko": "검토 정보 준비 중"
+  },
+  "project.progress.opened": {
+    "ja": "プロジェクトを開きました",
+    "en": "Project opened",
+    "zh-Hans": "项目已打开",
+    "zh-Hant": "專案已開啟",
+    "ko": "프로젝트를 열었습니다"
+  },
+  "project.progress.loading_review_items": {
+    "ja": "確認項目を読み込んでいます",
+    "en": "Loading review items",
+    "zh-Hans": "正在加载复核项目",
+    "zh-Hant": "正在載入複核項目",
+    "ko": "검토 항목 불러오는 중"
+  },
+  "project.progress.review_items_loaded": {
+    "ja": "確認項目を読み込みました",
+    "en": "Review items loaded",
+    "zh-Hans": "已加载复核项目",
+    "zh-Hant": "已載入複核項目",
+    "ko": "검토 항목을 불러왔습니다"
+  },
+  "project.progress.saving_review_settings": {
+    "ja": "翻訳設定を保存しています",
+    "en": "Saving translation settings",
+    "zh-Hans": "正在保存翻译设置",
+    "zh-Hant": "正在儲存翻譯設定",
+    "ko": "번역 설정 저장 중"
+  },
+  "project.progress.review_settings_saved": {
+    "ja": "翻訳設定を保存しました",
+    "en": "Translation settings saved",
+    "zh-Hans": "已保存翻译设置",
+    "zh-Hant": "已儲存翻譯設定",
+    "ko": "번역 설정을 저장했습니다"
+  },
+  "project.progress.preparing_translations": {
+    "ja": "翻訳内容をまとめています",
+    "en": "Preparing translations",
+    "zh-Hans": "正在整理译文",
+    "zh-Hant": "正在整理譯文",
+    "ko": "번역 내용 정리 중"
+  },
+  "project.progress.saving_translations": {
+    "ja": "翻訳データを保存しています",
+    "en": "Saving translations",
+    "zh-Hans": "正在保存翻译数据",
+    "zh-Hant": "正在儲存翻譯資料",
+    "ko": "번역 데이터 저장 중"
+  },
+  "project.progress.translations_saved": {
+    "ja": "翻訳データを保存しました",
+    "en": "Translations saved",
+    "zh-Hans": "已保存翻译数据",
+    "zh-Hant": "已儲存翻譯資料",
+    "ko": "번역 데이터를 저장했습니다"
+  },
+  "project.progress.checking_asset_matches": {
+    "ja": "アセットとの対応を調べています",
+    "en": "Matching assets",
+    "zh-Hans": "正在匹配资源",
+    "zh-Hant": "正在比對資產",
+    "ko": "에셋 연결 확인 중"
+  },
+  "project.progress.saving_assets": {
+    "ja": "アセット情報を保存しています",
+    "en": "Saving asset information",
+    "zh-Hans": "正在保存资源信息",
+    "zh-Hant": "正在儲存資產資訊",
+    "ko": "에셋 정보 저장 중"
+  },
+  "project.progress.preparing_review_items": {
+    "ja": "確認項目を整えています",
+    "en": "Preparing review items",
+    "zh-Hans": "正在整理复核项目",
+    "zh-Hant": "正在整理複核項目",
+    "ko": "검토 항목 준비 중"
+  },
+  "project.progress.preparing_review_short": {
+    "ja": "Reviewを整えています",
+    "en": "Preparing review",
+    "zh-Hans": "正在准备复核",
+    "zh-Hant": "正在準備複核",
+    "ko": "검토 준비 중"
+  },
+  "project.analysis.validate_start": {
+    "ja": "JARを検証しています",
+    "en": "Validating JAR",
+    "zh-Hans": "正在验证 JAR",
+    "zh-Hant": "正在驗證 JAR",
+    "ko": "JAR 검증 중"
+  },
+  "project.analysis.validate_done": {
+    "ja": "JARを検証しました",
+    "en": "JAR validated",
+    "zh-Hans": "JAR 已验证",
+    "zh-Hant": "JAR 已驗證",
+    "ko": "JAR을 검증했습니다"
+  },
+  "project.analysis.hash_start": {
+    "ja": "SHA-256を計算しています",
+    "en": "Calculating SHA-256",
+    "zh-Hans": "正在计算 SHA-256",
+    "zh-Hant": "正在計算 SHA-256",
+    "ko": "SHA-256 계산 중"
+  },
+  "project.analysis.hash_done": {
+    "ja": "SHA-256を計算しました",
+    "en": "SHA-256 calculated",
+    "zh-Hans": "已计算 SHA-256",
+    "zh-Hant": "已計算 SHA-256",
+    "ko": "SHA-256을 계산했습니다"
+  },
+  "project.analysis.zip_paths": {
+    "ja": "ZIP内のパスを調べています",
+    "en": "Scanning ZIP paths",
+    "zh-Hans": "正在扫描 ZIP 路径",
+    "zh-Hant": "正在掃描 ZIP 路徑",
+    "ko": "ZIP 경로 확인 중"
+  },
+  "project.analysis.zip_paths_done": {
+    "ja": "ZIP内のパスを調べました",
+    "en": "ZIP paths scanned",
+    "zh-Hans": "已扫描 ZIP 路径",
+    "zh-Hant": "已掃描 ZIP 路徑",
+    "ko": "ZIP 경로를 확인했습니다"
+  },
+  "project.analysis.metadata": {
+    "ja": "Mod情報を解析しています",
+    "en": "Reading Mod metadata",
+    "zh-Hans": "正在解析模组信息",
+    "zh-Hant": "正在解析模組資訊",
+    "ko": "모드 정보 분석 중"
+  },
+  "project.analysis.metadata_done": {
+    "ja": "Mod情報を解析しました",
+    "en": "Mod metadata read",
+    "zh-Hans": "已解析模组信息",
+    "zh-Hant": "已解析模組資訊",
+    "ko": "모드 정보를 분석했습니다"
+  },
+  "project.analysis.nested_jars": {
+    "ja": "同梱JARを調べています",
+    "en": "Scanning nested JARs",
+    "zh-Hans": "正在扫描内嵌 JAR",
+    "zh-Hant": "正在掃描內嵌 JAR",
+    "ko": "포함된 JAR 확인 중"
+  },
+  "project.analysis.nested_jars_done": {
+    "ja": "同梱JARを調べました",
+    "en": "Nested JARs scanned",
+    "zh-Hans": "已扫描内嵌 JAR",
+    "zh-Hant": "已掃描內嵌 JAR",
+    "ko": "포함된 JAR을 확인했습니다"
+  },
+  "project.analysis.namespaces": {
+    "ja": "namespaceを調べています",
+    "en": "Scanning namespaces",
+    "zh-Hans": "正在扫描命名空间",
+    "zh-Hant": "正在掃描命名空間",
+    "ko": "네임스페이스 확인 중"
+  },
+  "project.analysis.namespaces_done": {
+    "ja": "namespaceを調べました",
+    "en": "Namespaces scanned",
+    "zh-Hans": "已扫描命名空间",
+    "zh-Hant": "已掃描命名空間",
+    "ko": "네임스페이스를 확인했습니다"
+  },
+  "project.analysis.languages": {
+    "ja": "言語ファイルを解析しています",
+    "en": "Reading language files",
+    "zh-Hans": "正在解析语言文件",
+    "zh-Hant": "正在解析語言檔案",
+    "ko": "언어 파일 분석 중"
+  },
+  "project.analysis.languages_none": {
+    "ja": "言語ファイルがありません",
+    "en": "No language files found",
+    "zh-Hans": "未找到语言文件",
+    "zh-Hant": "找不到語言檔案",
+    "ko": "언어 파일이 없습니다"
+  },
+  "project.analysis.languages_done": {
+    "ja": "言語ファイルを解析しました",
+    "en": "Language files read",
+    "zh-Hans": "已解析语言文件",
+    "zh-Hant": "已解析語言檔案",
+    "ko": "언어 파일을 분석했습니다"
+  },
+  "project.analysis.detect_start": {
+    "ja": "翻訳元と言語の件数を調べています",
+    "en": "Checking source and translation counts",
+    "zh-Hans": "正在统计原文和译文",
+    "zh-Hant": "正在統計原文與譯文",
+    "ko": "원문 및 번역 개수 확인 중"
+  },
+  "project.analysis.source_recommended": {
+    "ja": "翻訳元を推奨しました",
+    "en": "Source language suggested",
+    "zh-Hans": "已推荐源语言",
+    "zh-Hant": "已推薦來源語言",
+    "ko": "원본 언어를 추천했습니다"
+  },
+  "project.analysis.existing_target_count": {
+    "ja": "既存の{language}訳を数えました",
+    "en": "Existing {language} translations counted",
+    "zh-Hans": "已统计现有{language}译文",
+    "zh-Hant": "已統計現有{language}譯文",
+    "ko": "기존 {language} 번역을 세었습니다"
+  },
+  "project.analysis.missing_keys_count": {
+    "ja": "翻訳元にないキーを数えました",
+    "en": "Keys missing from the source counted",
+    "zh-Hans": "已统计原文中缺少的键",
+    "zh-Hant": "已統計原文中缺少的鍵",
+    "ko": "원문에 없는 키를 세었습니다"
+  },
+  "project.analysis.detect_done": {
+    "ja": "翻訳元と言語の件数を調べました",
+    "en": "Source and translation counts checked",
+    "zh-Hans": "已统计原文和译文",
+    "zh-Hant": "已統計原文與譯文",
+    "ko": "원문 및 번역 개수를 확인했습니다"
+  }
+}

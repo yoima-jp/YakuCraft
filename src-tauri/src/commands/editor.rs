@@ -69,13 +69,13 @@ fn ftbquests_display_key(pointer: &str) -> String {
         return pointer.to_owned();
     }
     let field = match parts[2] {
-        "title" => "タイトル".to_owned(),
+        "title" => yc_locale::t!("editor.field_title"),
         "quest_desc" => pointer
             .rsplit_once('[')
             .and_then(|(_, index)| index.strip_suffix(']'))
             .and_then(|index| index.parse::<usize>().ok())
-            .map(|index| format!("説明 {}行目", index + 1))
-            .unwrap_or_else(|| "説明".to_owned()),
+            .map(|index| yc_locale::t!("editor.field_description_line", line = index + 1))
+            .unwrap_or_else(|| yc_locale::t!("editor.field_description")),
         _ => parts[2..].join("."),
     };
     format!("quest.{} › {field}", parts[1])
@@ -122,7 +122,7 @@ pub async fn list_entries(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
         let repository = opened.repository();
         let mut entries: Vec<_> = repository
             .list_entries(mod_unit_id)
@@ -164,7 +164,7 @@ pub async fn update_entries_batch(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| database_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| database_error(yc_locale::t!("common.project_not_open")))?;
         let updated_ids: std::collections::HashSet<_> =
             updates.iter().map(|update| update.id).collect();
         update_entries_batch_core(opened, updates)?;
@@ -263,7 +263,7 @@ pub(crate) fn update_entries_batch_core(
         if !seen_ids.insert(update.id) {
             return Err(AppError::simple(
                 "invalid_update_batch",
-                "翻訳データを保存できませんでした。もう一度お試しください。",
+                &yc_locale::t!("editor.save_failed"),
             ));
         }
         if !entries_by_id.contains_key(&update.id) {
@@ -329,7 +329,7 @@ pub(crate) fn update_entries_batch_core(
 fn database_error(detail: impl Into<String>) -> AppError {
     AppError::new(
         "database",
-        "翻訳データを保存できませんでした。もう一度お試しください。",
+        &yc_locale::t!("editor.save_failed"),
         Some(detail.into()),
     )
 }
@@ -337,7 +337,7 @@ fn database_error(detail: impl Into<String>) -> AppError {
 fn task_error(detail: String) -> AppError {
     AppError::new(
         "task_failed",
-        "処理に失敗しました。もう一度お試しください。",
+        &yc_locale::t!("common.task_failed"),
         Some(detail),
     )
 }
@@ -345,7 +345,7 @@ fn task_error(detail: String) -> AppError {
 fn state_error(detail: &str) -> AppError {
     AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("common.state_read_failed"),
         Some(detail.to_owned()),
     )
 }

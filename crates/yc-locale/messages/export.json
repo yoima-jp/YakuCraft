@@ -1,1 +1,604 @@
-{}
+{
+  "export.project_switched": {
+    "ja": "プロジェクトが切り替わりました。",
+    "en": "The project has changed.",
+    "zh-Hans": "项目已切换。",
+    "zh-Hant": "專案已切換。",
+    "ko": "프로젝트가 변경되었습니다."
+  },
+  "export.file_destination_unavailable": {
+    "ja": "このファイルの保存先は開けません。",
+    "en": "Can't open the folder containing this file.",
+    "zh-Hans": "无法打开此文件所在的文件夹。",
+    "zh-Hant": "無法開啟此檔案所在的資料夾。",
+    "ko": "이 파일이 있는 폴더를 열 수 없습니다."
+  },
+  "export.destination_folder_unavailable": {
+    "ja": "保存先フォルダーを開けません。",
+    "en": "Can't open the destination folder.",
+    "zh-Hans": "无法打开目标文件夹。",
+    "zh-Hant": "無法開啟目的地資料夾。",
+    "ko": "저장할 폴더를 열 수 없습니다."
+  },
+  "export.select_mod_jar": {
+    "ja": "Mod JAR を選んでください。",
+    "en": "Select a Mod JAR.",
+    "zh-Hans": "请选择模组 JAR。",
+    "zh-Hant": "請選擇模組 JAR。",
+    "ko": "모드 JAR을 선택하세요."
+  },
+  "export.select_target_namespace": {
+    "ja": "翻訳対象のNamespaceを選んでください。",
+    "en": "Select a namespace to translate.",
+    "zh-Hans": "请选择要翻译的命名空间。",
+    "zh-Hant": "請選擇要翻譯的命名空間。",
+    "ko": "번역할 네임스페이스를 선택하세요."
+  },
+  "export.select_mod_to_export": {
+    "ja": "書き出すmodを選んでください。",
+    "en": "Select a Mod to export.",
+    "zh-Hans": "请选择要导出的模组。",
+    "zh-Hant": "請選擇要匯出的模組。",
+    "ko": "내보낼 모드를 선택하세요."
+  },
+  "export.select_export_namespace_again": {
+    "ja": "書き出すNamespaceを選び直してください。",
+    "en": "Select the namespace to export again.",
+    "zh-Hans": "请重新选择要导出的命名空间。",
+    "zh-Hant": "請重新選擇要匯出的命名空間。",
+    "ko": "내보낼 네임스페이스를 다시 선택하세요."
+  },
+  "export.shaderpack_export_as_shaderpack": {
+    "ja": "シェーダーパックはリソースパックや Mod JAR には含められません。シェーダーパック形式で書き出してください。",
+    "en": "Shader Packs can't be included in a Resource Pack or Mod JAR. Export them as a Shader Pack.",
+    "zh-Hans": "光影包不能包含在资源包或模组 JAR 中。请以光影包格式导出。",
+    "zh-Hant": "光影包無法包含在資源包或模組 JAR 中。請以光影包格式匯出。",
+    "ko": "셰이더 팩은 리소스 팩이나 모드 JAR에 포함할 수 없습니다. 셰이더 팩 형식으로 내보내세요."
+  },
+  "export.select_mod_again": {
+    "ja": "書き出すmodを選び直してください。",
+    "en": "Select the Mod to export again.",
+    "zh-Hans": "请重新选择要导出的模组。",
+    "zh-Hant": "請重新選擇要匯出的模組。",
+    "ko": "내보낼 모드를 다시 선택하세요."
+  },
+  "export.shaderpack_not_in_resource_pack": {
+    "ja": "シェーダーパックはリソースパックに含めません。「{language}化したシェーダーパック」から書き出してください。",
+    "en": "Shader Packs aren't included in Resource Packs. Export them from translated {language} Shader Packs.",
+    "zh-Hans": "资源包不包含光影包。请从{language}光影包中导出。",
+    "zh-Hant": "資源包不包含光影包。請從{language}光影包匯出。",
+    "ko": "셰이더 팩은 리소스 팩에 포함되지 않습니다. {language}(으)로 번역한 셰이더 팩에서 내보내세요."
+  },
+  "export.selected_mod_read_failed": {
+    "ja": "選択したmodを読み込めませんでした。保存済みJARを確認してください。",
+    "en": "Could not read the selected Mod. Check the saved JAR.",
+    "zh-Hans": "无法读取所选模组。请检查已保存的 JAR。",
+    "zh-Hant": "無法讀取所選模組。請檢查已儲存的 JAR。",
+    "ko": "선택한 모드를 읽지 못했습니다. 저장된 JAR을 확인하세요."
+  },
+  "export.instance_save_missing": {
+    "ja": "インスタンスの保存先がありません。通常の保存先を選んでください。",
+    "en": "No instance folder is set. Choose a destination instead.",
+    "zh-Hans": "未设置实例文件夹。请改为选择目标位置。",
+    "zh-Hant": "尚未設定實例資料夾。請改為選擇目的地。",
+    "ko": "인스턴스 폴더가 설정되지 않았습니다. 다른 저장 위치를 선택하세요."
+  },
+  "export.project_instance_save_missing": {
+    "ja": "このプロジェクトにはインスタンスの保存先がありません。",
+    "en": "This project has no instance destination.",
+    "zh-Hans": "此项目未设置实例保存位置。",
+    "zh-Hant": "此專案未設定實例儲存位置。",
+    "ko": "이 프로젝트에는 인스턴스 저장 위치가 없습니다."
+  },
+  "export.select_destination": {
+    "ja": "保存先を選んでください。",
+    "en": "Choose a destination.",
+    "zh-Hans": "请选择保存位置。",
+    "zh-Hant": "請選擇儲存位置。",
+    "ko": "저장 위치를 선택하세요."
+  },
+  "export.check_destination_folder": {
+    "ja": "保存先フォルダを確認してください。",
+    "en": "Check the destination folder.",
+    "zh-Hans": "请检查目标文件夹。",
+    "zh-Hant": "請檢查目的地資料夾。",
+    "ko": "저장할 폴더를 확인하세요."
+  },
+  "export.select_destination_folder": {
+    "ja": "保存先フォルダを選んでください。",
+    "en": "Choose a destination folder.",
+    "zh-Hans": "请选择保存文件夹。",
+    "zh-Hant": "請選擇儲存資料夾。",
+    "ko": "저장할 폴더를 선택하세요."
+  },
+  "export.resource_pack_included": {
+    "ja": "リソースパックに含めました。",
+    "en": "Included in the Resource Pack.",
+    "zh-Hans": "已包含在资源包中。",
+    "zh-Hant": "已包含在資源包中。",
+    "ko": "리소스 팩에 포함했습니다."
+  },
+  "export.no_target_namespace": {
+    "ja": "翻訳対象のNamespaceがありません。",
+    "en": "No namespace is selected for translation.",
+    "zh-Hans": "未选择要翻译的命名空间。",
+    "zh-Hant": "未選擇要翻譯的命名空間。",
+    "ko": "번역할 네임스페이스가 선택되지 않았습니다."
+  },
+  "export.instance_mods_folder_only": {
+    "ja": "インスタンスの mods フォルダ外のため直接置き換えできません。",
+    "en": "Can't replace this file directly because it's outside the instance's mods folder.",
+    "zh-Hans": "此文件不在实例的 mods 文件夹中，无法直接替换。",
+    "zh-Hant": "此檔案不在實例的 mods 資料夾中，無法直接取代。",
+    "ko": "인스턴스의 mods 폴더 밖에 있어 직접 교체할 수 없습니다."
+  },
+  "export.original_jar_missing": {
+    "ja": "元のJARが見つかりません。",
+    "en": "Original JAR not found.",
+    "zh-Hans": "未找到原始 JAR。",
+    "zh-Hant": "找不到原始 JAR。",
+    "ko": "원본 JAR을 찾을 수 없습니다."
+  },
+  "export.original_jar_changed": {
+    "ja": "元のJARが更新されています。現在のファイルは変更しませんでした。",
+    "en": "The original JAR has changed. The current file wasn't modified.",
+    "zh-Hans": "原始 JAR 已更改。未修改当前文件。",
+    "zh-Hant": "原始 JAR 已變更。未修改目前的檔案。",
+    "ko": "원본 JAR이 변경되었습니다. 현재 파일은 수정하지 않았습니다."
+  },
+  "export.record_save_failed_restored": {
+    "ja": "書き出し記録を保存できなかったため、元のJARへ戻しました。",
+    "en": "The export record couldn't be saved, so the original JAR was restored.",
+    "zh-Hans": "无法保存导出记录，已恢复原始 JAR。",
+    "zh-Hant": "無法儲存匯出記錄，因此已還原原始 JAR。",
+    "ko": "내보내기 기록을 저장하지 못해 원본 JAR을 복원했습니다."
+  },
+  "export.record_save_and_restore_failed": {
+    "ja": "書き出し記録を保存できませんでした。元のJARへの復元にも失敗しました: {detail}",
+    "en": "Couldn't save the export record or restore the original JAR: {detail}",
+    "zh-Hans": "无法保存导出记录，也无法恢复原始 JAR：{detail}",
+    "zh-Hant": "無法儲存匯出記錄，也無法還原原始 JAR：{detail}",
+    "ko": "내보내기 기록을 저장하지 못했고 원본 JAR도 복원하지 못했습니다: {detail}"
+  },
+  "export.jar_overwritten": {
+    "ja": "JARを上書きしました。元のJARはプロジェクト内に保存されています。",
+    "en": "JAR overwritten. The original JAR is saved in the project.",
+    "zh-Hans": "已覆盖 JAR。原始 JAR 已保存在项目中。",
+    "zh-Hant": "已覆寫 JAR。原始 JAR 已儲存在專案中。",
+    "ko": "JAR을 덮어썼습니다. 원본 JAR은 프로젝트에 저장되어 있습니다."
+  },
+  "export.same_name_exists": {
+    "ja": "同名のファイルが既にあります。既存ファイルは変更していません。",
+    "en": "A file with this name already exists. The existing file wasn't changed.",
+    "zh-Hans": "已存在同名文件。未更改现有文件。",
+    "zh-Hant": "已存在同名檔案。未變更現有檔案。",
+    "ko": "같은 이름의 파일이 이미 있습니다. 기존 파일은 변경하지 않았습니다."
+  },
+  "export.jar_exported": {
+    "ja": "JARを書き出しました。",
+    "en": "JAR exported.",
+    "zh-Hans": "已导出 JAR。",
+    "zh-Hant": "已匯出 JAR。",
+    "ko": "JAR을 내보냈습니다."
+  },
+  "export.no_namespace_in_mod": {
+    "ja": "このmodに選択したNamespaceはありません。",
+    "en": "This Mod has no selected namespaces.",
+    "zh-Hans": "此模组没有所选命名空间。",
+    "zh-Hant": "此模組沒有選取的命名空間。",
+    "ko": "이 모드에는 선택한 네임스페이스가 없습니다."
+  },
+  "export.language_file_exported": {
+    "ja": "言語ファイルを書き出しました。",
+    "en": "Language file exported.",
+    "zh-Hans": "已导出语言文件。",
+    "zh-Hant": "已匯出語言檔案。",
+    "ko": "언어 파일을 내보냈습니다."
+  },
+  "export.no_translations": {
+    "ja": "書き出す翻訳がありません。",
+    "en": "There are no translations to export.",
+    "zh-Hans": "没有可导出的译文。",
+    "zh-Hant": "沒有可匯出的譯文。",
+    "ko": "내보낼 번역이 없습니다."
+  },
+  "export.translations_exported": {
+    "ja": "翻訳データを書き出しました。",
+    "en": "Translations exported.",
+    "zh-Hans": "已导出翻译数据。",
+    "zh-Hant": "已匯出翻譯資料。",
+    "ko": "번역 데이터를 내보냈습니다."
+  },
+  "export.select_modpack_items": {
+    "ja": "Modpack 固有の項目を選んでください。",
+    "en": "Select Modpack-specific entries.",
+    "zh-Hans": "请选择整合包专属项目。",
+    "zh-Hant": "請選擇模組包專屬項目。",
+    "ko": "모드팩 전용 항목을 선택하세요."
+  },
+  "export.modpack_output_duplicate": {
+    "ja": "選択した Modpack の出力先が重複しています。",
+    "en": "The selected Modpacks have duplicate output paths.",
+    "zh-Hans": "所选整合包的输出位置重复。",
+    "zh-Hant": "所選模組包的輸出位置重複。",
+    "ko": "선택한 모드팩의 출력 위치가 중복됩니다."
+  },
+  "export.modpack_target_duplicate": {
+    "ja": "選択した Modpack の配置先が重複しています。",
+    "en": "The selected Modpacks have duplicate deployment paths.",
+    "zh-Hans": "所选整合包的部署位置重复。",
+    "zh-Hant": "所選模組包的部署位置重複。",
+    "ko": "선택한 모드팩의 배포 위치가 중복됩니다."
+  },
+  "export.select_modpack_zip_destination": {
+    "ja": "Modpack ZIP の保存先を選んでください。",
+    "en": "Choose where to save the Modpack ZIP.",
+    "zh-Hans": "请选择整合包 ZIP 的保存位置。",
+    "zh-Hant": "請選擇模組包 ZIP 的儲存位置。",
+    "ko": "모드팩 ZIP을 저장할 위치를 선택하세요."
+  },
+  "export.select_shaderpack": {
+    "ja": "シェーダーパックを選んでください。",
+    "en": "Select a Shader Pack.",
+    "zh-Hans": "请选择光影包。",
+    "zh-Hant": "請選擇光影包。",
+    "ko": "셰이더 팩을 선택하세요."
+  },
+  "export.source_language_file_missing": {
+    "ja": "翻訳元の言語ファイルが見つかりません。",
+    "en": "Source language file not found.",
+    "zh-Hans": "未找到源语言文件。",
+    "zh-Hant": "找不到來源語言檔案。",
+    "ko": "원본 언어 파일을 찾을 수 없습니다."
+  },
+  "export.shaderpack_export_failed": {
+    "ja": "シェーダーパックを書き出せませんでした。",
+    "en": "Could not export the Shader Pack.",
+    "zh-Hans": "无法导出光影包。",
+    "zh-Hant": "無法匯出光影包。",
+    "ko": "셰이더 팩을 내보낼 수 없습니다."
+  },
+  "export.shaderpack_target_duplicate": {
+    "ja": "選択したシェーダーパックの配置先が重複しています。",
+    "en": "The selected Shader Packs have duplicate deployment paths.",
+    "zh-Hans": "所选光影包的部署位置重复。",
+    "zh-Hant": "所選光影包的部署位置重複。",
+    "ko": "선택한 셰이더 팩의 배포 위치가 중복됩니다."
+  },
+  "export.shaderpack_exported": {
+    "ja": "シェーダーパックを書き出しました。",
+    "en": "Shader Pack exported.",
+    "zh-Hans": "已导出光影包。",
+    "zh-Hant": "已匯出光影包。",
+    "ko": "셰이더 팩을 내보냈습니다."
+  },
+  "export.instance_not_detected": {
+    "ja": "インスタンスを検出できません。",
+    "en": "Couldn't detect an instance.",
+    "zh-Hans": "无法检测到实例。",
+    "zh-Hant": "無法偵測到實例。",
+    "ko": "인스턴스를 찾을 수 없습니다."
+  },
+  "export.shaderpack_reopen": {
+    "ja": "シェーダーパックを読み込めませんでした。プロジェクトを開き直してください。",
+    "en": "Could not read the Shader Pack. Reopen the project.",
+    "zh-Hans": "无法读取光影包。请重新打开项目。",
+    "zh-Hant": "無法讀取光影包。請重新開啟專案。",
+    "ko": "셰이더 팩을 읽지 못했습니다. 프로젝트를 다시 여세요."
+  },
+  "export.placeholder_error": {
+    "ja": "Placeholderの書式エラー: {namespace}:{key}",
+    "en": "Placeholder format error: {namespace}:{key}",
+    "zh-Hans": "占位符格式错误：{namespace}:{key}",
+    "zh-Hant": "佔位符格式錯誤：{namespace}:{key}",
+    "ko": "자리 표시자 형식 오류: {namespace}:{key}"
+  },
+  "export.placeholder_warning": {
+    "ja": "引数が表示されない可能性があります: {namespace}:{key}",
+    "en": "Arguments might not be displayed: {namespace}:{key}",
+    "zh-Hans": "参数可能无法显示：{namespace}:{key}",
+    "zh-Hant": "引數可能無法顯示：{namespace}:{key}",
+    "ko": "인수가 표시되지 않을 수 있습니다: {namespace}:{key}"
+  },
+  "export.optifine_warning": {
+    "ja": "OptiFineで表示が崩れる可能性があります: {namespace}:{key}",
+    "en": "This may display incorrectly in OptiFine: {namespace}:{key}",
+    "zh-Hans": "在 OptiFine 中可能显示异常：{namespace}:{key}",
+    "zh-Hant": "在 OptiFine 中可能顯示異常：{namespace}:{key}",
+    "ko": "OptiFine에서 잘못 표시될 수 있습니다: {namespace}:{key}"
+  },
+  "export.file_changed_after_deployment": {
+    "ja": "配置後に変更されたファイル「{name}」は上書きできません。手動で解決してください。",
+    "en": "Can't overwrite “{name}” because it changed after deployment. Resolve this manually.",
+    "zh-Hans": "文件“{name}”在部署后已更改，无法覆盖。请手动处理。",
+    "zh-Hant": "檔案「{name}」在部署後已變更，無法覆寫。請手動處理。",
+    "ko": "배포 후 변경된 파일 '{name}'은 덮어쓸 수 없습니다. 직접 해결하세요."
+  },
+  "export.modpack_path_invalid": {
+    "ja": "Modpack のファイルパスが不正です。",
+    "en": "The Modpack file path is invalid.",
+    "zh-Hans": "整合包文件路径无效。",
+    "zh-Hant": "模組包檔案路徑無效。",
+    "ko": "모드팩 파일 경로가 올바르지 않습니다."
+  },
+  "export.modpack_instance_folder_check_failed": {
+    "ja": "Modpack のインスタンスフォルダーを確認できません",
+    "en": "Could not access the Modpack instance folder.",
+    "zh-Hans": "无法访问整合包实例文件夹。",
+    "zh-Hant": "無法存取模組包實例資料夾。",
+    "ko": "모드팩 인스턴스 폴더에 접근할 수 없습니다."
+  },
+  "export.patchouli_document_path_check_failed": {
+    "ja": "Patchouli文書のパスを確認できません: {path}",
+    "en": "Could not verify the Patchouli document path: {path}",
+    "zh-Hans": "无法验证 Patchouli 文档路径：{path}",
+    "zh-Hant": "無法驗證 Patchouli 文件路徑：{path}",
+    "ko": "Patchouli 문서 경로를 확인할 수 없습니다: {path}"
+  },
+  "export.nested_jar_read_failed": {
+    "ja": "同梱JARを読み込めません: {path}",
+    "en": "Could not read the nested JAR: {path}",
+    "zh-Hans": "无法读取内嵌 JAR：{path}",
+    "zh-Hant": "無法讀取內嵌 JAR：{path}",
+    "ko": "포함된 JAR을 읽지 못했습니다: {path}"
+  },
+  "export.patchouli_namespace_check_failed": {
+    "ja": "Patchouli文書のnamespaceを確認できません: {path}",
+    "en": "Could not verify the Patchouli document namespace: {path}",
+    "zh-Hans": "无法验证 Patchouli 文档命名空间：{path}",
+    "zh-Hant": "無法驗證 Patchouli 文件命名空間：{path}",
+    "ko": "Patchouli 문서 네임스페이스를 확인할 수 없습니다: {path}"
+  },
+  "export.outside_instance_deploy": {
+    "ja": "インスタンス外には配置できません。",
+    "en": "Can't deploy files outside the instance.",
+    "zh-Hans": "无法部署到实例目录之外。",
+    "zh-Hant": "無法部署至實例目錄之外。",
+    "ko": "인스턴스 외부에는 배포할 수 없습니다."
+  },
+  "export.symlink_deploy": {
+    "ja": "シンボリックリンクには配置できません。",
+    "en": "Can't deploy through a symbolic link.",
+    "zh-Hans": "无法通过符号链接部署。",
+    "zh-Hant": "無法透過符號連結部署。",
+    "ko": "심볼릭 링크에는 배포할 수 없습니다."
+  },
+  "export.deployment_record_restore_failed": {
+    "ja": "配置記録を保存できず、ファイルの復元にも失敗しました。",
+    "en": "Couldn't save the deployment record or restore the file.",
+    "zh-Hans": "无法保存部署记录，也无法恢复文件。",
+    "zh-Hant": "無法儲存部署記錄，也無法還原檔案。",
+    "ko": "배포 기록을 저장하지 못했고 파일도 복원하지 못했습니다."
+  },
+  "export.restore_file_missing": {
+    "ja": "復元するファイルが見つかりません。",
+    "en": "File to restore not found.",
+    "zh-Hans": "未找到要恢复的文件。",
+    "zh-Hant": "找不到要還原的檔案。",
+    "ko": "복원할 파일을 찾을 수 없습니다."
+  },
+  "export.outside_instance_restore": {
+    "ja": "インスタンス外のファイルは復元できません。",
+    "en": "Can't restore files outside the instance.",
+    "zh-Hans": "无法恢复实例目录之外的文件。",
+    "zh-Hant": "無法還原實例目錄之外的檔案。",
+    "ko": "인스턴스 외부의 파일은 복원할 수 없습니다."
+  },
+  "export.backup_unavailable": {
+    "ja": "バックアップを確認できません。",
+    "en": "Can't verify the backup.",
+    "zh-Hans": "无法验证备份。",
+    "zh-Hant": "無法驗證備份。",
+    "ko": "백업을 확인할 수 없습니다."
+  },
+  "export.replacement_jar_missing": {
+    "ja": "復元するJARが見つかりません。",
+    "en": "JAR to restore not found.",
+    "zh-Hans": "未找到要恢复的 JAR。",
+    "zh-Hant": "找不到要還原的 JAR。",
+    "ko": "복원할 JAR을 찾을 수 없습니다."
+  },
+  "export.replacement_status_read_failed": {
+    "ja": "JARの置換状態を確認できませんでした。",
+    "en": "Couldn't check the JAR replacement status.",
+    "zh-Hans": "无法检查 JAR 替换状态。",
+    "zh-Hant": "無法檢查 JAR 置換狀態。",
+    "ko": "JAR 교체 상태를 확인할 수 없습니다."
+  },
+  "export.replacement_mod_missing": {
+    "ja": "復元するmodが見つかりません。",
+    "en": "Mod to restore not found.",
+    "zh-Hans": "未找到要恢复的模组。",
+    "zh-Hant": "找不到要還原的模組。",
+    "ko": "복원할 모드를 찾을 수 없습니다."
+  },
+  "export.jar_destination_unavailable": {
+    "ja": "JARの保存先を確認できません。",
+    "en": "Can't access the JAR destination.",
+    "zh-Hans": "无法访问 JAR 保存位置。",
+    "zh-Hant": "無法存取 JAR 儲存位置。",
+    "ko": "JAR 저장 위치를 확인할 수 없습니다."
+  },
+  "export.jar_restored_record_save_failed": {
+    "ja": "JARは元に戻しましたが、復元記録を保存できませんでした。",
+    "en": "The JAR was restored, but the restore record couldn't be saved.",
+    "zh-Hans": "JAR 已恢复，但无法保存恢复记录。",
+    "zh-Hant": "JAR 已還原，但無法儲存還原記錄。",
+    "ko": "JAR은 복원했지만 복원 기록을 저장하지 못했습니다."
+  },
+  "export.project_backup_unavailable": {
+    "ja": "プロジェクト内のバックアップを確認できません。",
+    "en": "Can't verify the backup in the project.",
+    "zh-Hans": "无法验证项目中的备份。",
+    "zh-Hant": "無法驗證專案中的備份。",
+    "ko": "프로젝트 내 백업을 확인할 수 없습니다."
+  },
+  "export.original_jar_backup_unavailable": {
+    "ja": "元のJARバックアップを確認できません。",
+    "en": "Can't verify the original JAR backup.",
+    "zh-Hans": "无法验证原始 JAR 备份。",
+    "zh-Hant": "無法驗證原始 JAR 備份。",
+    "ko": "원본 JAR 백업을 확인할 수 없습니다."
+  },
+  "export.minecraft_may_be_running": {
+    "ja": "Minecraft が起動中の可能性があります。Minecraft を終了してからもう一度お試しください。",
+    "en": "Minecraft might be running. Close it and try again.",
+    "zh-Hans": "Minecraft 可能正在运行。请关闭后重试。",
+    "zh-Hant": "Minecraft 可能正在執行。請關閉後再試一次。",
+    "ko": "Minecraft가 실행 중일 수 있습니다. 종료한 후 다시 시도하세요."
+  },
+  "export.jar_language_file_read_failed": {
+    "ja": "JAR内の言語ファイルを読み込めませんでした。プロジェクトを開き直してください。",
+    "en": "Could not read the language files in the JAR. Reopen the project.",
+    "zh-Hans": "无法读取 JAR 中的语言文件。请重新打开项目。",
+    "zh-Hant": "無法讀取 JAR 中的語言檔案。請重新開啟專案。",
+    "ko": "JAR의 언어 파일을 읽지 못했습니다. 프로젝트를 다시 여세요."
+  },
+  "export.modpack_validation_method_invalid": {
+    "ja": "Modpack ファイルの検証方法が不正です。",
+    "en": "The Modpack file validation method is invalid.",
+    "zh-Hans": "整合包文件验证方式无效。",
+    "zh-Hant": "模組包檔案驗證方式無效。",
+    "ko": "모드팩 파일 검증 방법이 올바르지 않습니다."
+  },
+  "export.validation.malformed_translation_file": {
+    "ja": "言語ファイルを読み込めませんでした: {detail}",
+    "en": "Could not read the language file: {detail}",
+    "zh-Hans": "无法读取语言文件：{detail}",
+    "zh-Hant": "無法讀取語言檔案：{detail}",
+    "ko": "언어 파일을 읽지 못했습니다: {detail}"
+  },
+  "export.validation.placeholder_mismatch": {
+    "ja": "Placeholderが一致しません: {detail}",
+    "en": "Placeholder mismatch: {detail}",
+    "zh-Hans": "占位符不匹配：{detail}",
+    "zh-Hant": "佔位符不相符：{detail}",
+    "ko": "자리 표시자가 일치하지 않습니다: {detail}"
+  },
+  "export.validation.placeholder_entry": {
+    "ja": "Placeholderが一致しません: {namespace}:{key}",
+    "en": "Placeholder mismatch: {namespace}:{key}",
+    "zh-Hans": "占位符不匹配：{namespace}:{key}",
+    "zh-Hant": "佔位符不相符：{namespace}:{key}",
+    "ko": "자리 표시자가 일치하지 않습니다: {namespace}:{key}"
+  },
+  "export.validation.duplicate_key_warning": {
+    "ja": "{path}: 重複キー「{key}」は最後の値を使用しました",
+    "en": "{path}: Duplicate key “{key}”; using the last value",
+    "zh-Hans": "{path}：键“{key}”重复，已使用最后一个值",
+    "zh-Hant": "{path}：鍵「{key}」重複，已使用最後一個值",
+    "ko": "{path}: 중복 키 '{key}'의 마지막 값을 사용했습니다"
+  },
+  "export.validation.untranslated_entries": {
+    "ja": "{count}件は未翻訳です",
+    "en": "{count} entries are untranslated",
+    "zh-Hans": "有 {count} 条未翻译",
+    "zh-Hant": "有 {count} 筆未翻譯",
+    "ko": "번역되지 않은 항목이 {count}개 있습니다"
+  },
+  "export.validation.duplicate_keys": {
+    "ja": "重複する翻訳キーがあります: {detail}",
+    "en": "Duplicate translation keys: {detail}",
+    "zh-Hans": "存在重复的翻译键：{detail}",
+    "zh-Hant": "有重複的翻譯鍵：{detail}",
+    "ko": "중복된 번역 키가 있습니다: {detail}"
+  },
+  "export.validation.unsupported_format": {
+    "ja": "この言語ファイル形式には対応していません。",
+    "en": "This language file format isn't supported.",
+    "zh-Hans": "不支持此语言文件格式。",
+    "zh-Hant": "不支援此語言檔案格式。",
+    "ko": "이 언어 파일 형식은 지원되지 않습니다."
+  },
+  "export.validation.select_minecraft_version": {
+    "ja": "Minecraft バージョンを選んでください。",
+    "en": "Select a Minecraft version.",
+    "zh-Hans": "请选择 Minecraft 版本。",
+    "zh-Hant": "請選擇 Minecraft 版本。",
+    "ko": "Minecraft 버전을 선택하세요."
+  },
+  "export.validation.unknown_pack_format": {
+    "ja": "リソースパックの形式を判定できません。Minecraft バージョンを確認してください。",
+    "en": "Can't determine the Resource Pack format. Check the Minecraft version.",
+    "zh-Hans": "无法确定资源包格式。请检查 Minecraft 版本。",
+    "zh-Hant": "無法判斷資源包格式。請檢查 Minecraft 版本。",
+    "ko": "리소스 팩 형식을 확인할 수 없습니다. Minecraft 버전을 확인하세요."
+  },
+  "export.validation.language_save_path": {
+    "ja": "言語ファイルの保存パスを確認してください。",
+    "en": "Check the language file path.",
+    "zh-Hans": "请检查语言文件的保存路径。",
+    "zh-Hant": "請檢查語言檔案的儲存路徑。",
+    "ko": "언어 파일 저장 경로를 확인하세요."
+  },
+  "export.validation.signed_jar": {
+    "ja": "署名済みのJARは変更できません。Resource Packを選んでください。",
+    "en": "Signed JARs can't be modified. Choose a Resource Pack.",
+    "zh-Hans": "无法修改已签名的 JAR。请选择资源包。",
+    "zh-Hant": "無法修改已簽署的 JAR。請選擇資源包。",
+    "ko": "서명된 JAR은 수정할 수 없습니다. 리소스 팩을 선택하세요."
+  },
+  "export.validation.nested_mod_target_language": {
+    "ja": "同梱Modに{language}ファイルが含まれています。Resource Packの使用をおすすめします。",
+    "en": "A nested Mod contains {language} files. A Resource Pack is recommended.",
+    "zh-Hans": "内嵌模组包含{language}文件。建议使用资源包。",
+    "zh-Hant": "內嵌模組包含{language}檔案。建議使用資源包。",
+    "ko": "내장된 모드에 {language} 파일이 있습니다. 리소스 팩 사용을 권장합니다."
+  },
+  "export.validation.source_jar_unavailable": {
+    "ja": "元のJARを読み込めません。プロジェクトを開き直してください。",
+    "en": "Could not read the original JAR. Reopen the project.",
+    "zh-Hans": "无法读取原始 JAR。请重新打开项目。",
+    "zh-Hant": "無法讀取原始 JAR。請重新開啟專案。",
+    "ko": "원본 JAR을 읽지 못했습니다. 프로젝트를 다시 여세요."
+  },
+  "export.choose_expected_extension": {
+    "ja": "保存先の拡張子を .{expected} にしてください。",
+    "en": "Use .{expected} as the destination file extension.",
+    "zh-Hans": "请将目标文件扩展名设为 .{expected}。",
+    "zh-Hant": "請將目的地檔案副檔名設為 .{expected}。",
+    "ko": "저장할 파일의 확장자를 .{expected}(으)로 지정하세요."
+  },
+  "export.original_jar_destination": {
+    "ja": "元のJARを保存先に選べません。別の保存先を選んでください。",
+    "en": "The original JAR can't be the destination. Choose another location.",
+    "zh-Hans": "不能将原始 JAR 设为目标文件。请选择其他位置。",
+    "zh-Hant": "無法將原始 JAR 設為目的地檔案。請選擇其他位置。",
+    "ko": "원본 JAR을 저장 대상으로 선택할 수 없습니다. 다른 위치를 선택하세요."
+  },
+  "export.select_destination_filename": {
+    "ja": "保存先ファイル名を選んでください。",
+    "en": "Choose a destination file name.",
+    "zh-Hans": "请选择目标文件名。",
+    "zh-Hant": "請選擇目的地檔名。",
+    "ko": "저장할 파일 이름을 선택하세요."
+  },
+  "export.outside_destination_folder": {
+    "ja": "保存先フォルダーの外には書き出せません。",
+    "en": "Can't export outside the destination folder.",
+    "zh-Hans": "无法导出到目标文件夹之外。",
+    "zh-Hant": "無法匯出至目的地資料夾之外。",
+    "ko": "저장 폴더 바깥으로 내보낼 수 없습니다."
+  },
+  "export.file_export_failed": {
+    "ja": "ファイルを書き出せませんでした。保存先を確認してもう一度お試しください。",
+    "en": "Could not export the file. Check the destination and try again.",
+    "zh-Hans": "无法导出文件。请检查保存位置后重试。",
+    "zh-Hant": "無法匯出檔案。請檢查儲存位置後再試一次。",
+    "ko": "파일을 내보내지 못했습니다. 저장 위치를 확인한 후 다시 시도하세요."
+  },
+  "export.modpack_unit_label": {
+    "ja": "Modpack 固有（クエスト・KubeJS）",
+    "en": "Modpack-specific (quests, KubeJS)",
+    "zh-Hans": "整合包专属（任务、KubeJS）",
+    "zh-Hant": "模組包專屬（任務、KubeJS）",
+    "ko": "모드팩 전용 (퀘스트, KubeJS)"
+  },
+  "export.shaderpack_unit_label": {
+    "ja": "シェーダーパック: {filename}",
+    "en": "Shader Pack: {filename}",
+    "zh-Hans": "光影包：{filename}",
+    "zh-Hant": "光影包：{filename}",
+    "ko": "셰이더 팩: {filename}"
+  }
+}

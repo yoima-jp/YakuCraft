@@ -25,7 +25,7 @@ pub async fn list_glossary_terms(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(&yc_locale::t!("common.project_not_open")))?;
         opened
             .repository()
             .list_glossary_terms()
@@ -47,7 +47,7 @@ pub async fn upsert_glossary_term(
     if term.source_term.trim().is_empty() || term.target_term.trim().is_empty() {
         return Err(AppError::simple(
             "invalid_glossary_term",
-            "原文と訳語を入力してください。",
+            &yc_locale::t!("glossary.input_required"),
         ));
     }
 
@@ -58,14 +58,17 @@ pub async fn upsert_glossary_term(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(&yc_locale::t!("common.project_not_open")))?;
         let current_terms = opened
             .repository()
             .list_glossary_terms()
             .map_err(|error| database_error(error.to_string()))?;
         // Return a stable conflict code so the editor can mark this row's source field.
         if glossary_source_conflicts(&current_terms, id, &term) {
-            return Err(AppError::simple("glossary_term_conflict", "重複しています"));
+            return Err(AppError::simple(
+                "glossary_term_conflict",
+                &yc_locale::t!("glossary.duplicate"),
+            ));
         }
         opened
             .writer()
@@ -91,7 +94,7 @@ pub async fn upsert_glossary_terms(
     {
         return Err(AppError::simple(
             "invalid_glossary_term",
-            "原文と訳語を入力してください。",
+            &yc_locale::t!("glossary.input_required"),
         ));
     }
     let active_project = Arc::clone(&state.active_project);
@@ -101,7 +104,7 @@ pub async fn upsert_glossary_terms(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(&yc_locale::t!("common.project_not_open")))?;
         opened
             .writer()
             .upsert_glossary_terms(terms)
@@ -127,7 +130,7 @@ pub async fn delete_glossary_term(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(&yc_locale::t!("common.project_not_open")))?;
         opened
             .writer()
             .delete_glossary_term(id)
@@ -149,14 +152,14 @@ pub async fn import_glossary(
     let contents = fs::read_to_string(&path).map_err(|error| {
         AppError::new(
             "glossary_import",
-            "用語集を読み込めませんでした。",
+            &yc_locale::t!("glossary.load_failed"),
             Some(error.to_string()),
         )
     })?;
     let terms = yc_project::parse_glossary_import(&contents).map_err(|error| {
         AppError::new(
             "glossary_import",
-            "CSVまたはTSVの内容を確認してください。",
+            &yc_locale::t!("glossary.csv_invalid"),
             Some(error.to_string()),
         )
     })?;
@@ -171,7 +174,7 @@ pub async fn export_glossary(path: String, state: State<'_, AppState>) -> Result
     fs::write(&path, contents).map_err(|error| {
         AppError::new(
             "glossary_export",
-            "用語集を書き出せませんでした。",
+            &yc_locale::t!("glossary.export_failed"),
             Some(error.to_string()),
         )
     })?;
@@ -189,7 +192,7 @@ pub async fn glossary_candidates(
             .map_err(|_| state_error("active Project state"))?;
         let opened = active
             .as_ref()
-            .ok_or_else(|| project_error("開いているプロジェクトがありません"))?;
+            .ok_or_else(|| project_error(&yc_locale::t!("common.project_not_open")))?;
         let terms = opened
             .repository()
             .list_glossary_terms()
@@ -268,7 +271,7 @@ fn project_error(detail: &str) -> AppError {
 fn database_error(detail: impl Into<String>) -> AppError {
     AppError::new(
         "database",
-        "用語集を保存できませんでした。もう一度お試しください。",
+        &yc_locale::t!("glossary.save_failed"),
         Some(detail.into()),
     )
 }
@@ -276,7 +279,7 @@ fn database_error(detail: impl Into<String>) -> AppError {
 fn state_error(detail: &str) -> AppError {
     AppError::new(
         "internal_state",
-        "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+        &yc_locale::t!("common.state_read_failed"),
         Some(detail.to_owned()),
     )
 }
@@ -284,7 +287,7 @@ fn state_error(detail: &str) -> AppError {
 fn task_error(detail: String) -> AppError {
     AppError::new(
         "task_failed",
-        "処理に失敗しました。もう一度お試しください。",
+        &yc_locale::t!("common.task_failed"),
         Some(detail),
     )
 }

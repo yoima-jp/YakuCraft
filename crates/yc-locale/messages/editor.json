@@ -1,1 +1,6 @@
-{}
+{
+  "editor.field_title": {"ja":"タイトル","en":"Title","zh-Hans":"标题","zh-Hant":"標題","ko":"제목"},
+  "editor.field_description": {"ja":"説明","en":"Description","zh-Hans":"说明","zh-Hant":"說明","ko":"설명"},
+  "editor.field_description_line": {"ja":"説明 {line}行目","en":"Description, line {line}","zh-Hans":"说明，第 {line} 行","zh-Hant":"說明，第 {line} 行","ko":"설명 {line}행"},
+  "editor.save_failed": {"ja":"翻訳データを保存できませんでした。もう一度お試しください。","en":"Could not save translations. Try again.","zh-Hans":"无法保存翻译数据，请重试。","zh-Hant":"無法儲存翻譯資料，請再試一次。","ko":"번역 데이터를 저장하지 못했습니다. 다시 시도하세요."}
+}

@@ -1978,7 +1978,7 @@ fn direct_modpack_deployment_restores_existing_and_created_files_safely() {
             .unwrap_err();
     assert_eq!(changed_error.code, "modpack_file_changed");
     assert!(changed_error.user_message.contains("ja_jp.snbt"));
-    assert!(changed_error.user_message.contains("手動で解決"));
+    assert!(changed_error.user_message.contains("Resolve this manually"));
     assert_eq!(fs::read(&existing_ftb).unwrap(), b"user edit");
     let forced_error =
         export_modpack_files_core(&opened, &[unit_id], None, true, true, &exported_paths)
@@ -1989,7 +1989,7 @@ fn direct_modpack_deployment_restores_existing_and_created_files_safely() {
         restore_modpack_file_core(&opened, changed_id, &exported_paths).unwrap_err();
     assert_eq!(restore_error.code, "modpack_file_changed");
     assert!(restore_error.user_message.contains("ja_jp.snbt"));
-    assert!(restore_error.user_message.contains("手動で解決"));
+    assert!(restore_error.user_message.contains("Resolve this manually"));
     assert_eq!(fs::read(&existing_ftb).unwrap(), b"user edit");
     assert_eq!(
         opened
@@ -2791,7 +2791,7 @@ fn project_rename_failure_has_actionable_user_message_without_internal_detail() 
     assert_eq!(error.code, "project_delete_rename_failed");
     assert_eq!(
         error.user_message,
-        "ほかのアプリがファイルを使用しています。しばらくしてからもう一度お試しください。"
+        "Another app is using a file. Wait a moment and try again."
     );
     assert!(error.detail.is_none());
 }
