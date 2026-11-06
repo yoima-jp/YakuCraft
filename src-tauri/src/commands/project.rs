@@ -227,6 +227,8 @@ fn send_operation_progress(
     }
 }
 
+// 進捗文言は yc-analysis 側で翻訳済み。ただし yc-analysis は翻訳先の言語名を文言に持たないため、
+// 既存訳を数えた段階だけプロジェクトの翻訳先を差し込んで置き換える。
 fn localized_analysis_progress(
     mut progress: AnalysisProgress,
     target_locale: &str,
@@ -243,99 +245,7 @@ fn localized_analysis_progress(
         );
         return progress;
     }
-    if yc_locale::ui_language() == yc_locale::UiLanguage::Ja {
-        return progress;
-    }
-    let complete = progress
-        .total
-        .is_some_and(|total| progress.current >= total);
-    let key = match progress.stage {
-        yc_analysis::AnalysisStage::ValidateJar => {
-            if complete {
-                "project.analysis.validate_done"
-            } else {
-                "project.analysis.validate_start"
-            }
-        }
-        yc_analysis::AnalysisStage::Sha256 => {
-            if complete {
-                "project.analysis.hash_done"
-            } else {
-                "project.analysis.hash_start"
-            }
-        }
-        yc_analysis::AnalysisStage::ScanZipPaths => {
-            if complete {
-                "project.analysis.zip_paths_done"
-            } else {
-                "project.analysis.zip_paths"
-            }
-        }
-        yc_analysis::AnalysisStage::ParseMetadata => {
-            if complete {
-                "project.analysis.metadata_done"
-            } else {
-                "project.analysis.metadata"
-            }
-        }
-        yc_analysis::AnalysisStage::ScanNestedJars => {
-            if progress.total.is_some() {
-                "project.analysis.nested_jars_done"
-            } else {
-                "project.analysis.nested_jars"
-            }
-        }
-        yc_analysis::AnalysisStage::DiscoverNamespaces => {
-            if progress.total.is_some() && complete {
-                "project.analysis.namespaces_done"
-            } else {
-                "project.analysis.namespaces"
-            }
-        }
-        yc_analysis::AnalysisStage::ParseLanguages => match progress.total {
-            Some(0) => "project.analysis.languages_none",
-            Some(total) if progress.current >= total => "project.analysis.languages_done",
-            _ => "project.analysis.languages",
-        },
-        yc_analysis::AnalysisStage::DetectTargetTranslation => match progress.current {
-            0 => "project.analysis.detect_start",
-            1 => "project.analysis.source_recommended",
-            2 => "project.analysis.existing_target_count",
-            _ if complete => "project.analysis.detect_done",
-            _ => "project.analysis.missing_keys_count",
-        },
-    };
-    progress.message = if progress.stage == yc_analysis::AnalysisStage::DetectTargetTranslation
-        && progress.current == 2
-    {
-        let language = yc_locale::find_minecraft_language(target_locale)
-            .map(|language| language.name.as_str())
-            .unwrap_or(target_locale);
-        yc_locale::t!(key, language = language)
-    } else {
-        yc_locale::t!(key)
-    };
     progress
-}
-
-fn localize_mod_scan_results(results: &mut [ModScanResult]) {
-    if yc_locale::ui_language() != yc_locale::UiLanguage::Ja {
-        for result in results {
-            if let yc_analysis::ModLanguageStatus::Failed { reason } = &mut result.status {
-                *reason = yc_locale::t!("project.scan_failed");
-            }
-        }
-    }
-}
-
-fn localize_shaderpack_scan_results(results: &mut [yc_analysis::ShaderpackScanResult]) {
-    if yc_locale::ui_language() != yc_locale::UiLanguage::Ja {
-        for result in results {
-            if let yc_analysis::ModLanguageStatus::Failed { reason } = &mut result.status {
-                *reason = yc_locale::t!("project.scan_failed");
-            }
-        }
-    }
 }
 
 fn localize_modpack_scan_issue(issue: &str, safe: bool) -> String {
@@ -941,9 +851,7 @@ pub fn scan_mods_folder(
             });
 
         let event = match result {
-            Ok((scanned_folder, instance_dir, mut results, modpack_scan, mut shaderpacks)) => {
-                localize_mod_scan_results(&mut results);
-                localize_shaderpack_scan_results(&mut shaderpacks);
+            Ok((scanned_folder, instance_dir, results, modpack_scan, shaderpacks)) => {
                 let modpack_scan = modpack_scan.map(localize_modpack_scan);
                 let looks_like_instance_dir = instance_dir.is_some();
                 ScanModsFolderEvent::Completed {
@@ -1080,15 +988,13 @@ pub fn scan_project_instance_sources(
             },
         );
         let event = match scan_result {
-            Ok((mut results, mut shaderpacks)) => {
+            Ok((results, shaderpacks)) => {
                 if cancellation.is_cancelled() {
                     AddInstanceScanEvent::Failed {
                         job_id: task_job_id.clone(),
                         error: cancelled_error(),
                     }
                 } else {
-                    localize_mod_scan_results(&mut results);
-                    localize_shaderpack_scan_results(&mut shaderpacks);
                     AddInstanceScanEvent::Completed {
                         job_id: task_job_id.clone(),
                         results,

@@ -272,13 +272,6 @@
     "zh-Hant": "無法讀取檔案。請確認檔案是否損毀。",
     "ko": "파일을 읽지 못했습니다. 손상되지 않았는지 확인하세요."
   },
-  "project.scan_failed": {
-    "ja": "ファイルをスキャンできませんでした。",
-    "en": "Could not scan the file.",
-    "zh-Hans": "无法扫描文件。",
-    "zh-Hant": "無法掃描檔案。",
-    "ko": "파일을 스캔하지 못했습니다."
-  },
   "project.progress.opening": {
     "ja": "プロジェクトを開いています",
     "en": "Opening project",
@@ -391,144 +384,11 @@
     "zh-Hant": "正在準備複核",
     "ko": "검토 준비 중"
   },
-  "project.analysis.validate_start": {
-    "ja": "JARを検証しています",
-    "en": "Validating JAR",
-    "zh-Hans": "正在验证 JAR",
-    "zh-Hant": "正在驗證 JAR",
-    "ko": "JAR 검증 중"
-  },
-  "project.analysis.validate_done": {
-    "ja": "JARを検証しました",
-    "en": "JAR validated",
-    "zh-Hans": "JAR 已验证",
-    "zh-Hant": "JAR 已驗證",
-    "ko": "JAR을 검증했습니다"
-  },
-  "project.analysis.hash_start": {
-    "ja": "SHA-256を計算しています",
-    "en": "Calculating SHA-256",
-    "zh-Hans": "正在计算 SHA-256",
-    "zh-Hant": "正在計算 SHA-256",
-    "ko": "SHA-256 계산 중"
-  },
-  "project.analysis.hash_done": {
-    "ja": "SHA-256を計算しました",
-    "en": "SHA-256 calculated",
-    "zh-Hans": "已计算 SHA-256",
-    "zh-Hant": "已計算 SHA-256",
-    "ko": "SHA-256을 계산했습니다"
-  },
-  "project.analysis.zip_paths": {
-    "ja": "ZIP内のパスを調べています",
-    "en": "Scanning ZIP paths",
-    "zh-Hans": "正在扫描 ZIP 路径",
-    "zh-Hant": "正在掃描 ZIP 路徑",
-    "ko": "ZIP 경로 확인 중"
-  },
-  "project.analysis.zip_paths_done": {
-    "ja": "ZIP内のパスを調べました",
-    "en": "ZIP paths scanned",
-    "zh-Hans": "已扫描 ZIP 路径",
-    "zh-Hant": "已掃描 ZIP 路徑",
-    "ko": "ZIP 경로를 확인했습니다"
-  },
-  "project.analysis.metadata": {
-    "ja": "Mod情報を解析しています",
-    "en": "Reading Mod metadata",
-    "zh-Hans": "正在解析模组信息",
-    "zh-Hant": "正在解析模組資訊",
-    "ko": "모드 정보 분석 중"
-  },
-  "project.analysis.metadata_done": {
-    "ja": "Mod情報を解析しました",
-    "en": "Mod metadata read",
-    "zh-Hans": "已解析模组信息",
-    "zh-Hant": "已解析模組資訊",
-    "ko": "모드 정보를 분석했습니다"
-  },
-  "project.analysis.nested_jars": {
-    "ja": "同梱JARを調べています",
-    "en": "Scanning nested JARs",
-    "zh-Hans": "正在扫描内嵌 JAR",
-    "zh-Hant": "正在掃描內嵌 JAR",
-    "ko": "포함된 JAR 확인 중"
-  },
-  "project.analysis.nested_jars_done": {
-    "ja": "同梱JARを調べました",
-    "en": "Nested JARs scanned",
-    "zh-Hans": "已扫描内嵌 JAR",
-    "zh-Hant": "已掃描內嵌 JAR",
-    "ko": "포함된 JAR을 확인했습니다"
-  },
-  "project.analysis.namespaces": {
-    "ja": "namespaceを調べています",
-    "en": "Scanning namespaces",
-    "zh-Hans": "正在扫描命名空间",
-    "zh-Hant": "正在掃描命名空間",
-    "ko": "네임스페이스 확인 중"
-  },
-  "project.analysis.namespaces_done": {
-    "ja": "namespaceを調べました",
-    "en": "Namespaces scanned",
-    "zh-Hans": "已扫描命名空间",
-    "zh-Hant": "已掃描命名空間",
-    "ko": "네임스페이스를 확인했습니다"
-  },
-  "project.analysis.languages": {
-    "ja": "言語ファイルを解析しています",
-    "en": "Reading language files",
-    "zh-Hans": "正在解析语言文件",
-    "zh-Hant": "正在解析語言檔案",
-    "ko": "언어 파일 분석 중"
-  },
-  "project.analysis.languages_none": {
-    "ja": "言語ファイルがありません",
-    "en": "No language files found",
-    "zh-Hans": "未找到语言文件",
-    "zh-Hant": "找不到語言檔案",
-    "ko": "언어 파일이 없습니다"
-  },
-  "project.analysis.languages_done": {
-    "ja": "言語ファイルを解析しました",
-    "en": "Language files read",
-    "zh-Hans": "已解析语言文件",
-    "zh-Hant": "已解析語言檔案",
-    "ko": "언어 파일을 분석했습니다"
-  },
-  "project.analysis.detect_start": {
-    "ja": "翻訳元と言語の件数を調べています",
-    "en": "Checking source and translation counts",
-    "zh-Hans": "正在统计原文和译文",
-    "zh-Hant": "正在統計原文與譯文",
-    "ko": "원문 및 번역 개수 확인 중"
-  },
-  "project.analysis.source_recommended": {
-    "ja": "翻訳元を推奨しました",
-    "en": "Source language suggested",
-    "zh-Hans": "已推荐源语言",
-    "zh-Hant": "已推薦來源語言",
-    "ko": "원본 언어를 추천했습니다"
-  },
   "project.analysis.existing_target_count": {
     "ja": "既存の{language}訳を数えました",
     "en": "Existing {language} translations counted",
     "zh-Hans": "已统计现有{language}译文",
     "zh-Hant": "已統計現有{language}譯文",
     "ko": "기존 {language} 번역을 세었습니다"
-  },
-  "project.analysis.missing_keys_count": {
-    "ja": "翻訳元にないキーを数えました",
-    "en": "Keys missing from the source counted",
-    "zh-Hans": "已统计原文中缺少的键",
-    "zh-Hant": "已統計原文中缺少的鍵",
-    "ko": "원문에 없는 키를 세었습니다"
-  },
-  "project.analysis.detect_done": {
-    "ja": "翻訳元と言語の件数を調べました",
-    "en": "Source and translation counts checked",
-    "zh-Hans": "已统计原文和译文",
-    "zh-Hant": "已統計原文與譯文",
-    "ko": "원문 및 번역 개수를 확인했습니다"
   }
 }

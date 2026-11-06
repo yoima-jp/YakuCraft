@@ -148,10 +148,10 @@
   },
   "analysis.progress_counted_existing_target": {
     "ja": "既存の日本語訳を数えました",
-    "en": "Counted existing Japanese translations",
-    "zh-Hans": "已统计现有日语译文",
-    "zh-Hant": "已統計現有日文譯文",
-    "ko": "기존 일본어 번역 수 계산 완료"
+    "en": "Counted existing translations",
+    "zh-Hans": "已统计现有译文",
+    "zh-Hant": "已統計現有譯文",
+    "ko": "기존 번역을 세었습니다"
   },
   "analysis.progress_counted_missing_source_keys": {
     "ja": "翻訳元にないキーを数えました",
