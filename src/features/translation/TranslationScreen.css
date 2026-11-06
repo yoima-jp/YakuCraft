@@ -37,7 +37,7 @@
 .editor-toolbar__search-label {
   display: flex;
   min-inline-size: min(8rem, 100%);
-  flex: 1 1 14rem;
+  flex: 1 1 8rem;
 }
 
 .editor-toolbar__search-label > .tooltip {
