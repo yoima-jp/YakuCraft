@@ -13,6 +13,11 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
+pub fn get_system_locale() -> Option<String> {
+    sys_locale::get_locale()
+}
+
+#[tauri::command]
 pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         app_name: app
