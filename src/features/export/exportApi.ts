@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { t } from "../../i18n";
 import { logFrontendError } from "../../lib/errorLogging";
 import type { ExportKind, ManualPackFormatDto } from "../../types/export";
 import type { MinecraftVersionDetectionDto } from "../../types/project";
@@ -126,7 +127,7 @@ async function invokeExport<T>(command: string, args?: Record<string, unknown>):
         );
       }
     }
-    throw new ExportCommandError("unexpected", "処理に失敗しました。もう一度お試しください。");
+    throw new ExportCommandError("unexpected", t("export.error.unexpected"));
   }
 }
 
