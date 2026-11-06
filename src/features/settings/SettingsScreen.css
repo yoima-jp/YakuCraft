@@ -17,6 +17,7 @@
 
 .settings-nav {
   display: flex;
+  min-inline-size: 0;
   flex-direction: column;
   gap: var(--spacing-xs);
   border-inline-end: 2px solid var(--color-border);
@@ -24,6 +25,7 @@
 }
 
 .settings-nav__item {
+  min-inline-size: 0;
   min-block-size: var(--size-click-target);
   border-radius: var(--radius-sm);
   padding-inline: var(--spacing-md);
@@ -32,6 +34,7 @@
   font: inherit;
   font-weight: 700;
   text-align: start;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -85,7 +88,11 @@
   resize: vertical;
 }
 
-.settings-field .select,
+.settings-field .select {
+  inline-size: 100%;
+  max-inline-size: 13rem;
+}
+
 .settings-field .number-input {
   inline-size: 100%;
 }

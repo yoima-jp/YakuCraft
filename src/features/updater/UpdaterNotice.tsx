@@ -1,7 +1,9 @@
 import { PrimaryButton } from "../../components/button/Buttons";
+import { useT } from "../../i18n";
 import { installAvailableUpdate, useUpdaterStore } from "./updater";
 
 export function UpdaterNotice() {
+  const translate = useT();
   const update = useUpdaterStore((state) => state.availableUpdate);
   const installing = useUpdaterStore((state) => state.installing);
   const downloadedBytes = useUpdaterStore((state) => state.downloadedBytes);
@@ -17,9 +19,9 @@ export function UpdaterNotice() {
     <aside className="home-screen__update">
       {installing ? (
         <div className="home-screen__update-progress">
-          <span aria-live="polite">更新をダウンロードしています</span>
+          <span aria-live="polite">{translate("updater.downloading")}</span>
           <progress
-            aria-label="更新のダウンロード"
+            aria-label={translate("updater.downloadAria")}
             max={contentLength ?? undefined}
             value={contentLength ? downloadedBytes : undefined}
           />
@@ -27,8 +29,8 @@ export function UpdaterNotice() {
         </div>
       ) : (
         <>
-          <output aria-live="polite">新しいバージョン {update.version} があります</output>
-          <PrimaryButton onClick={() => void installAvailableUpdate()}>更新</PrimaryButton>
+          <output aria-live="polite">{translate("updater.versionAvailable", { version: update.version })}</output>
+          <PrimaryButton onClick={() => void installAvailableUpdate()}>{translate("updater.update")}</PrimaryButton>
         </>
       )}
     </aside>
