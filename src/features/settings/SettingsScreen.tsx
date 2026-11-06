@@ -13,34 +13,54 @@ import type { AiProviderId, AiSettingsDto } from "../../types/ai";
 import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
 import { TargetLanguagePicker } from "../../components/TargetLanguagePicker";
-import { UI_LANGUAGES, UI_LANGUAGE_INFO, isUiLanguage, useT, useUiLanguage, setUiLanguage } from "../../i18n";
+import { UI_LANGUAGES, UI_LANGUAGE_INFO, isUiLanguage, t, useT, useUiLanguage, setUiLanguage } from "../../i18n";
 import "./SettingsScreen.css";
 
 type SettingsCategory = "general" | "language" | "ai" | "editor" | "appearance" | "advanced" | "logs";
+type SettingsCategoryKey =
+  | "settings.generalCategory"
+  | "settings.languageCategory"
+  | "settings.aiCategory"
+  | "settings.editorCategory"
+  | "settings.appearanceCategory"
+  | "settings.advancedCategory"
+  | "settings.logsCategory";
+type SettingsProviderKey =
+  | "settings.providerChatgpt"
+  | "settings.providerOpenai"
+  | "settings.providerClaude"
+  | "settings.providerGemini"
+  | "settings.providerOpenrouter"
+  | "settings.providerDeepseek"
+  | "settings.providerGroq"
+  | "settings.providerOllama"
+  | "settings.providerLmStudio"
+  | "settings.providerOpenaiCompatible"
+  | "settings.providerDeepl";
 
-const CATEGORIES: Array<[SettingsCategory, string]> = [
-  ["general", "一般"],
-  ["language", "言語"],
-  ["ai", "AI翻訳"],
-  ["editor", "エディター"],
-  ["appearance", "表示"],
-  ["advanced", "詳細"],
-  ["logs", "ログ"],
+const CATEGORIES: Array<[SettingsCategory, SettingsCategoryKey]> = [
+  ["general", "settings.generalCategory"],
+  ["language", "settings.languageCategory"],
+  ["ai", "settings.aiCategory"],
+  ["editor", "settings.editorCategory"],
+  ["appearance", "settings.appearanceCategory"],
+  ["advanced", "settings.advancedCategory"],
+  ["logs", "settings.logsCategory"],
 ];
 
 // 既定の ChatGPT を先頭に置く（既定値は settingsStore と commands/ai.rs の provider_from_settings）。
-const PROVIDERS: Array<[AiProviderId, string]> = [
-  ["chatgpt", "ChatGPT（サブスクリプション）"],
-  ["openai", "OpenAI"],
-  ["anthropic", "Claude（Anthropic）"],
-  ["gemini", "Gemini"],
-  ["openrouter", "OpenRouter"],
-  ["deepseek", "DeepSeek"],
-  ["groq", "Groq"],
-  ["ollama", "Ollama"],
-  ["lm-studio", "LM Studio"],
-  ["openai-compatible", "OpenAI 互換（カスタム）"],
-  ["deepl", "DeepL"],
+const PROVIDERS: Array<[AiProviderId, SettingsProviderKey]> = [
+  ["chatgpt", "settings.providerChatgpt"],
+  ["openai", "settings.providerOpenai"],
+  ["anthropic", "settings.providerClaude"],
+  ["gemini", "settings.providerGemini"],
+  ["openrouter", "settings.providerOpenrouter"],
+  ["deepseek", "settings.providerDeepseek"],
+  ["groq", "settings.providerGroq"],
+  ["ollama", "settings.providerOllama"],
+  ["lm-studio", "settings.providerLmStudio"],
+  ["openai-compatible", "settings.providerOpenaiCompatible"],
+  ["deepl", "settings.providerDeepl"],
 ];
 
 function aiSaveConfig(settings: AiSettingsDto) {
@@ -56,7 +76,9 @@ function aiSaveConfig(settings: AiSettingsDto) {
 
 function errorMessage(error: unknown) {
   void logFrontendError(error, "settings screen");
-  return error instanceof AppCommandError ? error.message : "処理に失敗しました。もう一度お試しください。";
+  return error instanceof AppCommandError && error.appError.code !== "unexpected"
+    ? error.message
+    : t("settings.genericError");
 }
 
 function stringSetting(settings: Record<string, unknown>, key: string, fallback: string) {
@@ -70,6 +92,7 @@ function numberSetting(settings: Record<string, unknown>, key: string, fallback:
 }
 
 function LogViewer() {
+  const translate = useT();
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +124,7 @@ function LogViewer() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(content);
-      setMessage("コピーしました");
+      setMessage(translate("settings.copied"));
       setError(null);
     } catch (cause: unknown) {
       setError(errorMessage(cause));
@@ -121,18 +144,18 @@ function LogViewer() {
     <div className="settings-fields">
       <div className="settings-actions">
         <button className="settings-action" type="button" disabled={loading} onClick={reload}>
-          再読み込み
+          {translate("settings.reload")}
         </button>
         <button className="settings-action" type="button" disabled={!content} onClick={() => void copy()}>
-          コピー
+          {translate("settings.copy")}
         </button>
         <button className="settings-action" type="button" onClick={() => void openFolder()}>
-          ログフォルダを開く
+          {translate("settings.openLogFolder")}
         </button>
       </div>
-      {loading && <output className="settings-field__hint" aria-live="polite">読み込み中…</output>}
-      {!loading && !content && <p className="settings-field__hint">ログはありません</p>}
-      {content && <pre className="settings-log selectable" aria-label="ログ">{content}</pre>}
+      {loading && <output className="settings-field__hint" aria-live="polite">{translate("settings.loading")}</output>}
+      {!loading && !content && <p className="settings-field__hint">{translate("settings.noLogs")}</p>}
+      {content && <pre className="settings-log selectable" aria-label={translate("settings.logAria")}>{content}</pre>}
       {error && <p className="settings-message settings-message--error selectable" role="alert">{error}</p>}
       {message && <p className="settings-message" aria-live="polite">{message}</p>}
     </div>
@@ -178,7 +201,7 @@ export function SettingsScreen() {
     } catch {
       if (generation === modelRequestGeneration.current) {
         setModelOptions([]);
-        setModelError("モデル一覧を取得できません。モデル名を入力してください。");
+        setModelError(t("settings.modelListError"));
       }
     }
   }, []);
@@ -253,7 +276,7 @@ export function SettingsScreen() {
   const saveProvider = async () => {
     if (!ai) return;
     if (ai.provider !== "deepl" && !ai.model.trim()) {
-      setModelError("モデルを入力してください。");
+      setModelError(translate("settings.modelRequired"));
       return;
     }
     setBusy(true);
@@ -263,7 +286,7 @@ export function SettingsScreen() {
       const saved = await saveAiProvider(aiSaveConfig(ai), apiKey || undefined);
       setAi(saved);
       setApiKey("");
-      setMessage("保存しました");
+      setMessage(translate("settings.saved"));
       await loadSettings();
     } catch (cause: unknown) {
       setError(errorMessage(cause));
@@ -283,7 +306,7 @@ export function SettingsScreen() {
       const saved = await saveAiProvider(aiSaveConfig({ ...authenticated, ...ai, provider: "chatgpt" }));
       setAi(saved);
       await loadSettings();
-      setMessage("ログインしました");
+      setMessage(translate("settings.loggedIn"));
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -307,7 +330,7 @@ export function SettingsScreen() {
     try {
       await logoutChatgpt();
       setAi(await getAiSettings("chatgpt"));
-      setMessage("ログアウトしました");
+      setMessage(translate("settings.loggedOut"));
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -326,7 +349,7 @@ export function SettingsScreen() {
       const provider = useSettingsStore.getState().value<AiProviderId>("ai.provider");
       setAi(await getAiSettings(provider));
       setApiKey("");
-      setMessage("削除しました");
+      setMessage(translate("settings.deleted"));
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -341,7 +364,7 @@ export function SettingsScreen() {
     setMessage(null);
     try {
       await testAiProvider(ai.provider);
-      setMessage("接続できました");
+      setMessage(translate("settings.connected"));
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -363,7 +386,7 @@ export function SettingsScreen() {
     setMessage(null);
     try {
       await clearCache();
-      setMessage("キャッシュを削除しました");
+      setMessage(translate("settings.cacheCleared"));
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     }
@@ -376,27 +399,25 @@ export function SettingsScreen() {
     try {
       const update = await checkForUpdate();
       setMessage(import.meta.env.DEV
-        ? "開発ビルドでは更新を確認できません。"
-        : update ? `新しいバージョン ${update.version} があります` : "最新です");
+        ? translate("settings.developmentUpdateUnavailable")
+        : update ? translate("settings.updateAvailable", { version: update.version }) : translate("settings.upToDate"));
     } catch (cause: unknown) {
       console.warn("手動の更新確認に失敗しました。", cause);
       void logFrontendError(cause, "manual update check");
-      setError("更新を確認できませんでした。");
+      setError(translate("settings.updateCheckFailed"));
     } finally {
       setUpdateChecking(false);
     }
   };
 
-  const categoryLabel = category === "language"
-    ? translate("settings.languageCategory")
-    : CATEGORIES.find(([key]) => key === category)?.[1] ?? "一般";
+  const categoryLabel = translate(CATEGORIES.find(([key]) => key === category)?.[1] ?? "settings.generalCategory");
 
   return (
     <section className="settings-screen" aria-labelledby="settings-title">
-      <h1 className="page-title" id="settings-title">設定</h1>
+      <h1 className="page-title" id="settings-title">{translate("settings.title")}</h1>
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label="設定カテゴリ">
-          {CATEGORIES.map(([key, label]) => (
+        <nav className="settings-nav" aria-label={translate("settings.categoriesAria")}>
+          {CATEGORIES.map(([key, labelKey]) => (
             <button
               className={`settings-nav__item${category === key ? " settings-nav__item--selected" : ""}`}
               type="button"
@@ -404,7 +425,7 @@ export function SettingsScreen() {
               key={key}
               onClick={() => useAppStore.setState({ settingsCategory: key })}
             >
-              {key === "language" ? translate("settings.languageCategory") : label}
+              {translate(labelKey)}
             </button>
           ))}
         </nav>
@@ -443,7 +464,7 @@ export function SettingsScreen() {
           {category === "general" && (
             <div className="settings-fields">
               <label className="settings-field" htmlFor="recent-project-count">
-                最近のプロジェクト数
+                {translate("settings.recentProjectsCount")}
                 <NumberInput
                   id="recent-project-count"
                   min={1}
@@ -459,14 +480,14 @@ export function SettingsScreen() {
                 />
               </label>
               <div className="settings-field">
-                <span>既定の書き出し先</span>
+                <span>{translate("settings.defaultExportLocation")}</span>
                 <div className="settings-path-field">
                   <input
                     value={stringSetting(settings, "general.defaultExportDirectory", "")}
                     readOnly
-                    aria-label="既定の書き出し先"
+                    aria-label={translate("settings.defaultExportLocation")}
                   />
-                  <button className="settings-action" type="button" onClick={() => void browseExportDirectory()}>選択</button>
+                  <button className="settings-action" type="button" onClick={() => void browseExportDirectory()}>{translate("settings.select")}</button>
                 </div>
               </div>
               <Checkbox
@@ -474,7 +495,7 @@ export function SettingsScreen() {
                 checked={Boolean(settings["general.autoOpenOutputFolder"] ?? false)}
                 onChange={(checked) => void persist({ "general.autoOpenOutputFolder": checked })}
               >
-                書き出し後にフォルダーを開く
+                {translate("settings.openOutputFolder")}
               </Checkbox>
               {updatesSupported === true && (
                 <>
@@ -483,20 +504,20 @@ export function SettingsScreen() {
                     checked={Boolean(settings["updates.checkOnStartup"] ?? true)}
                     onChange={(checked) => void persist({ "updates.checkOnStartup": checked })}
                   >
-                    起動時に更新を確認
+                    {translate("settings.checkOnStartup")}
                   </Checkbox>
                   <div className="settings-field">
-                    <span>更新</span>
+                    <span>{translate("settings.update")}</span>
                     <button className="settings-action settings-action--quiet" type="button" disabled={updateChecking || updateInstalling} onClick={() => void checkUpdates()}>
-                      {updateChecking ? "確認中…" : "今すぐ確認"}
+                      {updateChecking ? translate("settings.checking") : translate("settings.checkNow")}
                     </button>
                   </div>
                 </>
               )}
               {updatesSupported === false && (
                 <div className="settings-field">
-                  <span>更新</span>
-                  <span className="settings-field__hint">パッケージを再インストールして更新してください</span>
+                  <span>{translate("settings.update")}</span>
+                  <span className="settings-field__hint">{translate("settings.reinstallToUpdate")}</span>
                 </div>
               )}
             </div>
@@ -505,29 +526,29 @@ export function SettingsScreen() {
           {category === "ai" && (
             <div className="settings-fields">
               <div className="settings-field">
-                <span>プロバイダー</span>
+                <span>{translate("settings.provider")}</span>
                 <Select
-                  aria-label="プロバイダー"
+                  aria-label={translate("settings.provider")}
                   value={ai?.provider ?? "chatgpt"}
                   disabled={busy || loginPending || !ai}
                   onChange={(provider) => void selectProvider(provider as AiProviderId)}
-                  options={PROVIDERS.map(([value, label]) => ({ value, label }))}
+                  options={PROVIDERS.map(([value, labelKey]) => ({ value, label: translate(labelKey) }))}
                 />
               </div>
               {ai?.provider === "chatgpt" ? (
                 ai.configured ? (
                   <div className="settings-field">
-                    <span>アカウント</span>
-                    <span>{ai.accountLabel ?? "ログイン済み"}</span>
-                    <button className="settings-action settings-action--quiet" type="button" disabled={busy || loginPending} onClick={() => void logout()}>ログアウト</button>
+                    <span>{translate("settings.account")}</span>
+                    <span>{ai.accountLabel ?? translate("settings.signedIn")}</span>
+                    <button className="settings-action settings-action--quiet" type="button" disabled={busy || loginPending} onClick={() => void logout()}>{translate("settings.logout")}</button>
                   </div>
                 ) : (
                   <div className="settings-field">
-                    <button className="settings-action" type="button" disabled={busy || loginPending} onClick={() => void beginChatgptLogin()}>ChatGPTでログイン</button>
+                    <button className="settings-action" type="button" disabled={busy || loginPending} onClick={() => void beginChatgptLogin()}>{translate("settings.chatgptLogin")}</button>
                     {loginPending && (
                       <>
-                        <output className="settings-field__hint" aria-live="polite">ブラウザでログインしてください</output>
-                        <button className="settings-action settings-action--quiet" type="button" onClick={() => void cancelLogin()}>キャンセル</button>
+                        <output className="settings-field__hint" aria-live="polite">{translate("settings.browserLogin")}</output>
+                        <button className="settings-action settings-action--quiet" type="button" onClick={() => void cancelLogin()}>{translate("settings.cancel")}</button>
                       </>
                     )}
                   </div>
@@ -535,21 +556,21 @@ export function SettingsScreen() {
               ) : (
                 !(ai?.provider === "ollama" || ai?.provider === "lm-studio") && (
                   <label className="settings-field">
-                  APIキー
+                  {translate("settings.apiKey")}
                   <input
                     type="password"
                     autoComplete="new-password"
                     value={apiKey}
                     onChange={(event) => setApiKey(event.currentTarget.value)}
-                    placeholder={ai?.configured ? "変更する場合は入力" : ""}
+                    placeholder={ai?.configured ? translate("settings.changeApiKeyPlaceholder") : ""}
                   />
-                  {ai?.configured && <span className="settings-field__hint">設定済み</span>}
+                  {ai?.configured && <span className="settings-field__hint">{translate("settings.configured")}</span>}
                   </label>
                 )
               )}
               {ai?.provider !== "deepl" && (
                   <div className="settings-field">
-                    <label htmlFor="ai-model">モデル</label>
+                    <label htmlFor="ai-model">{translate("settings.model")}</label>
                     <Combobox
                       id="ai-model"
                       options={modelOptions}
@@ -565,7 +586,7 @@ export function SettingsScreen() {
               )}
               {ai?.provider === "openai-compatible" && (
                 <label className="settings-field">
-                  接続先URL
+                  {translate("settings.connectionUrl")}
                   <input
                     type="url"
                     value={ai.baseUrl}
@@ -574,13 +595,13 @@ export function SettingsScreen() {
                       setAi((current) => current ? { ...current, baseUrl } : current);
                     }}
                   />
-                  <span className="settings-field__hint">HTTP は localhost または loopback のみ利用できます。</span>
+                  <span className="settings-field__hint">{translate("settings.httpLoopbackHelp")}</span>
                 </label>
               )}
-              <Disclosure className="settings-advanced" title="詳細設定">
+              <Disclosure className="settings-advanced" title={translate("settings.advancedSettings")}>
                 <div className="settings-fields">
                   <label className="settings-field" htmlFor="ai-batch-size">
-                    1回の送信件数
+                    {translate("settings.requestsPerBatch")}
                     <NumberInput
                       id="ai-batch-size"
                       min={1}
@@ -593,9 +614,9 @@ export function SettingsScreen() {
                     />
                   </label>
                   <div className="settings-field">
-                    <span>並列数</span>
+                    <span>{translate("settings.parallelRequests")}</span>
                     <Select
-                      aria-label="並列数"
+                      aria-label={translate("settings.parallelRequests")}
                       value={String(ai?.concurrency ?? 2)}
                       onChange={(value) => setAi((current) => current ? { ...current, concurrency: Number(value) } : current)}
                       options={[1, 2, 3, 4].map((value) => ({ value: String(value), label: String(value) }))}
@@ -603,7 +624,7 @@ export function SettingsScreen() {
                   </div>
                   {ai?.provider !== "deepl" && (
                     <label className="settings-field">
-                    追加指示
+                    {translate("settings.additionalInstructions")}
                       <textarea
                         rows={5}
                         value={ai?.customPrompt ?? ""}
@@ -617,10 +638,10 @@ export function SettingsScreen() {
                 </div>
               </Disclosure>
               <div className="settings-actions">
-                <button className="settings-action" type="button" disabled={busy || loginPending || !ai} onClick={() => void saveProvider()}>保存</button>
-                <button className="settings-action" type="button" disabled={busy || loginPending || !ai?.configured} onClick={() => void testProvider()}>接続テスト</button>
+                <button className="settings-action" type="button" disabled={busy || loginPending || !ai} onClick={() => void saveProvider()}>{translate("settings.save")}</button>
+                <button className="settings-action" type="button" disabled={busy || loginPending || !ai?.configured} onClick={() => void testProvider()}>{translate("settings.testConnection")}</button>
                 {ai?.configured && ai.provider !== "chatgpt" && (
-                  <button className="settings-action settings-action--quiet" type="button" disabled={busy} onClick={() => void removeProvider()}>削除</button>
+                  <button className="settings-action settings-action--quiet" type="button" disabled={busy} onClick={() => void removeProvider()}>{translate("settings.delete")}</button>
                 )}
               </div>
             </div>
@@ -629,7 +650,7 @@ export function SettingsScreen() {
           {category === "editor" && (
             <div className="settings-fields">
               <label className="settings-field" htmlFor="editor-font-size">
-                文字サイズ
+                {translate("settings.fontSize")}
                 <NumberInput
                   id="editor-font-size"
                   min={10}
@@ -643,41 +664,41 @@ export function SettingsScreen() {
                 />
               </label>
               <div className="settings-field">
-                <span>行の高さ</span>
+                <span>{translate("settings.lineHeight")}</span>
                 <Select
-                  aria-label="行の高さ"
+                  aria-label={translate("settings.lineHeight")}
                   value={stringSetting(settings, "editor.rowDensity", "standard")}
                   onChange={(value) => void persist({ "editor.rowDensity": value })}
                   options={[
-                    { value: "compact", label: "コンパクト" },
-                    { value: "standard", label: "標準" },
-                    { value: "spacious", label: "広め" },
+                    { value: "compact", label: translate("settings.densityCompact") },
+                    { value: "standard", label: translate("settings.densityStandard") },
+                    { value: "spacious", label: translate("settings.densitySpacious") },
                   ]}
                 />
               </div>
               <div className="settings-field">
-                <span>modタブの位置</span>
+                <span>{translate("settings.modTabPosition")}</span>
                 <Select
-                  aria-label="modタブの位置"
+                  aria-label={translate("settings.modTabPosition")}
                   value={stringSetting(settings, "editor.modTabPosition", "top")}
                   onChange={(value) => void persist({ "editor.modTabPosition": value })}
                   options={[
-                    { value: "top", label: "上" },
-                    { value: "left", label: "左" },
+                    { value: "top", label: translate("settings.positionTop") },
+                    { value: "left", label: translate("settings.positionLeft") },
                   ]}
                 />
               </div>
               <Checkbox className="settings-check" checked={Boolean(settings["editor.wrapSource"] ?? false)} onChange={(checked) => void persist({ "editor.wrapSource": checked })}>
-                原文を折り返す
+                {translate("settings.wrapSource")}
               </Checkbox>
               <Checkbox className="settings-check" checked={Boolean(settings["editor.wrapTarget"] ?? false)} onChange={(checked) => void persist({ "editor.wrapTarget": checked })}>
-                翻訳文を折り返す
+                {translate("settings.wrapTranslation")}
               </Checkbox>
               <Checkbox className="settings-check" checked={Boolean(settings["editor.hideInspectorPreview"] ?? false)} onChange={(checked) => void persist({ "editor.hideInspectorPreview": checked })}>
-                詳細のプレビューを非表示
+                {translate("settings.hideInspectorPreview")}
               </Checkbox>
               <Checkbox className="settings-check" checked={Boolean(settings["editor.confirmBatchOverwrite"] ?? true)} onChange={(checked) => void persist({ "editor.confirmBatchOverwrite": checked })}>
-                既存の翻訳を上書きする前に確認
+                {translate("settings.confirmTranslationOverwrite")}
               </Checkbox>
             </div>
           )}
@@ -685,15 +706,15 @@ export function SettingsScreen() {
           {category === "appearance" && (
             <RadioGroup
               className="settings-radio-group"
-              legend="テーマ"
+              legend={translate("settings.theme")}
               legendClassName="settings-radio-group__legend"
               name="theme"
               value={String(settings["appearance.theme"] ?? "")}
               onChange={(value) => void persist({ "appearance.theme": value })}
               options={[
-                { value: "light", label: "ライト", id: "theme-light" },
-                { value: "dark", label: "ダーク", id: "theme-dark" },
-                { value: "system", label: "システムに合わせる", id: "theme-system" },
+                { value: "light", label: translate("settings.themeLight"), id: "theme-light" },
+                { value: "dark", label: translate("settings.themeDark"), id: "theme-dark" },
+                { value: "system", label: translate("settings.themeSystem"), id: "theme-system" },
               ]}
             />
           )}
@@ -701,18 +722,18 @@ export function SettingsScreen() {
           {category === "advanced" && (
             <div className="settings-fields">
               <div className="settings-field">
-                <span>キャッシュ</span>
-                <button className="settings-action settings-action--quiet" type="button" onClick={() => void clearAppCache()}>削除</button>
+                <span>{translate("settings.cache")}</span>
+                <button className="settings-action settings-action--quiet" type="button" onClick={() => void clearAppCache()}>{translate("settings.delete")}</button>
               </div>
               <div className="settings-field">
-                <span>プロジェクトの保存先</span>
+                <span>{translate("settings.projectLocation")}</span>
                 <code className="settings-location selectable">{appInfo ? `${appInfo.dataDirectory}/projects` : "—"}</code>
               </div>
               <div className="settings-field">
                 <Checkbox className="settings-check" checked={Boolean(settings["advanced.debugLogs"] ?? false)} onChange={(checked) => void persist({ "advanced.debugLogs": checked })}>
-                  デバッグログ
+                  {translate("settings.debugLogs")}
                 </Checkbox>
-                <span className="settings-field__hint">変更は再起動後に反映されます。</span>
+                <span className="settings-field__hint">{translate("settings.restartToApply")}</span>
               </div>
               <MinecraftJarSection />
             </div>
@@ -725,7 +746,7 @@ export function SettingsScreen() {
         </section>
       </div>
       <footer className="settings-actions">
-        <SecondaryButton onClick={() => void closeSettings()}>戻る</SecondaryButton>
+        <SecondaryButton onClick={() => void closeSettings()}>{translate("settings.back")}</SecondaryButton>
       </footer>
     </section>
   );

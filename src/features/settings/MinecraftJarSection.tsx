@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
 import { Select } from "../../components/Controls";
+import { useT } from "../../i18n";
 import { detectMinecraftJars } from "../../lib/tauri";
 import type { MinecraftJarCandidate } from "../../types/preview";
 import { changeMinecraftJar, loadMinecraftJarState, useMinecraftJarStore } from "../preview/minecraftJarStore";
 
 export function MinecraftJarSection() {
+  const translate = useT();
   const [candidates, setCandidates] = useState<MinecraftJarCandidate[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [loading, setLoading] = useState(true);
@@ -46,16 +48,16 @@ export function MinecraftJarSection() {
 
   return (
     <section aria-labelledby="minecraft-jar-title">
-      <h2 id="minecraft-jar-title">Minecraft JAR</h2>
+      <h2 id="minecraft-jar-title">{translate("settings.minecraftJar")}</h2>
       <div className="settings-field">
-        <span>バージョン</span>
+        <span>{translate("settings.minecraftVersion")}</span>
         <Select
-          aria-label="Minecraft JARのバージョン"
+          aria-label={translate("settings.minecraftVersionAria")}
           value={selectedPath}
           disabled={loading || saving}
           onChange={(path) => { void onChange(path); }}
           options={[
-            { value: "", label: "未指定" },
+            { value: "", label: translate("settings.notSpecified") },
             ...(selectedPath && !candidates.some((candidate) => candidate.path === selectedPath)
               ? [{ value: selectedPath, label: selectedPath }]
               : []),
@@ -64,8 +66,8 @@ export function MinecraftJarSection() {
         />
       </div>
       {/* Minecraft本体の素材は再配布せず、指定JARからプレビュー時に読むため、この事情はUIではなく実装コメントに残す。 */}
-      <p>Minecraft 本体の JAR を指定すると、バニラのブロックやテクスチャもプレビューに表示されます。</p>
-      {error && <p role="alert">Minecraft JARを設定できませんでした。</p>}
+      <p>{translate("settings.minecraftJarHelp")}</p>
+      {error && <p role="alert">{translate("settings.minecraftJarError")}</p>}
     </section>
   );
 }
