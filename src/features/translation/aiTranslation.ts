@@ -1,6 +1,9 @@
+import * as tauri from "../../lib/tauri";
 import { AppCommandError, entryFromProject, getAiSettings, listEntries, listModUnits, startAiJob } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
+import { formatNumber, t } from "../../i18n";
 import { flushBeforeLeavingEditor } from "../../lib/navigation";
+import { targetLanguageName } from "../../i18n/minecraftLanguages";
 import type { RequestConfirmation } from "../../components/useDialogConfirmation";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useAppStore } from "../../stores/appStore";
@@ -12,9 +15,8 @@ import type { TranslationEntry } from "../../types/translation";
 import type { EntryEdit } from "../../stores/editorStore";
 import type { AiProviderId } from "../../types/ai";
 
-const PROVIDER_LABELS: Record<AiProviderId, string> = {
+const PROVIDER_LABELS: Record<Exclude<AiProviderId, "openai-compatible">, string> = {
   openai: "OpenAI",
-  "openai-compatible": "OpenAI互換プロバイダー",
   deepl: "DeepL",
   chatgpt: "ChatGPT",
   anthropic: "Claude",
@@ -25,6 +27,38 @@ const PROVIDER_LABELS: Record<AiProviderId, string> = {
   ollama: "Ollama",
   "lm-studio": "LM Studio",
 };
+
+function providerLabel(provider: AiProviderId) {
+  return provider === "openai-compatible"
+    ? t("ai.providerOpenAiCompatible")
+    : PROVIDER_LABELS[provider];
+}
+
+async function targetSupportNotice(provider: AiProviderId, targetLocale: string) {
+  try {
+    const { level } = await tauri.getAiTargetSupport(targetLocale);
+    const language = targetLanguageName(targetLocale);
+    if (level === "unsupported") {
+      return {
+        level,
+        message: t("ai.targetUnsupported", { provider: providerLabel(provider), language }),
+      } as const;
+    }
+    if (level === "limited") {
+      return {
+        level,
+        message: t("ai.targetLimited", { language }),
+      } as const;
+    }
+  } catch {
+    // 対応状況を確認できない場合も翻訳は開始する。
+  }
+  return { level: "supported", message: null } as const;
+}
+
+function withTargetWarning(message: string, warning: string | null) {
+  return warning ? `${message}\n\n${warning}` : message;
+}
 
 let unitScopedAiJobActive = false;
 let aiJobStartReserved = false;
@@ -72,15 +106,28 @@ export async function translateWithAi(entryIds: number[], requestConfirmation: R
       return;
     }
 
+    const projectBeforeConfirmation = useProjectStore.getState().details;
+    if (projectBeforeConfirmation?.project.id !== startingProjectId) return;
+    const support = await targetSupportNotice(settings.provider, projectBeforeConfirmation.targetLocale);
+    if (support.level === "unsupported") {
+      useAiJobStore.getState().failToStart(support.message);
+      return;
+    }
+    let targetWarningShown = false;
+
     const settingsStore = useSettingsStore.getState();
     if (!settingsStore.value<boolean>("ai.privacyNoticeAccepted")) {
-      const providerLabel = PROVIDER_LABELS[settings.provider];
+      const warning = support.level === "limited" ? support.message : null;
       const accepted = await requestConfirmation({
-        title: "AI翻訳の送信内容を確認",
-        message: `${providerLabel} に選んだ項目のキーと原文、Mod 名・namespace・言語情報、設定済みの追加プロンプトを送信します。JAR やテクスチャは送信しません。`,
-        confirmLabel: "続ける",
+        title: t("ai.sendNoticeTitle"),
+        message: withTargetWarning(
+          t("ai.sendSelectedNotice", { provider: providerLabel(settings.provider) }),
+          warning,
+        ),
+        confirmLabel: t("ai.continue"),
       });
       if (!accepted) return;
+      targetWarningShown = warning !== null;
       await settingsStore.save({ "ai.privacyNoticeAccepted": true });
     }
 
@@ -98,13 +145,25 @@ export async function translateWithAi(entryIds: number[], requestConfirmation: R
     const overwriteCount = selected.filter((entry) => entry.targetText.length > 0).length;
     if (
       overwriteCount > 0 &&
-      useSettingsStore.getState().value<boolean>("editor.confirmBatchOverwrite") &&
-      !(await requestConfirmation({
-        title: "既存の翻訳を上書きしますか？",
-        message: `${overwriteCount}件の翻訳が置き換わります。`,
-        confirmLabel: "上書き",
-      }))
-    ) return;
+      useSettingsStore.getState().value<boolean>("editor.confirmBatchOverwrite")
+    ) {
+      const warning = support.level === "limited" && !targetWarningShown ? support.message : null;
+      const accepted = await requestConfirmation({
+        title: t("ai.overwriteTitle"),
+        message: withTargetWarning(t("ai.overwriteMessage", { count: formatNumber(overwriteCount) }), warning),
+        confirmLabel: t("ai.overwrite"),
+      });
+      if (!accepted) return;
+      targetWarningShown ||= warning !== null;
+    }
+
+    if (support.level === "limited" && !targetWarningShown) {
+      if (!(await requestConfirmation({
+        title: t("ai.targetLimitedTitle"),
+        message: support.message,
+        confirmLabel: t("ai.continue"),
+      }))) return;
+    }
 
     const selectedIds = selected.map((entry) => entry.id);
     const expectedEntries = selected.map(({ id, targetText, origin }) => ({ id, targetText, origin }));
@@ -133,7 +192,7 @@ export async function translateWithAi(entryIds: number[], requestConfirmation: R
       await useAppStore.getState().openSettings("ai");
       return;
     }
-    const message = error instanceof Error ? error.message : "AI翻訳を実行できませんでした。";
+    const message = error instanceof Error ? error.message : t("ai.startFailed");
     useAiJobStore.getState().failToStart(message);
   } finally {
     releaseAiJobStart();
@@ -151,6 +210,13 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
       await useAppStore.getState().openSettings("ai");
       return;
     }
+    const projectBeforeConfirmation = useProjectStore.getState().details;
+    if (projectBeforeConfirmation?.project.id !== startingProjectId) return;
+    const support = await targetSupportNotice(settings.provider, projectBeforeConfirmation.targetLocale);
+    if (support.level === "unsupported") {
+      useAiJobStore.getState().failToStart(support.message);
+      return;
+    }
     const scope = modUnitId === undefined ? "project" : "mod";
     if (!(await confirmAiPrivacy(settings.provider, requestConfirmation, scope))) return;
     if (!(await flushBeforeLeavingEditor())) return;
@@ -161,9 +227,12 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
     const missing = allEntries.filter((entry) => entry.targetText.length === 0);
     if (missing.length === 0) return;
     if (!(await requestConfirmation({
-      title: modUnitId === undefined ? "プロジェクト全体をAI翻訳しますか？" : "このmodの未翻訳をAI翻訳しますか？",
-      message: `${missing.length.toLocaleString("ja-JP")}件の未翻訳を翻訳します。キーと原文、Mod名・namespace・言語情報をAIプロバイダーに送信します。`,
-      confirmLabel: "翻訳",
+      title: t(modUnitId === undefined ? "ai.wholeProjectTitle" : "ai.thisModTitle"),
+      message: withTargetWarning(
+        t("ai.wholeMessage", { count: formatNumber(missing.length) }),
+        support.level === "limited" ? support.message : null,
+      ),
+      confirmLabel: t("ai.translate"),
     }))) return;
 
     if (!(await flushBeforeLeavingEditor())) return;
@@ -178,9 +247,9 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
     const batch = refreshedEntries.filter((entry) => entry.targetText.length === 0);
     if (batch.length === 0) return;
     if (batch.length !== missing.length && !(await requestConfirmation({
-      title: "未翻訳の件数が変わりました",
-      message: `現在の未翻訳は${batch.length.toLocaleString("ja-JP")}件です。`,
-      confirmLabel: "続ける",
+      title: t("ai.missingCountChanged"),
+      message: t("ai.currentMissingCount", { count: formatNumber(batch.length) }),
+      confirmLabel: t("ai.continue"),
     }))) return;
 
     const entryIds = batch.map((entry) => entry.id);
@@ -259,9 +328,9 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
       }
 
       const message = refreshFailed
-        ? "翻訳結果を読み込めませんでした。画面を開き直してください。"
+        ? t("ai.loadFailed")
         : event.kind === "cancelled"
-        ? "AI翻訳をキャンセルしました。"
+        ? t("ai.cancelled")
         : event.kind === "failed"
           ? event.error.userMessage
           : null;
@@ -351,7 +420,7 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
     if (activeJob) useAiJobStore.setState({ activeJob: { ...activeJob, id: jobId } });
   } catch (error: unknown) {
     void logFrontendError(error, "translate whole project with AI");
-    const message = error instanceof Error ? error.message : "AI翻訳を実行できませんでした。";
+    const message = error instanceof Error ? error.message : t("ai.startFailed");
     useAiJobStore.getState().failToStart(message);
   } finally {
     releaseAiJobStart();
@@ -365,11 +434,11 @@ async function confirmAiPrivacy(
 ) {
   const settingsStore = useSettingsStore.getState();
   if (settingsStore.value<boolean>("ai.privacyNoticeAccepted")) return true;
-  const selection = scope === "project" ? "プロジェクト内の未翻訳項目" : "このmodの未翻訳項目";
+  const noticeKey = scope === "project" ? "ai.sendProjectNotice" : "ai.sendModNotice";
   const accepted = await requestConfirmation({
-    title: "AI翻訳の送信内容を確認",
-    message: `${PROVIDER_LABELS[provider]} に${selection}のキーと原文、Mod 名・namespace・言語情報、設定済みの追加プロンプトを送信します。JAR やテクスチャは送信しません。`,
-    confirmLabel: "続ける",
+    title: t("ai.sendNoticeTitle"),
+    message: t(noticeKey, { provider: providerLabel(provider) }),
+    confirmLabel: t("ai.continue"),
   });
   if (!accepted) return false;
   await settingsStore.save({ "ai.privacyNoticeAccepted": true });

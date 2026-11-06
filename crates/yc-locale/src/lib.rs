@@ -3,7 +3,9 @@ use std::sync::{OnceLock, atomic::AtomicU8};
 /// Minecraft 26.3のasset indexに含まれるpack.mcmeta由来の143言語。
 mod minecraft;
 
-pub use minecraft::{MinecraftLanguage, find_minecraft_language, minecraft_languages};
+pub use minecraft::{
+    MinecraftLanguage, find_minecraft_language, is_constructed_language, minecraft_languages,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

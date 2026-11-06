@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getAiSettings, saveSettings, startAiJob } from "../../lib/tauri";
+import { getAiSettings, getAiTargetSupport, saveSettings, startAiJob } from "../../lib/tauri";
 import { useDialogConfirmation } from "../../components/useDialogConfirmation";
 import { useAiJobStore } from "../../stores/aiJobStore";
 import { useEditorStore } from "../../stores/editorStore";
@@ -16,6 +16,7 @@ vi.mock("../../lib/tauri", () => ({
   AppCommandError: class extends Error {},
   entryFromProject: vi.fn(),
   getAiSettings: vi.fn(),
+  getAiTargetSupport: vi.fn(),
   saveSettings: vi.fn(),
   startAiJob: vi.fn(),
 }));
@@ -51,6 +52,7 @@ describe("AI翻訳の確認ダイアログ", () => {
     useProjectStore.setState({
       details: {
         project: { id: "project-1" },
+        targetLocale: "ja_jp",
         namespaces: [{ namespace: "sample", containerPath: "" }],
         nestedArchives: [],
         mods: [{ modId: "sample", name: "Sample Mod" }],
@@ -83,6 +85,7 @@ describe("AI翻訳の確認ダイアログ", () => {
       concurrency: 2,
       customPrompt: "",
     });
+    vi.mocked(getAiTargetSupport).mockResolvedValue({ level: "supported" });
     vi.mocked(saveSettings).mockResolvedValue();
     vi.mocked(startAiJob).mockResolvedValue("job-1");
   });

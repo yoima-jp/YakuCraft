@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getAiSettings, listEntries, listModUnits, saveSettings, startAiJob } from "../../lib/tauri";
+import { getAiSettings, getAiTargetSupport, listEntries, listModUnits, saveSettings, startAiJob } from "../../lib/tauri";
 import type { RequestConfirmation } from "../../components/useDialogConfirmation";
 import { translateSelectedWithAi, translateWholeProjectWithAi, translateWithAi } from "./aiTranslation";
 import { EditorToolbar } from "./EditorToolbar";
@@ -40,6 +40,7 @@ vi.mock("../../lib/tauri", () => ({
     flags: entry.flags,
   }),
   getAiSettings: vi.fn(),
+  getAiTargetSupport: vi.fn(),
   listEntries: vi.fn(),
   listModUnits: vi.fn(),
   saveSettings: vi.fn(),
@@ -139,6 +140,7 @@ describe("AI translation actions", () => {
       concurrency: 2,
       customPrompt: "",
     });
+    vi.mocked(getAiTargetSupport).mockResolvedValue({ level: "supported" });
     vi.mocked(startAiJob).mockResolvedValue("job-1");
     vi.mocked(saveSettings).mockResolvedValue();
     requestConfirmation.mockReset();
@@ -177,6 +179,35 @@ describe("AI translation actions", () => {
     expect(requestConfirmation).toHaveBeenCalledWith({
       title: "既存の翻訳を上書きしますか？",
       message: "1件の翻訳が置き換わります。",
+      confirmLabel: "上書き",
+    });
+    expect(startAiJob).not.toHaveBeenCalled();
+  });
+
+  it("unsupported の翻訳先では案内を表示し、確認もジョブ開始もしない", async () => {
+    vi.mocked(getAiTargetSupport).mockResolvedValue({ level: "unsupported" });
+
+    await translateWithAi([1], requestConfirmation);
+
+    expect(getAiTargetSupport).toHaveBeenCalledWith("ja_jp");
+    expect(requestConfirmation).not.toHaveBeenCalled();
+    expect(startAiJob).not.toHaveBeenCalled();
+    expect(useAiJobStore.getState().notice).toBe(
+      "OpenAI は 日本語 に対応していません。設定で別の AI プロバイダーを選ぶか、手動で翻訳してください。",
+    );
+  });
+
+  it("limited の翻訳先では確認文に品質の注意を加える", async () => {
+    useProjectStore.setState({
+      details: { ...projectDetails, targetLocale: "tlh_aa" },
+    });
+    vi.mocked(getAiTargetSupport).mockResolvedValue({ level: "limited" });
+
+    await translateWithAi([1], requestConfirmation);
+
+    expect(requestConfirmation).toHaveBeenCalledWith({
+      title: "既存の翻訳を上書きしますか？",
+      message: expect.stringContaining("AI の翻訳品質が安定しない場合があります。"),
       confirmLabel: "上書き",
     });
     expect(startAiJob).not.toHaveBeenCalled();

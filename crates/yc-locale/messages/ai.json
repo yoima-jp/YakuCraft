@@ -1,1 +1,415 @@
-{}
+{
+  "ai.browserOpenFailed": {
+    "ja": "既定のブラウザを開けませんでした。",
+    "en": "Could not open the default browser.",
+    "zh-Hans": "无法打开默认浏览器。",
+    "zh-Hant": "無法開啟預設瀏覽器。",
+    "ko": "기본 브라우저를 열 수 없습니다."
+  },
+  "ai.chatgptLoginCancelled": {
+    "ja": "ChatGPTログインをキャンセルしました。",
+    "en": "ChatGPT sign-in was canceled.",
+    "zh-Hans": "已取消 ChatGPT 登录。",
+    "zh-Hant": "已取消 ChatGPT 登入。",
+    "ko": "ChatGPT 로그인을 취소했습니다."
+  },
+  "ai.chatgptCallbackPortInUse": {
+    "ja": "ChatGPTログインに使うポート1455が使用中です。使用中のアプリを閉じてください。",
+    "en": "Port 1455, used for ChatGPT sign-in, is in use. Close the app using it and try again.",
+    "zh-Hans": "用于 ChatGPT 登录的端口 1455 已被占用。请关闭占用该端口的应用后重试。",
+    "zh-Hant": "ChatGPT 登入使用的連接埠 1455 已被占用。請關閉使用該連接埠的應用程式後再試。",
+    "ko": "ChatGPT 로그인에 사용하는 포트 1455가 이미 사용 중입니다. 해당 포트를 사용하는 앱을 닫고 다시 시도하세요."
+  },
+  "ai.chatgptLoginTimedOut": {
+    "ja": "ChatGPTログインの有効期限が切れました。もう一度お試しください。",
+    "en": "ChatGPT sign-in expired. Try again.",
+    "zh-Hans": "ChatGPT 登录已过期，请重试。",
+    "zh-Hant": "ChatGPT 登入已逾時，請再試一次。",
+    "ko": "ChatGPT 로그인 시간이 초과되었습니다. 다시 시도하세요."
+  },
+  "ai.chatgptLoginFailed": {
+    "ja": "ChatGPTにログインできませんでした。もう一度お試しください。",
+    "en": "Could not sign in to ChatGPT. Try again.",
+    "zh-Hans": "无法登录 ChatGPT，请重试。",
+    "zh-Hant": "無法登入 ChatGPT，請再試一次。",
+    "ko": "ChatGPT에 로그인할 수 없습니다. 다시 시도하세요."
+  },
+  "ai.chatgptReauthenticationRequired": {
+    "ja": "ChatGPTに再ログインしてください。",
+    "en": "Sign in to ChatGPT again.",
+    "zh-Hans": "请重新登录 ChatGPT。",
+    "zh-Hant": "請重新登入 ChatGPT。",
+    "ko": "ChatGPT에 다시 로그인하세요."
+  },
+  "ai.chatgptMustLogin": {
+    "ja": "ChatGPTはログインしてください。",
+    "en": "Sign in to ChatGPT first.",
+    "zh-Hans": "请先登录 ChatGPT。",
+    "zh-Hant": "請先登入 ChatGPT。",
+    "ko": "먼저 ChatGPT에 로그인하세요."
+  },
+  "ai.chatgptLoginPageSuccess": {
+    "ja": "ChatGPTにログインしました。このページを閉じてアプリに戻ってください。",
+    "en": "You are signed in to ChatGPT. Close this page and return to the app.",
+    "zh-Hans": "已登录 ChatGPT。请关闭此页面并返回应用。",
+    "zh-Hant": "已登入 ChatGPT。請關閉此頁面並返回應用程式。",
+    "ko": "ChatGPT에 로그인했습니다. 이 페이지를 닫고 앱으로 돌아가세요."
+  },
+  "ai.chatgptLoginPageRejected": {
+    "ja": "ログインを完了できませんでした。アプリに戻ってもう一度お試しください。",
+    "en": "Could not complete sign-in. Return to the app and try again.",
+    "zh-Hans": "无法完成登录。请返回应用后重试。",
+    "zh-Hant": "無法完成登入。請返回應用程式後再試一次。",
+    "ko": "로그인을 완료할 수 없습니다. 앱으로 돌아가 다시 시도하세요."
+  },
+  "ai.noEntries": {
+    "ja": "翻訳する項目がありません。",
+    "en": "There are no entries to translate.",
+    "zh-Hans": "没有可翻译的条目。",
+    "zh-Hant": "沒有可翻譯的項目。",
+    "ko": "번역할 항목이 없습니다."
+  },
+  "ai.projectDeleting": {
+    "ja": "このプロジェクトは削除中です。",
+    "en": "This project is being deleted.",
+    "zh-Hans": "此项目正在删除。",
+    "zh-Hant": "此專案正在刪除。",
+    "ko": "이 프로젝트를 삭제하고 있습니다."
+  },
+  "ai.projectRequired": {
+    "ja": "プロジェクトを開いてください。",
+    "en": "Open a project first.",
+    "zh-Hans": "请先打开项目。",
+    "zh-Hant": "請先開啟專案。",
+    "ko": "먼저 프로젝트를 여세요."
+  },
+  "ai.entryReadFailed": {
+    "ja": "翻訳項目を読み込めませんでした。",
+    "en": "Could not load the translation entries.",
+    "zh-Hans": "无法加载翻译条目。",
+    "zh-Hant": "無法載入翻譯項目。",
+    "ko": "번역 항목을 불러올 수 없습니다."
+  },
+  "ai.providerSelect": {
+    "ja": "Providerを選び直してください。",
+    "en": "Select a provider again.",
+    "zh-Hans": "请重新选择服务提供方。",
+    "zh-Hant": "請重新選擇服務提供者。",
+    "ko": "제공자를 다시 선택하세요."
+  },
+  "ai.settingsCheck": {
+    "ja": "AI翻訳の設定を確認してください。",
+    "en": "Check your AI translation settings.",
+    "zh-Hans": "请检查 AI 翻译设置。",
+    "zh-Hant": "請檢查 AI 翻譯設定。",
+    "ko": "AI 번역 설정을 확인하세요."
+  },
+  "ai.modelRequired": {
+    "ja": "Modelを入力してください。",
+    "en": "Enter a model.",
+    "zh-Hans": "请输入模型。",
+    "zh-Hant": "請輸入模型。",
+    "ko": "모델을 입력하세요."
+  },
+  "ai.chatgptModelSelect": {
+    "ja": "ChatGPTのモデルを選び直してください。",
+    "en": "Select a ChatGPT model again.",
+    "zh-Hans": "请重新选择 ChatGPT 模型。",
+    "zh-Hant": "請重新選擇 ChatGPT 模型。",
+    "ko": "ChatGPT 모델을 다시 선택하세요."
+  },
+  "ai.rejectionMissingResponse": {
+    "ja": "翻訳が返されませんでした",
+    "en": "No translation was returned",
+    "zh-Hans": "未返回译文",
+    "zh-Hant": "未傳回譯文",
+    "ko": "번역 결과가 반환되지 않았습니다"
+  },
+  "ai.rejectionDuplicate": {
+    "ja": "翻訳結果が重複しています",
+    "en": "The translation result is duplicated",
+    "zh-Hans": "翻译结果重复",
+    "zh-Hant": "譯文重複",
+    "ko": "번역 결과가 중복되었습니다"
+  },
+  "ai.rejectionUnknown": {
+    "ja": "不明な項目の結果が含まれていました",
+    "en": "The result included an unknown entry",
+    "zh-Hans": "结果中包含未知条目",
+    "zh-Hant": "結果包含未知項目",
+    "ko": "알 수 없는 항목의 결과가 포함되었습니다"
+  },
+  "ai.rejectionEmpty": {
+    "ja": "翻訳が空です",
+    "en": "The translation is empty",
+    "zh-Hans": "译文为空",
+    "zh-Hant": "譯文是空白的",
+    "ko": "번역 결과가 비어 있습니다"
+  },
+  "ai.rejectionPlaceholder": {
+    "ja": "Placeholderが原文と一致しません",
+    "en": "The placeholders do not match the source text",
+    "zh-Hans": "占位符与原文不一致",
+    "zh-Hant": "佔位符與原文不一致",
+    "ko": "자리 표시자가 원문과 일치하지 않습니다"
+  },
+  "ai.rejectionControlCharacter": {
+    "ja": "使用できない制御文字が含まれています",
+    "en": "The translation contains an invalid control character",
+    "zh-Hans": "译文包含不可用的控制字符",
+    "zh-Hant": "譯文包含無效的控制字元",
+    "ko": "번역에 사용할 수 없는 제어 문자가 포함되어 있습니다"
+  },
+  "ai.settingsReadWrite": {
+    "ja": "設定を読み書きできませんでした。",
+    "en": "Could not read or write settings.",
+    "zh-Hans": "无法读取或写入设置。",
+    "zh-Hant": "無法讀取或寫入設定。",
+    "ko": "설정을 읽거나 쓸 수 없습니다."
+  },
+  "ai.credentialsReadWrite": {
+    "ja": "API Keyを読み書きできませんでした。",
+    "en": "Could not access the API key.",
+    "zh-Hans": "无法读取或写入 API Key。",
+    "zh-Hant": "無法讀取或寫入 API Key。",
+    "ko": "API Key를 읽거나 쓸 수 없습니다."
+  },
+  "ai.credentialsLinuxReadWrite": {
+    "ja": "資格情報を読み書きできませんでした。GNOME KeyringなどのLinux鍵管理サービスが起動しているか確認してください。",
+    "en": "Could not access credentials. Check that a Linux keyring service such as GNOME Keyring is running.",
+    "zh-Hans": "无法读取或写入凭据。请确认 GNOME Keyring 等 Linux 密钥管理服务正在运行。",
+    "zh-Hant": "無法讀取或寫入認證資料。請確認 GNOME Keyring 等 Linux 金鑰管理服務正在執行。",
+    "ko": "인증 정보를 읽거나 쓸 수 없습니다. GNOME Keyring과 같은 Linux 키링 서비스가 실행 중인지 확인하세요."
+  },
+  "ai.credentialsUnavailable": {
+    "ja": "この環境ではAPI Keyを保存できません。",
+    "en": "This environment cannot store API keys.",
+    "zh-Hans": "此环境无法保存 API Key。",
+    "zh-Hant": "此環境無法儲存 API Key。",
+    "ko": "이 환경에서는 API Key를 저장할 수 없습니다."
+  },
+  "ai.notConfigured": {
+    "ja": "AI Translationの設定を完了してください。",
+    "en": "Finish setting up AI translation.",
+    "zh-Hans": "请完成 AI 翻译设置。",
+    "zh-Hant": "請完成 AI 翻譯設定。",
+    "ko": "AI 번역 설정을 완료하세요."
+  },
+  "ai.jobAlreadyRunning": {
+    "ja": "AI翻訳はすでに実行中です。",
+    "en": "An AI translation is already running.",
+    "zh-Hans": "AI 翻译已在运行。",
+    "zh-Hant": "AI 翻譯已在執行。",
+    "ko": "AI 번역이 이미 실행 중입니다."
+  },
+  "ai.cancelled": {
+    "ja": "AI翻訳をキャンセルしました。",
+    "en": "AI translation was canceled.",
+    "zh-Hans": "已取消 AI 翻译。",
+    "zh-Hant": "已取消 AI 翻譯。",
+    "ko": "AI 번역을 취소했습니다."
+  },
+  "ai.invalidProviderUrl": {
+    "ja": "接続先URLを確認してください。",
+    "en": "Check the provider URL.",
+    "zh-Hans": "请检查服务提供方 URL。",
+    "zh-Hant": "請檢查服務提供者 URL。",
+    "ko": "제공자 URL을 확인하세요."
+  },
+  "ai.providerFailed": {
+    "ja": "AI翻訳を実行できませんでした。",
+    "en": "Could not run AI translation.",
+    "zh-Hans": "无法运行 AI 翻译。",
+    "zh-Hant": "無法執行 AI 翻譯。",
+    "ko": "AI 번역을 실행할 수 없습니다."
+  },
+  "ai.deeplTargetUnsupported": {
+    "ja": "DeepLはこの翻訳先の言語に対応していません。設定で別のAIプロバイダーを選ぶか、手動で翻訳してください。",
+    "en": "DeepL does not support this target language. Choose another AI provider in Settings or translate manually.",
+    "zh-Hans": "DeepL 不支持此目标语言。请在设置中选择其他 AI 服务提供方，或手动翻译。",
+    "zh-Hant": "DeepL 不支援此目標語言。請在設定中選擇其他 AI 服務提供者，或手動翻譯。",
+    "ko": "DeepL은 이 대상 언어를 지원하지 않습니다. 설정에서 다른 AI 제공자를 선택하거나 직접 번역하세요."
+  },
+  "ai.progressUnavailable": {
+    "ja": "AI翻訳の進捗を受け取れませんでした。",
+    "en": "Could not receive AI translation progress.",
+    "zh-Hans": "无法接收 AI 翻译进度。",
+    "zh-Hant": "無法接收 AI 翻譯進度。",
+    "ko": "AI 번역 진행 상황을 받을 수 없습니다."
+  },
+  "ai.projectChanged": {
+    "ja": "プロジェクトが切り替わったため、AI翻訳を停止しました。",
+    "en": "AI translation stopped because the project changed.",
+    "zh-Hans": "项目已切换，AI 翻译已停止。",
+    "zh-Hant": "專案已切換，AI 翻譯已停止。",
+    "ko": "프로젝트가 바뀌어 AI 번역을 중지했습니다."
+  },
+  "ai.dataSaveFailed": {
+    "ja": "翻訳データを保存できませんでした。",
+    "en": "Could not save translation data.",
+    "zh-Hans": "无法保存翻译数据。",
+    "zh-Hant": "無法儲存翻譯資料。",
+    "ko": "번역 데이터를 저장할 수 없습니다."
+  },
+  "ai.appStateFailed": {
+    "ja": "アプリの状態を読み取れませんでした。再起動してもう一度お試しください。",
+    "en": "Could not read the app state. Restart the app and try again.",
+    "zh-Hans": "无法读取应用状态。请重启应用后重试。",
+    "zh-Hant": "無法讀取應用程式狀態。請重新啟動應用程式後再試。",
+    "ko": "앱 상태를 읽을 수 없습니다. 앱을 다시 시작한 후 시도하세요."
+  },
+  "ai.taskFailed": {
+    "ja": "処理に失敗しました。もう一度お試しください。",
+    "en": "The operation failed. Try again.",
+    "zh-Hans": "操作失败，请重试。",
+    "zh-Hant": "操作失敗，請再試一次。",
+    "ko": "작업에 실패했습니다. 다시 시도하세요."
+  },
+  "ai.providerOpenAiCompatible": {
+    "ja": "OpenAI互換プロバイダー",
+    "en": "OpenAI-compatible provider",
+    "zh-Hans": "OpenAI 兼容服务提供方",
+    "zh-Hant": "OpenAI 相容服務提供者",
+    "ko": "OpenAI 호환 제공자"
+  },
+  "ai.sendNoticeTitle": {
+    "ja": "AI翻訳の送信内容を確認",
+    "en": "Review what AI translation sends",
+    "zh-Hans": "确认 AI 翻译发送的内容",
+    "zh-Hant": "確認 AI 翻譯傳送的內容",
+    "ko": "AI 번역 전송 내용 확인"
+  },
+  "ai.sendSelectedNotice": {
+    "ja": "{provider} に選んだ項目のキーと原文、Mod 名・namespace・言語情報、設定済みの追加プロンプトを送信します。JAR やテクスチャは送信しません。",
+    "en": "The selected keys and source text, Mod name, namespace, language details, and configured additional prompt will be sent to {provider}. JARs and textures are not sent.",
+    "zh-Hans": "所选条目的键和原文、Mod 名称、命名空间、语言信息以及已设置的附加提示词将发送给 {provider}。不会发送 JAR 或纹理。",
+    "zh-Hant": "所選項目的鍵與原文、Mod 名稱、命名空間、語言資訊及已設定的額外提示詞將傳送至 {provider}。不會傳送 JAR 或材質。",
+    "ko": "선택한 항목의 키와 원문, Mod 이름, 네임스페이스, 언어 정보, 설정된 추가 프롬프트를 {provider}에 보냅니다. JAR와 텍스처는 전송하지 않습니다."
+  },
+  "ai.sendProjectNotice": {
+    "ja": "{provider} にプロジェクト内の未翻訳項目のキーと原文、Mod 名・namespace・言語情報、設定済みの追加プロンプトを送信します。JAR やテクスチャは送信しません。",
+    "en": "The keys and source text of untranslated entries in this project, Mod names, namespaces, language details, and configured additional prompt will be sent to {provider}. JARs and textures are not sent.",
+    "zh-Hans": "项目中未翻译条目的键和原文、Mod 名称、命名空间、语言信息以及已设置的附加提示词将发送给 {provider}。不会发送 JAR 或纹理。",
+    "zh-Hant": "專案中未翻譯項目的鍵與原文、Mod 名稱、命名空間、語言資訊及已設定的額外提示詞將傳送至 {provider}。不會傳送 JAR 或材質。",
+    "ko": "프로젝트의 미번역 항목 키와 원문, Mod 이름, 네임스페이스, 언어 정보, 설정된 추가 프롬프트를 {provider}에 보냅니다. JAR와 텍스처는 전송하지 않습니다."
+  },
+  "ai.sendModNotice": {
+    "ja": "{provider} にこのmodの未翻訳項目のキーと原文、Mod 名・namespace・言語情報、設定済みの追加プロンプトを送信します。JAR やテクスチャは送信しません。",
+    "en": "The keys and source text of untranslated entries in this Mod, its name, namespace, language details, and configured additional prompt will be sent to {provider}. JARs and textures are not sent.",
+    "zh-Hans": "此 Mod 中未翻译条目的键和原文、Mod 名称、命名空间、语言信息以及已设置的附加提示词将发送给 {provider}。不会发送 JAR 或纹理。",
+    "zh-Hant": "此 Mod 中未翻譯項目的鍵與原文、Mod 名稱、命名空間、語言資訊及已設定的額外提示詞將傳送至 {provider}。不會傳送 JAR 或材質。",
+    "ko": "이 Mod의 미번역 항목 키와 원문, Mod 이름, 네임스페이스, 언어 정보, 설정된 추가 프롬프트를 {provider}에 보냅니다. JAR와 텍스처는 전송하지 않습니다."
+  },
+  "ai.continue": {
+    "ja": "続ける",
+    "en": "Continue",
+    "zh-Hans": "继续",
+    "zh-Hant": "繼續",
+    "ko": "계속"
+  },
+  "ai.overwriteTitle": {
+    "ja": "既存の翻訳を上書きしますか？",
+    "en": "Overwrite existing translations?",
+    "zh-Hans": "要覆盖现有译文吗？",
+    "zh-Hant": "要覆寫現有譯文嗎？",
+    "ko": "기존 번역을 덮어쓸까요?"
+  },
+  "ai.overwriteMessage": {
+    "ja": "{count}件の翻訳が置き換わります。",
+    "en": "{count} translations will be replaced.",
+    "zh-Hans": "将替换 {count} 条译文。",
+    "zh-Hant": "將取代 {count} 筆譯文。",
+    "ko": "번역 {count}개를 바꿉니다."
+  },
+  "ai.overwrite": {
+    "ja": "上書き",
+    "en": "Overwrite",
+    "zh-Hans": "覆盖",
+    "zh-Hant": "覆寫",
+    "ko": "덮어쓰기"
+  },
+  "ai.startFailed": {
+    "ja": "AI翻訳を実行できませんでした。",
+    "en": "Could not run AI translation.",
+    "zh-Hans": "无法运行 AI 翻译。",
+    "zh-Hant": "無法執行 AI 翻譯。",
+    "ko": "AI 번역을 실행할 수 없습니다."
+  },
+  "ai.wholeProjectTitle": {
+    "ja": "プロジェクト全体をAI翻訳しますか？",
+    "en": "Translate the whole project with AI?",
+    "zh-Hans": "要用 AI 翻译整个项目吗？",
+    "zh-Hant": "要用 AI 翻譯整個專案嗎？",
+    "ko": "프로젝트 전체를 AI로 번역할까요?"
+  },
+  "ai.thisModTitle": {
+    "ja": "このmodの未翻訳をAI翻訳しますか？",
+    "en": "Translate this Mod's untranslated entries with AI?",
+    "zh-Hans": "要用 AI 翻译此 Mod 中未翻译的条目吗？",
+    "zh-Hant": "要用 AI 翻譯此 Mod 中未翻譯的項目嗎？",
+    "ko": "이 Mod의 미번역 항목을 AI로 번역할까요?"
+  },
+  "ai.wholeMessage": {
+    "ja": "{count}件の未翻訳を翻訳します。キーと原文、Mod名・namespace・言語情報をAIプロバイダーに送信します。",
+    "en": "Translate {count} untranslated entries. Their keys, source text, Mod names, namespaces, and language details will be sent to the AI provider.",
+    "zh-Hans": "将翻译 {count} 条未翻译内容。其键、原文、Mod 名称、命名空间和语言信息会发送给 AI 服务提供方。",
+    "zh-Hant": "將翻譯 {count} 筆未翻譯內容。其鍵、原文、Mod 名稱、命名空間及語言資訊會傳送至 AI 服務提供者。",
+    "ko": "미번역 항목 {count}개를 번역합니다. 키와 원문, Mod 이름, 네임스페이스, 언어 정보를 AI 제공자에게 보냅니다."
+  },
+  "ai.translate": {
+    "ja": "翻訳",
+    "en": "Translate",
+    "zh-Hans": "翻译",
+    "zh-Hant": "翻譯",
+    "ko": "번역"
+  },
+  "ai.missingCountChanged": {
+    "ja": "未翻訳の件数が変わりました",
+    "en": "The number of untranslated entries changed",
+    "zh-Hans": "未翻译条目数已变化",
+    "zh-Hant": "未翻譯項目數已變更",
+    "ko": "미번역 항목 수가 바뀌었습니다"
+  },
+  "ai.currentMissingCount": {
+    "ja": "現在の未翻訳は{count}件です。",
+    "en": "There are currently {count} untranslated entries.",
+    "zh-Hans": "当前有 {count} 条未翻译内容。",
+    "zh-Hant": "目前有 {count} 筆未翻譯內容。",
+    "ko": "현재 미번역 항목은 {count}개입니다."
+  },
+  "ai.loadFailed": {
+    "ja": "翻訳結果を読み込めませんでした。画面を開き直してください。",
+    "en": "Could not load the translations. Reopen this screen.",
+    "zh-Hans": "无法加载译文，请重新打开此页面。",
+    "zh-Hant": "無法載入譯文，請重新開啟此畫面。",
+    "ko": "번역 결과를 불러올 수 없습니다. 화면을 다시 여세요."
+  },
+  "ai.targetUnsupported": {
+    "ja": "{provider} は {language} に対応していません。設定で別の AI プロバイダーを選ぶか、手動で翻訳してください。",
+    "en": "{provider} does not support {language}. Choose another AI provider in Settings or translate manually.",
+    "zh-Hans": "{provider} 不支持{language}。请在设置中选择其他 AI 服务提供方，或手动翻译。",
+    "zh-Hant": "{provider} 不支援{language}。請在設定中選擇其他 AI 服務提供者，或手動翻譯。",
+    "ko": "{provider}은(는) {language}을(를) 지원하지 않습니다. 설정에서 다른 AI 제공자를 선택하거나 직접 번역하세요."
+  },
+  "ai.targetLimited": {
+    "ja": "{language} は AI の翻訳品質が安定しない場合があります。",
+    "en": "AI translation quality for {language} may be inconsistent.",
+    "zh-Hans": "AI 对{language}的翻译质量可能不稳定。",
+    "zh-Hant": "AI 對{language}的翻譯品質可能不穩定。",
+    "ko": "{language}의 AI 번역 품질은 안정적이지 않을 수 있습니다."
+  },
+  "ai.targetLimitedTitle": {
+    "ja": "AI翻訳の確認",
+    "en": "Review AI translation",
+    "zh-Hans": "确认 AI 翻译",
+    "zh-Hant": "確認 AI 翻譯",
+    "ko": "AI 번역 확인"
+  },
+  "ai.reviewTranslation": {
+    "ja": "翻訳結果を確認してください",
+    "en": "Review the translation",
+    "zh-Hans": "请检查译文",
+    "zh-Hant": "請檢查譯文",
+    "ko": "번역 결과를 확인하세요"
+  }
+}

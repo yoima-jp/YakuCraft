@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { t } from "../i18n";
 import { entryFromProject } from "../lib/tauri";
 import type { AiJobEventDto } from "../types/ai";
 import type { TranslationEntry } from "../types/translation";
@@ -130,7 +131,7 @@ export const useAiJobStore = create<AiJobStore>()((set, get) => ({
           flags: current.flags.includes("needs_review") ? current.flags : [...current.flags, "needs_review"],
         });
         rejectedIds.add(rejection.id);
-        warnings.set(rejection.id, rejection.reasons.length > 0 ? rejection.reasons : ["翻訳結果を確認してください"]);
+        warnings.set(rejection.id, rejection.reasons.length > 0 ? rejection.reasons : [t("ai.reviewTranslation")]);
       }
 
       const changedIds = [...acceptedIds, ...rejectedIds];
@@ -152,7 +153,7 @@ export const useAiJobStore = create<AiJobStore>()((set, get) => ({
     if (event.kind === "failed") {
       set({ activeJob: null, jobProjectId: null, jobProjectInvalidated: false, baseline: new Map(), pendingEdits: [], undoBoundary: [], notice: event.error.userMessage });
     } else if (event.kind === "cancelled") {
-      set({ activeJob: null, jobProjectId: null, jobProjectInvalidated: false, baseline: new Map(), pendingEdits: [], undoBoundary: [], notice: "AI翻訳をキャンセルしました。" });
+      set({ activeJob: null, jobProjectId: null, jobProjectInvalidated: false, baseline: new Map(), pendingEdits: [], undoBoundary: [], notice: t("ai.cancelled") });
     } else {
       set({ activeJob: null, jobProjectId: null, jobProjectInvalidated: false, baseline: new Map(), pendingEdits: [], undoBoundary: [], notice: null });
     }

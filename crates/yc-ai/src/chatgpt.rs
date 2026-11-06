@@ -370,18 +370,22 @@ fn callback_result(request: &str, expected_state: &str, handled: &mut bool) -> C
 
 async fn write_callback_page(socket: &mut TcpStream, status: u16, success: bool) -> Result<()> {
     let (reason, body) = if success {
-        (
-            "OK",
-            "ChatGPTにログインしました。このページを閉じてアプリに戻ってください。",
-        )
+        ("OK", yc_locale::t!("ai.chatgptLoginPageSuccess"))
     } else {
         (
             "Request Rejected",
-            "ログインを完了できませんでした。アプリに戻ってもう一度お試しください。",
+            yc_locale::t!("ai.chatgptLoginPageRejected"),
         )
     };
+    let html_language = match yc_locale::ui_language() {
+        yc_locale::UiLanguage::Ja => "ja",
+        yc_locale::UiLanguage::En => "en",
+        yc_locale::UiLanguage::ZhHans => "zh-Hans",
+        yc_locale::UiLanguage::ZhHant => "zh-Hant",
+        yc_locale::UiLanguage::Ko => "ko",
+    };
     let html = format!(
-        "<!doctype html><html lang=\"ja\"><meta charset=\"utf-8\"><title>ChatGPT</title><body>{body}</body></html>"
+        "<!doctype html><html lang=\"{html_language}\"><meta charset=\"utf-8\"><title>ChatGPT</title><body>{body}</body></html>"
     );
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",

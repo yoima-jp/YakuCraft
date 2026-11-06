@@ -29,3 +29,22 @@ pub fn find_minecraft_language(code: &str) -> Option<&'static MinecraftLanguage>
         .iter()
         .find(|language| language.code.eq_ignore_ascii_case(code))
 }
+
+pub fn is_constructed_language(code: &str) -> bool {
+    let normalized = code.trim().replace('-', "_");
+    matches!(
+        normalized.to_ascii_lowercase().as_str(),
+        "en_ud"
+            | "en_pt"
+            | "enp"
+            | "enws"
+            | "lol_us"
+            | "qya_aa"
+            | "tlh_aa"
+            | "tok"
+            | "jbo_en"
+            | "io_en"
+            | "isv"
+            | "vp_vl"
+    )
+}

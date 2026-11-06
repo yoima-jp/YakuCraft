@@ -22,6 +22,7 @@ tracing = "0.1"
 url = "2"
 uuid = { version = "1.28", features = ["v4", "serde"] }
 yc-validation = { path = "../yc-validation" }
+yc-locale = { path = "../yc-locale" }
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "1"
