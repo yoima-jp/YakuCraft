@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { t } from "../i18n";
 import type { EntryFlag, GlossaryTerm, TranslationEntry, TranslationOrigin } from "../types/translation";
 import { flagsForTarget, mockPlaceholderValidator } from "../features/translation/validation";
 import type { PlaceholderValidator } from "../features/translation/validation";
@@ -885,7 +886,7 @@ export const useEditorStore = create<EditorStoreState>()((set, get) => ({
         needsReviewCount: counts.needsReviewCount,
       };
     }),
-  markSaveError: () => set({ saveStatus: "error", saveError: "保存できませんでした" }),
+  markSaveError: () => set({ saveStatus: "error", saveError: t("editor.saveFailed") }),
   setSaveStatus: (saveStatus, saveError = null) => set({ saveStatus, saveError }),
 }));
 

@@ -43,6 +43,7 @@ import { unitName as modUnitName } from "./unitName";
 import { parseTranslationClipboard, serializeTranslationClipboard } from "./clipboard";
 import { addModUnits } from "../scan/tauri";
 import { ProgressBar } from "../../components/progress/ProgressBar";
+import { formatNumber, t as translate, useT } from "../../i18n";
 import "./TranslationScreen.css";
 
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- 幅変更操作を持つseparatorはhrでは表せない。 */
@@ -58,6 +59,7 @@ function discardModUnitSnapshot(modUnitId: number) {
 }
 
 export function TranslationScreen() {
+  const t = useT();
   const searchRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const tabSwitchRequestRef = useRef(0);
@@ -233,7 +235,7 @@ export function TranslationScreen() {
         void logFrontendError(error, "load translation data");
         setLoadError({
           projectId,
-          message: error instanceof AppCommandError ? error.message : "翻訳データを読み込めませんでした。",
+          message: error instanceof AppCommandError ? error.message : translate("editor.load.failed"),
         });
       });
     return () => {
@@ -266,12 +268,15 @@ export function TranslationScreen() {
       const name = modUnitName(unit);
       const wasPinned = tabPreferences.pinnedIds.includes(modUnitId);
       const isPinned = next.pinnedIds.includes(modUnitId);
-      const pinMessage = wasPinned === isPinned ? ""
-        : isPinned ? "、ピン留めしました" : "、ピン留めを解除しました";
-      setTabOrderAnnouncement(`${name}を${movedIndex + 1}番目に移動しました${pinMessage}`);
+      const position = formatNumber(movedIndex + 1);
+      setTabOrderAnnouncement(wasPinned === isPinned
+        ? t("editor.tab.moved", { name, position })
+        : isPinned
+          ? t("editor.tab.movedAndPinned", { name, position })
+          : t("editor.tab.movedAndUnpinned", { name, position }));
     }
     return true;
-  }, [commitTabPreferences, modUnits, tabPreferences]);
+  }, [commitTabPreferences, modUnits, t, tabPreferences]);
 
   const selectModUnit = useCallback(async (modUnitId: number, duringAdd = false) => {
     if (isUnitScopedAiJobActive() || refreshingModpackIdRef.current !== null || (addingRef.current && !duringAdd)) return;
@@ -319,7 +324,7 @@ export function TranslationScreen() {
       void logFrontendError(error, "switch translation tab");
       setLoadError({
         projectId,
-        message: error instanceof AppCommandError ? error.message : "翻訳データを読み込めませんでした。",
+        message: error instanceof AppCommandError ? error.message : translate("editor.load.failed"),
       });
     }
   }, [commitTabPreferences, projectId, tabPreferences]);
@@ -345,19 +350,22 @@ export function TranslationScreen() {
       }
 
       const messages: string[] = [];
-      if (event.added > 0) messages.push(`${event.added.toLocaleString("ja-JP")} 件追加しました`);
+      if (event.added > 0) {
+        const messageKey = event.added === 1 ? "editor.add.unitsAdded_one" : "editor.add.unitsAdded";
+        messages.push(t(messageKey, { count: formatNumber(event.added) }));
+      }
       if (event.duplicateFilenames.length > 0) {
-        messages.push(event.added === 0 ? "同じファイルは追加済みです" : "同じファイルをスキップしました");
+        messages.push(t(event.added === 0 ? "editor.add.duplicateAlreadyPresent" : "editor.add.duplicateSkipped"));
       }
       if (event.duplicateModIdFilenames.length > 0) {
-        messages.push("Mod ID が重複する項目をスキップしました");
+        messages.push(t("editor.add.duplicateModId"));
       }
-      if (event.ignoredFilenames.length > 0) messages.push("対象外の項目を除外しました");
-      setAddNotice(messages.join("。"));
+      if (event.ignoredFilenames.length > 0) messages.push(t("editor.add.ignored"));
+      setAddNotice(messages.join(t("editor.messageSeparator")));
       setModActionError(null);
     } catch (error: unknown) {
       void logFrontendError(error, "refresh project after adding mods");
-      setModActionError(error instanceof AppCommandError ? error.message : "追加したModを表示できませんでした。");
+      setModActionError(error instanceof AppCommandError ? error.message : t("editor.add.refreshFailed"));
     } finally {
       if (generation === addGenerationRef.current) {
         addingRef.current = false;
@@ -367,7 +375,7 @@ export function TranslationScreen() {
         setAddCancelRequested(false);
       }
     }
-  }, [commitTabPreferences, projectId, selectModUnit, tabPreferences]);
+  }, [commitTabPreferences, projectId, selectModUnit, t, tabPreferences]);
 
   const handleAddUnitsEvent = useCallback((event: AddUnitsChannelEventDto, generation: number) => {
     if (generation !== addGenerationRef.current) return;
@@ -388,17 +396,17 @@ export function TranslationScreen() {
       setIsAdding(false);
       setAddProgress(null);
       setAddCancelRequested(false);
-      if (event.error.code === "cancelled") setAddNotice("追加をキャンセルしました。");
+      if (event.error.code === "cancelled") setAddNotice(t("editor.add.cancelled"));
       else setModActionError(event.error.userMessage);
       return;
     }
     void completeUnitAddition(event, generation);
-  }, [completeUnitAddition]);
+  }, [completeUnitAddition, t]);
 
   const addSourcesToProject = useCallback(async (paths: string[]) => {
     if (!projectId) return;
     if (addingRef.current) {
-      setAddNotice("追加処理中です。");
+      setAddNotice(t("editor.add.inProgress"));
       return;
     }
     addingRef.current = true;
@@ -440,9 +448,9 @@ export function TranslationScreen() {
       setIsAdding(false);
       setAddProgress(null);
       setAddJobId(null);
-      setModActionError(error instanceof AppCommandError ? error.message : "追加できませんでした。");
+      setModActionError(error instanceof AppCommandError ? error.message : t("editor.add.failed"));
     }
-  }, [handleAddUnitsEvent, projectId]);
+  }, [handleAddUnitsEvent, projectId, t]);
 
   const cancelUnitAddition = useCallback(async () => {
     if (!addJobId) return;
@@ -452,9 +460,9 @@ export function TranslationScreen() {
     } catch (error: unknown) {
       setAddCancelRequested(false);
       void logFrontendError(error, "cancel mod addition");
-      setModActionError(error instanceof AppCommandError ? error.message : "追加を中止できませんでした。");
+      setModActionError(error instanceof AppCommandError ? error.message : t("editor.add.cancelFailed"));
     }
-  }, [addJobId]);
+  }, [addJobId, t]);
 
   useEffect(() => () => {
     addGenerationRef.current += 1;
@@ -481,7 +489,7 @@ export function TranslationScreen() {
           case "drop":
             setDropActive(false);
             if (event.payload.paths.length > 0) void addSourcesToProject(event.payload.paths);
-            else setModActionError("JAR、シェーダーパック ZIP またはシェーダーパックフォルダをドロップしてください。");
+            else setModActionError(translate("editor.add.dropTypes"));
             break;
         }
       })
@@ -566,14 +574,15 @@ export function TranslationScreen() {
     setModActionError(null);
     try {
       const info = await getModUnitRemovalInfo(modUnitId);
-      const warning = [
-        info.hasUnrestoredReplacements ? "上書きしたjarを元に戻せなくなります。" : "",
-        info.hasUnrestoredFileDeployments ? "配置したファイルを復元できなくなります。" : "",
-      ].filter(Boolean).join("\n");
+      const warningLines = [
+        info.hasUnrestoredReplacements ? t("editor.remove.replacementsWarning") : "",
+        info.hasUnrestoredFileDeployments ? t("editor.remove.deploymentsWarning") : "",
+      ].filter(Boolean);
+      const warning = warningLines.join("\n");
       const confirmed = await requestConfirmation({
-        title: `${name} をプロジェクトから外しますか？`,
-        message: `${name} をプロジェクトから外します。この mod の訳も削除されます。${warning}`,
-        confirmLabel: "プロジェクトから外す",
+        title: t("editor.remove.title", { name }),
+        message: t(warning ? "editor.remove.messageWithWarning" : "editor.remove.message", { name, warning }),
+        confirmLabel: t("editor.remove.confirm"),
       });
       if (!confirmed || !(await flushBeforeLeavingEditor())) return;
 
@@ -588,9 +597,9 @@ export function TranslationScreen() {
             error.appError.code === "unit_deployments_pending"
           ) {
             const accepted = await requestConfirmation({
-              title: `${name} をプロジェクトから外しますか？`,
-              message: `${name} をプロジェクトから外します。この mod の訳も削除されます。\n配置したファイルのバックアップを復元できなくなります。`,
-              confirmLabel: "プロジェクトから外す",
+              title: t("editor.remove.title", { name }),
+              message: t("editor.remove.pendingBackupWarning", { name }),
+              confirmLabel: t("editor.remove.confirm"),
             });
             if (accepted) await remove(true);
             return;
@@ -625,9 +634,9 @@ export function TranslationScreen() {
       useEditorStore.getState().discardClosedModUnits(remainingIds);
     } catch (error: unknown) {
       void logFrontendError(error, "remove mod from project");
-      setModActionError(error instanceof AppCommandError ? error.message : "modをプロジェクトから外せませんでした。もう一度お試しください。");
+      setModActionError(error instanceof AppCommandError ? error.message : t("editor.remove.failed"));
     }
-  }, [commitTabPreferences, projectId, requestConfirmation, selectModUnit, tabPreferences]);
+  }, [commitTabPreferences, projectId, requestConfirmation, selectModUnit, t, tabPreferences]);
 
   const refreshModpackFromInstance = useCallback(async (modUnitId: number) => {
     if (!projectId || useAiJobStore.getState().activeJob || refreshingModpackIdRef.current !== null) return;
@@ -663,13 +672,13 @@ export function TranslationScreen() {
     } catch (error: unknown) {
       void logFrontendError(error, "refresh modpack");
       if (useProjectStore.getState().details?.project.id === projectId) {
-        setModActionError(error instanceof AppCommandError ? error.message : "Modpack を再取り込みできませんでした。");
+        setModActionError(error instanceof AppCommandError ? error.message : t("editor.modpack.refreshFailed"));
       }
     } finally {
       if (refreshingModpackIdRef.current === modUnitId) refreshingModpackIdRef.current = null;
       setRefreshingModpackId(null);
     }
-  }, [projectId]);
+  }, [projectId, t]);
 
   const togglePinnedModUnit = useCallback((modUnitId: number) => {
     const wasPinned = tabPreferences.pinnedIds.includes(modUnitId);
@@ -793,9 +802,9 @@ export function TranslationScreen() {
       if (
         targetTexts.length > remaining &&
         !(await requestConfirmation({
-          title: "一部だけ貼り付けますか？",
-          message: `表示範囲に収まらないため、表示中の${remaining}件に貼り付けます。`,
-          confirmLabel: "貼り付け",
+          title: t("editor.paste.partialTitle"),
+          message: t("editor.paste.partialMessage", { count: formatNumber(remaining) }),
+          confirmLabel: t("editor.paste.confirm"),
         }))
       ) {
         return;
@@ -804,7 +813,7 @@ export function TranslationScreen() {
     } catch {
       // Clipboard権限が拒否された場合は、貼り付け処理だけを中止する。
     }
-  }, [requestConfirmation]);
+  }, [requestConfirmation, t]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -881,13 +890,13 @@ export function TranslationScreen() {
   }
 
   if (!loaded || !projectId || tabsInitializedProjectId !== projectId) {
-    return <section className="editor-screen editor-screen--message"><output aria-live="polite">読み込み中…</output></section>;
+    return <section className="editor-screen editor-screen--message"><output aria-live="polite">{t("editor.loading")}</output></section>;
   }
 
   return (
     <section
       className="editor-screen"
-      aria-label="翻訳エディター"
+      aria-label={t("editor.ariaLabel")}
       data-wrap-source={Boolean(editorSettings["editor.wrapSource"])}
       data-wrap-target={Boolean(editorSettings["editor.wrapTarget"])}
       style={{ "--editor-font-size": `${Number(editorSettings["editor.fontSize"] ?? 13)}px` } as CSSProperties}
@@ -918,20 +927,20 @@ export function TranslationScreen() {
             value={addProgress?.progress.total
               ? Math.round(addProgress.progress.current / addProgress.progress.total * 100)
               : 0}
-            label="Mod の追加進行状況"
+            label={t("editor.add.progressLabel")}
           />
           <span>
             {addProgress
               ? `${addProgress.modIndex} / ${addProgress.modCount} · ${addProgress.modFilename} · ${addProgress.progress.message}`
-              : "追加を準備しています…"}
+              : t("editor.add.preparing")}
           </span>
           <SecondaryButton disabled={addCancelRequested || !addJobId} onClick={() => void cancelUnitAddition()}>
-            {addCancelRequested ? "中止中…" : "キャンセル"}
+            {addCancelRequested ? t("editor.add.cancelling") : t("editor.ai.cancel")}
           </SecondaryButton>
         </div>
       )}
       {refreshingModpackId !== null && (
-        <p className="status-message" role="status">Modpack を再取り込み中…</p>
+        <p className="status-message" role="status">{t("editor.modpack.refreshing")}</p>
       )}
       <div
         ref={workspaceRef}
@@ -970,7 +979,7 @@ export function TranslationScreen() {
                     role: "tabpanel",
                     id: "translation-table-panel",
                     ...(showVerticalModTabs
-                      ? { "aria-label": "翻訳一覧" }
+                      ? { "aria-label": t("editor.table.ariaLabel") }
                       : { "aria-labelledby": `mod-tab-${activeModUnitId}` }),
                   }
                 : {})}
@@ -1027,7 +1036,7 @@ export function TranslationScreen() {
       />
       {dropActive && (
         <div className="editor-drop-overlay" role="status" aria-live="polite">
-          <span>ドロップしてプロジェクトに追加</span>
+          <span>{t("editor.drop.add")}</span>
         </div>
       )}
       {confirmationDialog}
@@ -1065,6 +1074,7 @@ function InspectorResizeHandle({
   onResize: (width: number) => void;
   onCommit: (width: number) => void;
 }) {
+  const t = useT();
   const dragStart = useRef<{ pointerId: number; x: number; width: number; currentWidth: number } | null>(null);
   const resizeFromBoundary = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragStart.current;
@@ -1085,12 +1095,12 @@ function InspectorResizeHandle({
     <div
       className="editor-workspace__resize-handle"
       role="separator"
-      aria-label="表と詳細の幅"
+      aria-label={t("editor.resize.tableInspector")}
       aria-orientation="vertical"
       aria-valuemin={280}
       aria-valuemax={maxWidth}
       aria-valuenow={width}
-      aria-valuetext={`${width} ピクセル`}
+      aria-valuetext={t("editor.pixels", { value: formatNumber(width) })}
       aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
       tabIndex={0}
       onPointerDown={(event) => {

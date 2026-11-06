@@ -3,9 +3,11 @@ import { createPortal } from "react-dom";
 import type { ChangeEvent, CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { formatNumber, useT } from "../../i18n";
+import { minecraftLocaleToBcp47, targetLanguageName } from "../../i18n/minecraftLanguages";
 import type { EditorColumn, EditorFilter, FocusedCell } from "../../stores/editorStore";
 import { useEditorStore } from "../../stores/editorStore";
-import type { EntryFlag, TranslationEntry } from "../../types/translation";
+import type { TranslationEntry } from "../../types/translation";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -46,35 +48,35 @@ const OVERSCAN = 8;
 // CSS側の末尾余白（44pxのクリック領域 + 24pxのspacing-xl）と合わせ、バーが最終行を覆わない。
 const SELECTION_TOOLBAR_SCROLL_PADDING = 68;
 
-const ORIGIN_LABELS: Record<TranslationEntry["origin"], string> = {
-  missing: "未翻訳",
-  existing: "既存訳",
-  ai: "AI",
-  edited: "編集済み",
-};
+const ORIGIN_LABELS = {
+  missing: "editor.origin.missing",
+  existing: "editor.origin.existing",
+  ai: "editor.origin.ai",
+  edited: "editor.origin.edited",
+} as const;
 
-const FLAG_LABELS: Record<EntryFlag, string> = {
-  source_fallback: "原文補完",
-  needs_review: "要確認",
-  placeholder_error: "置換文字列の警告",
-  malformed_source: "原文形式エラー",
-  asset_ambiguous: "関連するアセット候補が複数あります",
-  asset_missing: "関連するアセットがありません",
-  patchouli_text: "Patchouli本文",
-};
+const FLAG_LABELS = {
+  source_fallback: "editor.flag.sourceFallback",
+  needs_review: "editor.flag.needsReview",
+  placeholder_error: "editor.flag.placeholderWarning",
+  malformed_source: "editor.flag.malformedSource",
+  asset_ambiguous: "editor.flag.assetAmbiguous",
+  asset_missing: "editor.flag.assetMissing",
+  patchouli_text: "editor.flag.patchouliText",
+} as const;
 
-export const FILTER_OPTIONS: Array<[EditorFilter, string]> = [
-  ["all", "すべて"],
-  ["missing", "未翻訳"],
-  ["existing", "既存訳"],
-  ["ai", "AI"],
-  ["edited", "編集済み"],
-  ["needs_review", "要確認"],
-  ["source_fallback", "原文補完"],
-  ["placeholder_error", "置換文字列の警告"],
-  ["asset_missing", "関連するアセットなし"],
-  ["glossary_mismatch", "用語集と異なる"],
-];
+export const FILTER_OPTIONS = [
+  ["all", "editor.filter.all"],
+  ["missing", "editor.filter.missing"],
+  ["existing", "editor.filter.existing"],
+  ["ai", "editor.filter.ai"],
+  ["edited", "editor.filter.edited"],
+  ["needs_review", "editor.filter.needsReview"],
+  ["source_fallback", "editor.filter.sourceFallback"],
+  ["placeholder_error", "editor.filter.placeholderError"],
+  ["asset_missing", "editor.filter.assetMissing"],
+  ["glossary_mismatch", "editor.filter.glossaryMismatch"],
+] as const satisfies ReadonlyArray<readonly [EditorFilter, string]>;
 
 const ORIGIN_MARKS: Record<TranslationEntry["origin"], string> = {
   missing: "○",
@@ -105,6 +107,7 @@ export function TranslationTable({
   aiJobActive = false,
   onPaste,
 }: TranslationTableProps) {
+  const t = useT();
   const scrollRef = useRef<HTMLDivElement>(null);
   const focusSyncFrameRef = useRef<number | null>(null);
   const previousModUnitIdRef = useRef(useEditorStore.getState().activeModUnitId);
@@ -124,6 +127,9 @@ export function TranslationTable({
   const wrapTarget = useSettingsStore((state) => state.settings["editor.wrapTarget"]);
   const saveSettings = useSettingsStore((state) => state.save);
   const projectId = useProjectStore((state) => state.details?.project.id ?? "");
+  const targetLocale = useProjectStore((state) => state.details?.targetLocale ?? "ja_jp");
+  const targetLanguage = targetLanguageName(targetLocale);
+  const targetLang = minecraftLocaleToBcp47(targetLocale);
   const [columnWidths, setColumnWidths] = useState<Record<TableColumnId, number>>(DEFAULT_COLUMN_WIDTHS);
   const columnWidthsRef = useRef(columnWidths);
   const [userSizedColumns, setUserSizedColumns] = useState<ReadonlySet<TableColumnId>>(() => new Set());
@@ -171,17 +177,17 @@ export function TranslationTable({
 
   const tableColumns = useMemo<TableColumn[]>(
     () => [
-      { id: "key", label: "キー" },
-      { id: "source", label: "原文" },
-      { id: "target", label: "日本語訳" },
-      { id: "state", label: "状態" },
-      ...(hasMultipleNamespaces ? [{ id: "namespace" as const, label: "名前空間" }] : []),
+      { id: "key", label: t("editor.column.key") },
+      { id: "source", label: t("editor.column.source") },
+      { id: "target", label: t("editor.column.target", { language: targetLanguage }) },
+      { id: "state", label: t("editor.column.state") },
+      ...(hasMultipleNamespaces ? [{ id: "namespace" as const, label: t("editor.column.namespace") }] : []),
     ],
-    [hasMultipleNamespaces],
+    [hasMultipleNamespaces, t, targetLanguage],
   );
   const gridColumns = useMemo<TableColumn[]>(
-    () => [{ id: "preview", label: "プレビュー" }, ...tableColumns],
-    [tableColumns],
+    () => [{ id: "preview", label: t("editor.column.preview") }, ...tableColumns],
+    [tableColumns, t],
   );
   const visibleColumnIds = gridColumns.map(({ id }) => id);
   const preferredTableWidth = visibleColumnIds.reduce((sum, id) => sum + columnWidths[id], 0);
@@ -385,7 +391,7 @@ export function TranslationTable({
             ? entry.targetText
             : columnId === "namespace"
               ? entry.namespace
-              : `${ORIGIN_LABELS[entry.origin]} ${entry.flags.length ? "!" : ""}`;
+              : `${t(ORIGIN_LABELS[entry.origin])} ${entry.flags.length ? "!" : ""}`;
       const measured = estimateTextWidth(value, fontSize, MAX_COLUMN_WIDTH - 32);
       maxTextWidth = Math.max(maxTextWidth, measured);
       if (maxTextWidth >= MAX_COLUMN_WIDTH - 32) break;
@@ -460,12 +466,12 @@ export function TranslationTable({
   return (
     <>
       <span id="translation-table-shortcuts" className="visually-hidden">
-        矢印でセルを移動、PageUp / PageDownでページ移動、Home / Endで先頭 / 末尾へ移動、Spaceで行を選択、EnterまたはF2で編集、Tabで次の訳へ移動、Shift+Enterで改行、Ctrl+Cでコピー、Ctrl+Vで貼り付け、Ctrl+Zで元に戻す、Ctrl+Yでやり直す、Escapeで選択解除。
+        {t("editor.table.shortcuts")}
       </span>
       <div
         className="editor-table"
         role="grid"
-        aria-label="翻訳一覧"
+        aria-label={t("editor.table.ariaLabel")}
         aria-describedby="translation-table-shortcuts"
         aria-rowcount={filteredIds.length + 1}
         aria-colcount={gridColumns.length}
@@ -489,7 +495,7 @@ export function TranslationTable({
               <div
                 className={`editor-table__heading${column.id === "preview" ? " editor-table__heading--preview" : ""}`}
                 role="columnheader"
-                aria-label={column.label || "プレビュー"}
+                aria-label={column.label || t("editor.table.preview")}
                 aria-colindex={index + 1}
                 key={column.id}
               >
@@ -519,6 +525,8 @@ export function TranslationTable({
                 rowHeight={virtualRow.size}
                 measureElement={virtualizer.measureElement}
                 projectId={projectId}
+                targetLang={targetLang}
+                targetLanguage={targetLanguage}
                 onSelect={selectEntry}
                 onCopyEntries={onCopyEntries}
                 onTranslateEntries={onTranslateEntries}
@@ -532,7 +540,7 @@ export function TranslationTable({
           })}
           {filteredIds.length === 0 && (
             <output className="editor-table__empty" aria-live="polite">
-              該当する項目はありません
+              {t("editor.table.empty")}
             </output>
           )}
         </div>
@@ -555,6 +563,7 @@ function ColumnResizeHandle({
   onCommit: () => void;
   onAutoFit: () => void;
 }) {
+  const t = useT();
   const drag = useRef<{ pointerId: number; x: number; width: number } | null>(null);
 
   const resize = (event: PointerEvent<HTMLDivElement>) => {
@@ -572,12 +581,12 @@ function ColumnResizeHandle({
     <div
       className="editor-table__resize-handle"
       role="separator"
-      aria-label={`${column.label}列の幅`}
+      aria-label={t("editor.table.columnWidth", { column: column.label })}
       aria-orientation="vertical"
       aria-valuemin={MIN_COLUMN_WIDTHS[column.id]}
       aria-valuemax={MAX_COLUMN_WIDTH}
       aria-valuenow={width}
-      aria-valuetext={`${width} ピクセル`}
+      aria-valuetext={t("editor.pixels", { value: formatNumber(width) })}
       aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
       tabIndex={0}
       onPointerDown={(event) => {
@@ -615,6 +624,8 @@ interface EditorRowProps {
   rowHeight: number;
   measureElement: (node: HTMLDivElement | null) => void;
   projectId: string;
+  targetLang: string | undefined;
+  targetLanguage: string;
   onSelect: (entryId: number, mode?: "replace" | "toggle" | "range") => void;
   onCopyEntries: (entryIds: number[], column: "key" | "source" | "target") => void;
   onTranslateEntries: (entryIds: number[]) => void;
@@ -635,6 +646,8 @@ const EditorRow = memo(function EditorRow({
   rowHeight,
   measureElement,
   projectId,
+  targetLang,
+  targetLanguage,
   onSelect,
   onCopyEntries,
   onTranslateEntries,
@@ -644,6 +657,7 @@ const EditorRow = memo(function EditorRow({
   editEntry,
   setFocusedCell,
 }: EditorRowProps) {
+  const t = useT();
   const entry = useEditorStore((state) => state.entries.get(entryId));
   const selected = useEditorStore((state) => state.selectedIdSet.has(entryId));
   const aiHighlighted = useEditorStore((state) => state.aiHighlightedIds.has(entryId));
@@ -792,10 +806,11 @@ const EditorRow = memo(function EditorRow({
   };
 
   const stateClass = `editor-state editor-state--${entry.origin}`;
+  const originLabel = t(ORIGIN_LABELS[entry.origin]);
   // アセット未解決は翻訳を妨げないため、状態列のエラー表示には含めない。
   const warnings = entry.flags
     .filter((flag) => flag !== "asset_missing" && flag !== "asset_ambiguous" && flag !== "patchouli_text")
-    .map((flag) => FLAG_LABELS[flag]);
+    .map((flag) => t(FLAG_LABELS[flag]));
 
   const prepareContextMenu = () => {
     const state = useEditorStore.getState();
@@ -824,7 +839,9 @@ const EditorRow = memo(function EditorRow({
   const editor = editing ? (
     <textarea
       ref={inputRef}
-      aria-label={`${entry.key} の日本語訳`}
+      aria-label={t("editor.entry.targetAriaLabel", { key: entry.key, language: targetLanguage })}
+      lang={targetLang}
+      dir="auto"
       rows={1}
       value={draft}
       onFocus={() => { movingEditorRef.current = false; }}
@@ -921,13 +938,15 @@ const EditorRow = memo(function EditorRow({
         data-testid={`translation-target-${entry.key}`}
         tabIndex={focusedCell?.entryId === entryId && focusedCell.column === "target" ? 0 : -1}
         aria-colindex={4}
+        lang={targetLang}
+        dir="auto"
         onClick={selectRow}
         onFocus={() => focusColumn("target")}
         onKeyDown={(event) => handleCellKeyDown("target", event)}
         onDoubleClick={beginEdit}
       >
         {editing ? (editorOverlay ? null : editor) : (
-          <span className="editor-table__target-text">{entry.targetText || ""}</span>
+          <span className="editor-table__target-text" lang={targetLang} dir="auto">{entry.targetText || ""}</span>
         )}
       </div>
       <div
@@ -941,14 +960,14 @@ const EditorRow = memo(function EditorRow({
         onFocus={() => focusColumn("state")}
         onKeyDown={(event) => handleCellKeyDown("state", event)}
       >
-        <span className={stateClass} aria-label={ORIGIN_LABELS[entry.origin]}>
+        <span className={stateClass} aria-label={originLabel}>
           <span aria-hidden="true">{ORIGIN_MARKS[entry.origin]}</span>
-          <span>{ORIGIN_LABELS[entry.origin]}</span>
+          <span>{originLabel}</span>
         </span>
         {warnings.length > 0 && (
-          <Tooltip content={warnings.join("、")}>
-            <span className="editor-table__warning" aria-label={warnings.join("、")}>
-              ! <span className="visually-hidden">{warnings.join("、")}</span>
+          <Tooltip content={warnings.join(t("editor.listSeparator"))}>
+            <span className="editor-table__warning" aria-label={warnings.join(t("editor.listSeparator"))}>
+              ! <span className="visually-hidden">{warnings.join(t("editor.listSeparator"))}</span>
             </span>
           </Tooltip>
         )}
@@ -970,14 +989,14 @@ const EditorRow = memo(function EditorRow({
       )}
     </div>
     {contextMenu.position && (
-      <ContextMenu label="翻訳項目の操作" position={contextMenu.position} onClose={contextMenu.close}>
-        {contextEntryIds.length > 1 && <ContextMenuLabel>{contextEntryIds.length.toLocaleString("ja-JP")}件</ContextMenuLabel>}
+      <ContextMenu label={t("editor.table.itemActions")} position={contextMenu.position} onClose={contextMenu.close}>
+        {contextEntryIds.length > 1 && <ContextMenuLabel>{t("editor.table.selectedCount", { count: formatNumber(contextEntryIds.length) })}</ContextMenuLabel>}
         <ContextMenuItem
           disabled={aiJobActive}
           aria-keyshortcuts="Control+Enter"
           onClick={() => onTranslateEntries(contextEntryIds)}
         >
-          AIで翻訳
+          {t("editor.table.translate")}
           <ContextMenuShortcut>Ctrl+Enter</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem
@@ -990,14 +1009,14 @@ const EditorRow = memo(function EditorRow({
             }));
           }}
         >
-          原文を訳にコピー
+          {t("editor.table.copySourceToTarget")}
         </ContextMenuItem>
         <ContextMenuItem
           className="context-menu__item--danger"
           disabled={aiJobActive}
           onClick={() => useEditorStore.getState().applyBatchEdits(contextEntryIds.map((id) => ({ entryId: id, targetText: "" })))}
         >
-          訳を削除
+          {t("editor.table.deleteTarget")}
         </ContextMenuItem>
         {contextEntryIds.length === 1 && (
           <ContextMenuItem
@@ -1006,13 +1025,13 @@ const EditorRow = memo(function EditorRow({
               if (entry?.sourceText) onAddGlossary(entry.sourceText, entry.targetText);
             }}
           >
-            用語集に追加
+            {t("editor.table.addGlossary")}
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "key")}>キーをコピー</ContextMenuItem>
-        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "source")}>原文をコピー</ContextMenuItem>
-        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "target")}>訳をコピー</ContextMenuItem>
+        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "key")}>{t("editor.table.copyKey")}</ContextMenuItem>
+        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "source")}>{t("editor.table.copySource")}</ContextMenuItem>
+        <ContextMenuItem onClick={() => onCopyEntries(contextEntryIds, "target")}>{t("editor.table.copyTarget")}</ContextMenuItem>
       </ContextMenu>
     )}
     {editing && editorOverlay && editor && createPortal(
@@ -1023,7 +1042,7 @@ const EditorRow = memo(function EditorRow({
       >
         {entry.sourceText && (
           <div className="editor-table__editor-source">
-            <span>原文</span>
+            <span>{t("editor.column.source")}</span>
             <p>{entry.sourceText}</p>
           </div>
         )}
@@ -1036,9 +1055,10 @@ const EditorRow = memo(function EditorRow({
 });
 
 function RowThumbnail({ entry, projectId }: { entry: TranslationEntry; projectId: string }) {
+  const t = useT();
   const source = usePreviewThumbnail(entry, projectId);
   return (
-    <div className="editor-table__cell editor-table__thumbnail-cell" role="gridcell" aria-colindex={1} aria-label={source ? `${entry.key}のプレビュー` : "プレビューなし"} data-testid={`translation-thumbnail-${entry.key}`}>
+    <div className="editor-table__cell editor-table__thumbnail-cell" role="gridcell" aria-colindex={1} aria-label={source ? t("editor.table.entryPreview", { key: entry.key }) : t("editor.table.noPreview")} data-testid={`translation-thumbnail-${entry.key}`}>
       {/* message.* などプレビューと無関係な行に空の枠を並べると表が騒がしくなるため、
           ブロック・アイテム・エンティティのキーの行にだけ枠を出す。 */}
       {isPreviewableEntry(entry) && (
@@ -1060,7 +1080,8 @@ function estimateTextWidth(text: string, fontSize: number, limit = Number.POSITI
   let width = 0;
   for (const character of text) {
     const codePoint = character.codePointAt(0) ?? 0;
-    const factor = /\s/.test(character) ? 0.35 : codePoint >= 0x2e80 ? 1 : 0.56;
+    const isWide = codePoint >= 0x2e80 || (codePoint >= 0x1100 && codePoint <= 0x11ff);
+    const factor = /\s/.test(character) ? 0.35 : isWide ? 1 : 0.56;
     width += fontSize * factor;
     if (width >= limit) return width;
   }
