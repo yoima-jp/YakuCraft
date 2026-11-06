@@ -1,11 +1,11 @@
 use std::{collections::HashMap, fs, path::Path, sync::Mutex};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tauri::State;
 use uuid::Uuid;
 use yc_project::{AppSettings, ProjectError, load_settings, save_settings as save_app_settings};
 
-use crate::{error::AppError, state::AppState};
+use crate::{error::AppError, paths::AppPaths, state::AppState};
 
 static SETTINGS_FILE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -17,14 +17,104 @@ pub(crate) fn update_settings_file<E>(
     map_load_error: impl Fn(ProjectError) -> E,
     map_save_error: impl Fn(ProjectError) -> E,
 ) -> Result<AppSettings, E> {
+    update_settings_file_if(
+        path,
+        |settings| update(settings).map(|()| true),
+        map_load_error,
+        map_save_error,
+    )
+}
+
+fn update_settings_file_if<E>(
+    path: impl AsRef<Path>,
+    update: impl FnOnce(&mut AppSettings) -> Result<bool, E>,
+    map_load_error: impl Fn(ProjectError) -> E,
+    map_save_error: impl Fn(ProjectError) -> E,
+) -> Result<AppSettings, E> {
     let _guard = SETTINGS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let path = path.as_ref();
     let mut current = load_settings(path).map_err(map_load_error)?;
-    update(&mut current)?;
-    save_app_settings(path, &current).map_err(map_save_error)?;
+    if update(&mut current)? {
+        save_app_settings(path, &current).map_err(map_save_error)?;
+    }
     Ok(current)
+}
+
+/// 一度だけ既存環境を判定し、設定をロック内で移行する。
+pub(crate) fn migrate_settings(paths: &AppPaths) {
+    if let Err(error) = migrate_settings_files(&paths.settings_file, &paths.projects_dir) {
+        tracing::warn!(%error, "settings migration could not be applied");
+    }
+}
+
+fn migrate_settings_files(settings_file: &Path, projects_dir: &Path) -> Result<(), ProjectError> {
+    let settings_file_existed = settings_file.exists();
+    update_settings_file_if(
+        settings_file,
+        |settings| {
+            if settings.values.contains_key("onboarding.completed") {
+                return Ok(false);
+            }
+
+            let existing_environment =
+                settings_file_existed || contains_project_database(projects_dir)?;
+            if existing_environment {
+                settings
+                    .values
+                    .entry("language.uiLanguage".to_owned())
+                    .or_insert_with(|| json!("ja"));
+                settings
+                    .values
+                    .entry("language.targetLocale".to_owned())
+                    .or_insert_with(|| json!("ja_jp"));
+                settings
+                    .values
+                    .insert("onboarding.completed".to_owned(), json!(true));
+            } else {
+                // falseを保存して判定結果を固定し、オンボーディング中の別設定保存で
+                // 次回起動時に既存環境として誤判定されないようにする。
+                settings
+                    .values
+                    .insert("onboarding.completed".to_owned(), json!(false));
+            }
+            Ok(true)
+        },
+        |error| error,
+        |error| error,
+    )?;
+    Ok(())
+}
+
+fn contains_project_database(projects_dir: &Path) -> Result<bool, ProjectError> {
+    // yc-projectのproject.rsで使うデータベース名。
+    const DATABASE_FILE_NAME: &str = "project.sqlite";
+
+    for entry in fs::read_dir(projects_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(project_id) = Uuid::parse_str(file_name) else {
+            continue;
+        };
+        if !project_id.to_string().eq_ignore_ascii_case(file_name) {
+            continue;
+        }
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let database = entry.path().join(DATABASE_FILE_NAME);
+        match fs::symlink_metadata(database) {
+            Ok(metadata) if metadata.is_file() => return Ok(true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -38,11 +128,15 @@ pub fn save_settings(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     let recent_projects_count_changed = settings.contains_key("general.recentProjectsCount");
-    update_settings_file(
+    let mut ui_language_changed = false;
+    let updated = update_settings_file(
         &state.paths.settings_file,
         |current| {
             for (key, value) in settings {
                 if key != "schemaVersion" {
+                    if key == "language.uiLanguage" {
+                        ui_language_changed = current.values.get(&key) != Some(&value);
+                    }
                     current.values.insert(key, value);
                 }
             }
@@ -51,6 +145,15 @@ pub fn save_settings(
         settings_error,
         settings_error,
     )?;
+    if ui_language_changed {
+        let language = updated
+            .values
+            .get("language.uiLanguage")
+            .and_then(Value::as_str)
+            .and_then(yc_locale::UiLanguage::parse)
+            .unwrap_or(yc_locale::UiLanguage::En);
+        yc_locale::set_ui_language(language);
+    }
 
     if recent_projects_count_changed {
         // 件数を減らした場合も最近の一覧とJSONの保持数を同じ操作でそろえる。
@@ -152,7 +255,7 @@ mod tests {
     use uuid::Uuid;
     use yc_project::{load_settings, open_project};
 
-    use super::{clear_cache_contents, update_settings_file};
+    use super::{clear_cache_contents, migrate_settings_files, update_settings_file};
     use crate::{paths::AppPaths, state::AppState};
 
     #[test]
@@ -312,6 +415,106 @@ mod tests {
             .expect("thumbnail cache should be recreated on demand");
         fs::write(regenerated_thumbnail, b"regenerated")
             .expect("thumbnail can be regenerated for the open project");
+    }
+
+    #[test]
+    fn new_install_with_empty_projects_and_recent_file_stays_in_onboarding() {
+        let temporary = TemporaryDirectory::create();
+        let projects_dir = temporary.0.join("projects");
+        fs::create_dir_all(&projects_dir).expect("projects directory should exist");
+        let settings_file = temporary.0.join("settings.json");
+        fs::write(temporary.0.join("recent.json"), b"{}").expect("recent file should exist");
+
+        migrate_settings_files(&settings_file, &projects_dir)
+            .expect("new installation migration should succeed");
+
+        let settings = load_settings(settings_file).expect("settings should be valid");
+        assert_eq!(settings.values["onboarding.completed"], json!(false));
+        assert!(!settings.values.contains_key("language.uiLanguage"));
+        assert!(!settings.values.contains_key("language.targetLocale"));
+    }
+
+    #[test]
+    fn existing_settings_file_completes_onboarding_and_uses_japanese_defaults() {
+        let temporary = TemporaryDirectory::create();
+        let projects_dir = temporary.0.join("projects");
+        fs::create_dir_all(&projects_dir).expect("projects directory should exist");
+        let settings_file = temporary.0.join("settings.json");
+        fs::write(&settings_file, b"{\"advanced.debugLogs\":true}")
+            .expect("existing settings should be written");
+
+        migrate_settings_files(&settings_file, &projects_dir)
+            .expect("existing installation migration should succeed");
+
+        let settings = load_settings(settings_file).expect("settings should be valid");
+        assert_eq!(settings.values["onboarding.completed"], json!(true));
+        assert_eq!(settings.values["language.uiLanguage"], json!("ja"));
+        assert_eq!(settings.values["language.targetLocale"], json!("ja_jp"));
+        assert_eq!(settings.values["advanced.debugLogs"], json!(true));
+    }
+
+    #[test]
+    fn project_database_without_settings_identifies_an_existing_installation() {
+        let temporary = TemporaryDirectory::create();
+        let projects_dir = temporary.0.join("projects");
+        let project_dir = projects_dir.join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&project_dir).expect("project directory should exist");
+        fs::write(project_dir.join("project.sqlite"), b"project database")
+            .expect("database file should exist");
+        let settings_file = temporary.0.join("settings.json");
+
+        migrate_settings_files(&settings_file, &projects_dir)
+            .expect("existing project migration should succeed");
+
+        let settings = load_settings(settings_file).expect("settings should be valid");
+        assert_eq!(settings.values["onboarding.completed"], json!(true));
+        assert_eq!(settings.values["language.uiLanguage"], json!("ja"));
+        assert_eq!(settings.values["language.targetLocale"], json!("ja_jp"));
+    }
+
+    #[test]
+    fn corrupt_settings_are_left_unchanged() {
+        let temporary = TemporaryDirectory::create();
+        let projects_dir = temporary.0.join("projects");
+        fs::create_dir_all(&projects_dir).expect("projects directory should exist");
+        let settings_file = temporary.0.join("settings.json");
+        let contents = b"{broken json";
+        fs::write(&settings_file, contents).expect("corrupt settings should be written");
+
+        assert!(migrate_settings_files(&settings_file, &projects_dir).is_err());
+        assert_eq!(
+            fs::read(settings_file).expect("settings should remain present"),
+            contents
+        );
+    }
+
+    #[test]
+    fn migration_is_a_noop_after_completion_and_preserves_existing_values() {
+        let temporary = TemporaryDirectory::create();
+        let projects_dir = temporary.0.join("projects");
+        fs::create_dir_all(&projects_dir).expect("projects directory should exist");
+        let settings_file = temporary.0.join("settings.json");
+        fs::write(
+            &settings_file,
+            br#"{"language.uiLanguage":"ko","language.targetLocale":"ko_kr","other.setting":7}"#,
+        )
+        .expect("existing settings should be written");
+
+        migrate_settings_files(&settings_file, &projects_dir)
+            .expect("first migration should succeed");
+        let migrated = fs::read(&settings_file).expect("migrated settings should exist");
+        migrate_settings_files(&settings_file, &projects_dir)
+            .expect("second migration should succeed");
+
+        assert_eq!(
+            fs::read(&settings_file).expect("settings should exist"),
+            migrated
+        );
+        let settings = load_settings(settings_file).expect("settings should be valid");
+        assert_eq!(settings.values["onboarding.completed"], json!(true));
+        assert_eq!(settings.values["language.uiLanguage"], json!("ko"));
+        assert_eq!(settings.values["language.targetLocale"], json!("ko_kr"));
+        assert_eq!(settings.values["other.setting"], json!(7));
     }
 
     struct TemporaryDirectory(PathBuf);

@@ -7,3 +7,6 @@ version = "1.2.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
+
+[workspace.dependencies]
+sys-locale = "=0.3.2"

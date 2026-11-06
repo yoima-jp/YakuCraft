@@ -15,19 +15,34 @@ pub fn run() {
         .setup(|app| {
             let app_local_data_dir = app.path().app_local_data_dir()?;
             let paths = paths::AppPaths::create(app_local_data_dir)?;
-            let settings = match yc_project::load_settings(&paths.settings_file) {
+            let initial_settings = match yc_project::load_settings(&paths.settings_file) {
                 Ok(settings) => settings,
                 Err(error) => {
                     eprintln!("設定を読み込めないため、Debug logsを無効にします: {error}");
                     yc_project::AppSettings::default()
                 }
             };
-            let debug_logs = settings
+            let debug_logs = initial_settings
                 .values
                 .get("advanced.debugLogs")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let log_guard = logging::init(&paths.logs_dir, debug_logs)?;
+            commands::settings::migrate_settings(&paths);
+            let settings = match yc_project::load_settings(&paths.settings_file) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("設定を読み込めないため、UI言語を英語にします: {error}");
+                    yc_project::AppSettings::default()
+                }
+            };
+            let ui_language = settings
+                .values
+                .get("language.uiLanguage")
+                .and_then(serde_json::Value::as_str)
+                .and_then(yc_locale::UiLanguage::parse)
+                .unwrap_or(yc_locale::UiLanguage::En);
+            yc_locale::set_ui_language(ui_language);
             if let Err(error) = yc_project::cleanup_trash_directories(&paths.projects_dir) {
                 tracing::warn!(%error, "deferred Project deletion sweep could not inspect projects directory");
             }
@@ -36,6 +51,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::get_app_info,
+            commands::app::get_system_locale,
             commands::app::exit_app,
             commands::project::create_project_from_jars,
             commands::project::list_mod_units,
