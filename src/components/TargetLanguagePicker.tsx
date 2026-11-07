@@ -20,6 +20,11 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
   const t = useT();
   const uiLanguage = useUiLanguage();
   const listRef = useRef<HTMLUListElement>(null);
+  // 文字入力欄はマウスで押しても :focus-visible に一致するため、そのままだと押しただけで緑のリングが出る。
+  // この欄は見た目も役割もセレクトと同じなので、ボタン製の Select と同じくマウス操作ではリングを出さず、
+  // Tab で入ったときだけ出す。pointerdown は focus より先に届くので、その印を focus で受け取って判定する。
+  const pointerDownRef = useRef(false);
+  const [pointerFocused, setPointerFocused] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -94,7 +99,13 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
         autoComplete="off"
         value={open ? query : selectedLabel}
         placeholder={t("common.targetLanguageSearch")}
+        data-pointer-focus={pointerFocused || undefined}
+        onPointerDown={() => {
+          pointerDownRef.current = true;
+        }}
         onFocus={() => {
+          setPointerFocused(pointerDownRef.current);
+          pointerDownRef.current = false;
           setQuery("");
           setOpen(true);
           setActiveIndex(0);
@@ -106,6 +117,9 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
         }}
         onKeyDown={handleKeyDown}
         onBlur={(event) => {
+          // フォーカス中に押された分の印が残ると、次に Tab で入ったときにリングが消えるため、ここで捨てる。
+          pointerDownRef.current = false;
+          setPointerFocused(false);
           if (event.relatedTarget instanceof Node && event.currentTarget.parentElement?.contains(event.relatedTarget)) return;
           setOpen(false);
           setQuery("");

@@ -88,11 +88,8 @@
   resize: vertical;
 }
 
-.settings-field .select {
-  inline-size: 100%;
-  max-inline-size: 13rem;
-}
-
+/* 選択肢の文言は UI 言語で長さが大きく変わるため、幅を固定値で絞らず欄の幅まで使い、折り返しを防ぐ。 */
+.settings-field .select,
 .settings-field .number-input {
   inline-size: 100%;
 }

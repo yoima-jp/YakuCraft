@@ -21,6 +21,11 @@
   outline-offset: var(--focus-ring-offset);
 }
 
+/* global.css のリングは !important なので、マウスで入ったときの打ち消しにも !important が要る。 */
+.target-language-picker__input[data-pointer-focus]:focus-visible {
+  outline: none !important;
+}
+
 .target-language-picker__list {
   position: absolute;
   z-index: var(--z-popover);
