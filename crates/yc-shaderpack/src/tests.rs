@@ -187,6 +187,52 @@ fn japanese_shaderpack_output_keeps_source_locale_case_with_existing_target() ->
 }
 
 #[test]
+fn translated_zip_adds_extra_files_at_the_archive_root_only_when_passed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().join("pack.zip");
+    let without = dir.path().join("without.zip");
+    let with = dir.path().join("with.zip");
+    let mut zip = ZipWriter::new(File::create(&source)?);
+    for (name, contents) in [
+        ("shaders/lang/en_US.lang", &b"option=old"[..]),
+        ("shaders/main.fsh", &b"shader"[..]),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(contents)?;
+    }
+    zip.finish()?;
+
+    write_translated_zip(
+        &source,
+        &without,
+        "en_US.lang",
+        "ja_jp",
+        &[("option".into(), "あ".into())],
+    )?;
+    write_translated_zip_with_extra_files(
+        &source,
+        &with,
+        "en_US.lang",
+        "ja_jp",
+        &[("option".into(), "あ".into())],
+        &[(
+            "PLaMo_NOTICE.txt".to_owned(),
+            b"Built with PLaMo\n".to_vec(),
+        )],
+    )?;
+
+    let mut without_zip = ZipArchive::new(File::open(&without)?)?;
+    assert!(without_zip.by_name("PLaMo_NOTICE.txt").is_err());
+    let mut with_zip = ZipArchive::new(File::open(&with)?)?;
+    let mut notice = Vec::new();
+    with_zip
+        .by_name("PLaMo_NOTICE.txt")?
+        .read_to_end(&mut notice)?;
+    assert_eq!(notice, b"Built with PLaMo\n");
+    Ok(())
+}
+
+#[test]
 fn german_shaderpack_uses_de_de_and_english_target_keeps_untranslated_keys() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let source = dir.path().join("pack.zip");

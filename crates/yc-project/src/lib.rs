@@ -15,12 +15,12 @@ pub use files::{load_recent_projects, load_settings, save_recent_projects, save_
 pub use glossary::{GlossaryMatcher, format_glossary_export, parse_glossary_import};
 pub use lock::{LockRecord, ProjectLock};
 pub use model::{
-    AnalysisData, AppSettings, AssetRecord, DocumentEntryInput, DocumentProjectEntry, EntryUpdate,
-    FileDeploymentRecord, GlossaryTerm, GlossaryTermInput, IncludedNamespace, JarReplacementRecord,
-    LanguageRecord, ModRecord, ModUnitRecord, ModUnitSourceKind, NamespaceRecord,
-    NestedArchiveRecord, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary, ProjectMetadata,
-    ProjectReviewSettings, ProjectSummary, RecentProject, RecentProjects, TranslationAssetMatch,
-    TranslationEntryKind, TranslationProgress, UpdateOrigin,
+    AiJobApplication, AnalysisData, AppSettings, AssetRecord, DocumentEntryInput,
+    DocumentProjectEntry, EntryUpdate, FileDeploymentRecord, GlossaryTerm, GlossaryTermInput,
+    IncludedNamespace, JarReplacementRecord, LanguageRecord, ModRecord, ModUnitRecord,
+    ModUnitSourceKind, NamespaceRecord, NestedArchiveRecord, ProjectAssetIndex, ProjectEntry,
+    ProjectEntrySummary, ProjectMetadata, ProjectReviewSettings, ProjectSummary, RecentProject,
+    RecentProjects, TranslationAssetMatch, TranslationEntryKind, TranslationProgress, UpdateOrigin,
 };
 pub use project::{
     ModpackSource, OpenedProject, ProjectSource, cleanup_trash_directories, create_project,

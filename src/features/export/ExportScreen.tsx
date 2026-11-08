@@ -1266,6 +1266,13 @@ export function ExportScreen() {
         </>
       )}
 
+      {/* Direct modpack deployment writes into the local instance and skips the notice. */}
+      {overview?.includesPlamoOutput && !(kind === "modpackFiles" && destination === "instance") && (
+        <p className="export-screen__hint">
+          {t("export.hint.plamoNotice")}
+        </p>
+      )}
+
       {kind === "resourcePack" && selectedFtbQuestEntries > 0 && (
         <p className="export-screen__hint">
           {t("export.hint.ftbQuests")}

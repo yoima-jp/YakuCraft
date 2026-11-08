@@ -42,10 +42,30 @@ pub fn export_modified_jar(
     output_path: impl AsRef<Path>,
     overwrite: bool,
 ) -> Result<PathBuf, ExportError> {
+    export_modified_jar_with_extra_files(input, original_jar_path, output_path, &[], overwrite)
+}
+
+/// Same as [`export_modified_jar`] but adds `extra_files` at the JAR root.
+///
+/// The PLaMo notice is passed here. It is added to `generated` before the expected entry list is
+/// built, so the archive validation and the in-place replacement bookkeeping stay consistent.
+pub fn export_modified_jar_with_extra_files(
+    input: &ExportInput<'_>,
+    original_jar_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    extra_files: &[(String, Vec<u8>)],
+    overwrite: bool,
+) -> Result<PathBuf, ExportError> {
     let original_jar_path = original_jar_path.as_ref();
     let output_path = output_path.as_ref();
     validate_modified_jar_input(input, original_jar_path)?;
-    export_modified_jar_validated(input, original_jar_path, output_path, overwrite)
+    export_modified_jar_validated(
+        input,
+        original_jar_path,
+        output_path,
+        extra_files,
+        overwrite,
+    )
 }
 
 pub(crate) fn validate_modified_jar_input(
@@ -166,6 +186,7 @@ pub(crate) fn export_modified_jar_validated(
     input: &ExportInput<'_>,
     original_jar_path: &Path,
     output_path: &Path,
+    extra_files: &[(String, Vec<u8>)],
     overwrite: bool,
 ) -> Result<PathBuf, ExportError> {
     if output_path.exists()
@@ -261,6 +282,17 @@ pub(crate) fn export_modified_jar_validated(
             .is_some()
         {
             return Err(ExportError::DuplicateTargetEntry(container_path));
+        }
+    }
+
+    // The notice is registered as a generated entry before the expected list is built, so the
+    // archive validation and the in-place replacement hashes cover it like any other entry.
+    for (path, bytes) in extra_files {
+        if normalize_archive_path(path).as_deref() != Ok(path.as_str()) {
+            return Err(ExportError::UnsafeArchivePath(path.clone()));
+        }
+        if generated.insert(path.clone(), bytes.clone()).is_some() {
+            return Err(ExportError::DuplicateTargetEntry(path.clone()));
         }
     }
 

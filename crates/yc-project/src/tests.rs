@@ -13,12 +13,12 @@ use yc_language::{
 };
 
 use crate::{
-    AnalysisData, EntryUpdate, GlossaryTermInput, JarReplacementRecord, LanguageRecord, LockRecord,
-    ModRecord, ModUnitSourceKind, NamespaceRecord, NestedArchiveRecord, ProjectError, ProjectLock,
-    ProjectSource, RecentProject, RecentProjects, TranslationProgress, UpdateOrigin,
-    create_project, create_project_with_sources_and_target_locale, database::open_database,
-    delete_project, list_projects, load_settings, normalize_project_name, open_project,
-    save_settings,
+    AiJobApplication, AnalysisData, EntryUpdate, GlossaryTermInput, JarReplacementRecord,
+    LanguageRecord, LockRecord, ModRecord, ModUnitSourceKind, NamespaceRecord, NestedArchiveRecord,
+    ProjectError, ProjectLock, ProjectSource, RecentProject, RecentProjects, TranslationProgress,
+    UpdateOrigin, create_project, create_project_with_sources_and_target_locale,
+    database::open_database, delete_project, list_projects, load_settings, normalize_project_name,
+    open_project, save_settings,
 };
 
 struct TestDirectory(PathBuf);
@@ -1103,6 +1103,244 @@ fn ai_and_manual_updates_set_origin_and_source_snapshot() {
     assert_eq!(settings.included_namespaces.len(), 1);
     assert_eq!(settings.included_namespaces[0].mod_unit_id, 1);
     assert_eq!(settings.included_namespaces[0].namespace, "test");
+}
+
+#[test]
+fn ai_job_usage_is_recorded_with_the_entry_updates_in_one_transaction() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("plamo.jar");
+    fs::write(&source_jar, b"jar").expect("write source fixture");
+    let created = create_project(&projects_root, std::slice::from_ref(&source_jar), None)
+        .expect("create Project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&created.id).expect("Project UUID"),
+    )
+    .expect("open Project");
+    let writer = opened.writer();
+    writer
+        .save_analysis(
+            1,
+            analysis_with_entries(vec![translation_entry(
+                "first",
+                "Hello",
+                TranslationOrigin::Missing,
+                "",
+                vec![],
+            )]),
+        )
+        .expect("save analysis");
+    let entries = opened
+        .repository()
+        .list_entries(None)
+        .expect("read inserted entries");
+    assert!(
+        !opened
+            .repository()
+            .has_applied_ai_provider("plamo")
+            .expect("read usage before any batch")
+    );
+
+    writer
+        .update_entries_recording_ai_job(
+            vec![EntryUpdate {
+                id: entries[0].id,
+                target_text: "PLaMo訳".to_owned(),
+                origin: UpdateOrigin::Ai,
+            }],
+            AiJobApplication {
+                job_id: Uuid::new_v4().to_string(),
+                provider: "plamo".to_owned(),
+                model: "plamo-3-translate-0.8b".to_owned(),
+                applied_entries: 1,
+            },
+        )
+        .expect("apply AI batch with usage record");
+
+    assert_eq!(
+        opened
+            .repository()
+            .list_entries(None)
+            .expect("read entries")[0]
+            .target_text
+            .as_deref(),
+        Some("PLaMo訳")
+    );
+    assert!(
+        opened
+            .repository()
+            .has_applied_ai_provider("plamo")
+            .expect("read recorded usage")
+    );
+    assert!(
+        !opened
+            .repository()
+            .has_applied_ai_provider("openai")
+            .expect("read other provider usage")
+    );
+}
+
+#[test]
+fn a_failed_ai_batch_leaves_neither_entry_updates_nor_a_usage_row() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("plamo-failure.jar");
+    fs::write(&source_jar, b"jar").expect("write source fixture");
+    let created = create_project(&projects_root, std::slice::from_ref(&source_jar), None)
+        .expect("create Project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&created.id).expect("Project UUID"),
+    )
+    .expect("open Project");
+    let writer = opened.writer();
+    writer
+        .save_analysis(
+            1,
+            analysis_with_entries(vec![translation_entry(
+                "first",
+                "Hello",
+                TranslationOrigin::Missing,
+                "",
+                vec![],
+            )]),
+        )
+        .expect("save analysis");
+    let entries = opened
+        .repository()
+        .list_entries(None)
+        .expect("read inserted entries");
+
+    // A missing entry id aborts the transaction, so the usage row must not survive either.
+    let result = writer.update_entries_recording_ai_job(
+        vec![
+            EntryUpdate {
+                id: entries[0].id,
+                target_text: "PLaMo訳".to_owned(),
+                origin: UpdateOrigin::Ai,
+            },
+            EntryUpdate {
+                id: entries[0].id + 999,
+                target_text: "存在しない".to_owned(),
+                origin: UpdateOrigin::Ai,
+            },
+        ],
+        AiJobApplication {
+            job_id: Uuid::new_v4().to_string(),
+            provider: "plamo".to_owned(),
+            model: "plamo-3-translate-0.8b".to_owned(),
+            applied_entries: 2,
+        },
+    );
+    assert!(matches!(result, Err(ProjectError::EntryNotFound(_))));
+    let after_failure = opened
+        .repository()
+        .list_entries(None)
+        .expect("read entries");
+    assert_eq!(after_failure[0].target_text, None);
+    assert_eq!(after_failure[0].origin, TranslationOrigin::Missing);
+    assert!(
+        !opened
+            .repository()
+            .has_applied_ai_provider("plamo")
+            .expect("read usage after a failed batch")
+    );
+}
+
+#[test]
+fn later_ai_batches_accumulate_into_the_same_job_row() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("plamo-batches.jar");
+    fs::write(&source_jar, b"jar").expect("write source fixture");
+    let created = create_project(&projects_root, std::slice::from_ref(&source_jar), None)
+        .expect("create Project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&created.id).expect("Project UUID"),
+    )
+    .expect("open Project");
+    let writer = opened.writer();
+    writer
+        .save_analysis(
+            1,
+            analysis_with_entries(vec![
+                translation_entry("first", "Hello", TranslationOrigin::Missing, "", vec![]),
+                translation_entry("second", "World", TranslationOrigin::Missing, "", vec![]),
+            ]),
+        )
+        .expect("save analysis");
+    let entries = opened
+        .repository()
+        .list_entries(None)
+        .expect("read inserted entries");
+    let job_id = Uuid::new_v4().to_string();
+    for (index, entry) in entries.iter().enumerate() {
+        writer
+            .update_entries_recording_ai_job(
+                vec![EntryUpdate {
+                    id: entry.id,
+                    target_text: format!("訳{index}"),
+                    origin: UpdateOrigin::Ai,
+                }],
+                AiJobApplication {
+                    job_id: job_id.clone(),
+                    provider: "plamo".to_owned(),
+                    model: "plamo-3-translate-0.8b".to_owned(),
+                    applied_entries: 1,
+                },
+            )
+            .expect("apply one batch of the job");
+    }
+
+    let connection = Connection::open(opened.directory().join("project.sqlite"))
+        .expect("open database for the usage row");
+    let (rows, completed): (i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(completed_items), 0) FROM ai_jobs
+             WHERE provider = 'plamo'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read accumulated usage");
+    assert_eq!(rows, 1);
+    assert_eq!(completed, 2);
+}
+
+#[test]
+fn an_empty_ai_batch_does_not_record_a_usage_row() {
+    let temporary = TestDirectory::new();
+    let projects_root = temporary.path().join("projects");
+    let source_jar = temporary.path().join("plamo-empty.jar");
+    fs::write(&source_jar, b"jar").expect("write source fixture");
+    let created = create_project(&projects_root, std::slice::from_ref(&source_jar), None)
+        .expect("create Project");
+    let opened = open_project(
+        &projects_root,
+        Uuid::parse_str(&created.id).expect("Project UUID"),
+    )
+    .expect("open Project");
+
+    opened
+        .writer()
+        .update_entries_recording_ai_job(
+            Vec::new(),
+            AiJobApplication {
+                job_id: Uuid::new_v4().to_string(),
+                provider: "plamo".to_owned(),
+                model: "plamo-3-translate-0.8b".to_owned(),
+                applied_entries: 0,
+            },
+        )
+        .expect("record an empty batch");
+
+    assert!(
+        !opened
+            .repository()
+            .has_applied_ai_provider("plamo")
+            .expect("read usage after an empty batch")
+    );
 }
 
 #[test]

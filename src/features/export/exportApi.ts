@@ -33,6 +33,8 @@ export interface ExportOverviewDto {
   units: ExportUnitStatusDto[];
   activeReplacements: JarReplacementDto[];
   activeFileDeployments?: FileDeploymentDto[];
+  /** True when PLaMo output was applied, so exports carry the license notice. */
+  includesPlamoOutput?: boolean;
 }
 
 export interface FileDeploymentDto {

@@ -393,6 +393,22 @@ pub struct EntryUpdate {
     pub origin: UpdateOrigin,
 }
 
+/// One batch of AI translations that was written into the project.
+///
+/// The record is kept in the existing `ai_jobs` table so that exports can tell whether the
+/// project contains output of a provider whose license requires an attribution notice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AiJobApplication {
+    /// Job identifier chosen by the caller; repeated batches of one job share it.
+    pub job_id: String,
+    /// Provider id such as `plamo`.
+    pub provider: String,
+    /// Model id used for the batch.
+    pub model: String,
+    /// Number of entries that this batch actually applied.
+    pub applied_entries: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectReviewSettings {

@@ -75,11 +75,15 @@ FTB Quests は lang フォルダにある単一版・分割版の SNBT ファイ
 
 ChatGPT、OpenAI、Claude（Anthropic）、Gemini、OpenRouter、DeepSeek、Groq、Ollama、LM Studio、OpenAI 互換（カスタム）、DeepL に対応しています。OpenAI 互換 API はプロバイダーごとの URL を設定済みです。モデル一覧を取得できる場合は候補から選ぶか、モデル ID を直接入力できます。ChatGPT はログイン後に候補を自動取得し、取得できない場合は従来の候補を表示します。Ollama と LM Studio は API キーなしで使えます。Windows では API キーと ChatGPT のログイン資格情報を Windows 資格情報マネージャーに、Linux では Secret Service に保存します。Linux で AI 翻訳を使うには、GNOME Keyring、KWallet などの Secret Service 対応ストアと D-Bus セッションが必要です。
 
+PLaMo 3 Translate（0.8B / 2B / 8B）は llama.cpp 経由で CPU でも GPU でもローカル翻訳に使えます。選択時にモデルとランタイムをダウンロードし、対応する翻訳先言語は PLaMo の言語に限られます。
+
 用語集は CSV / TSV で取り込めます。列は「原文、訳語、メモ、大小区別」の順で、大小区別は `true` / `false` を指定します。メモと大小区別は省略できます。CSV の書き出しには大小区別も含まれます。
 
 ## 生成物の再配布
 
 Mod の翻訳を含むリソースパックや JAR を配布する前に、各 Mod のライセンスと配布条件を確認してください。再配布できるかどうかは各 Mod のライセンスに従います。
+
+PLaMo で翻訳した内容には PLaMo コミュニティライセンスが適用されます。その場合、書き出したファイルには `PLaMo_NOTICE.txt`（「Built with PLaMo」とライセンス全文）が同梱されるので、配布時も削除しないでください。商用利用には PFN への登録が必要です（[PLaMo コミュニティライセンス](https://plamo.preferredai.jp/info/plamo-community-license-ja)）。
 
 ## 不具合の報告
 
