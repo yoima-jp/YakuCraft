@@ -1,0 +1,22 @@
+[package]
+name = "yc-plamo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+tracing = "0.1"
+yc-ai = { path = "../yc-ai" }
+yc-locale = { path = "../yc-locale" }
+yc-validation = { path = "../yc-validation" }
+
+[dev-dependencies]
+wiremock = "0.6"
