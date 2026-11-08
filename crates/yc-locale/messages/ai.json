@@ -230,6 +230,62 @@
     "zh-Hant": "DeepL 不支援此目標語言。請在設定中選擇其他 AI 服務提供者，或手動翻譯。",
     "ko": "DeepL은 이 대상 언어를 지원하지 않습니다. 설정에서 다른 AI 제공자를 선택하거나 직접 번역하세요."
   },
+  "ai.targetUnsupportedByProvider": {
+    "ja": "{provider} はこの翻訳先の言語に対応していません。設定で別のAIプロバイダーを選ぶか、手動で翻訳してください。",
+    "en": "{provider} does not support this target language. Choose another AI provider in Settings or translate manually.",
+    "zh-Hans": "{provider} 不支持此目标语言。请在设置中选择其他 AI 服务提供方，或手动翻译。",
+    "zh-Hant": "{provider} 不支援此目標語言。請在設定中選擇其他 AI 服務提供者，或手動翻譯。",
+    "ko": "{provider}은(는) 이 대상 언어를 지원하지 않습니다. 설정에서 다른 AI 제공자를 선택하거나 직접 번역하세요."
+  },
+  "ai.plamoNotReady": {
+    "ja": "PLaMoを使う準備ができていません。設定でモデルをダウンロードしてください。",
+    "en": "PLaMo is not ready. Download the model in Settings.",
+    "zh-Hans": "PLaMo 尚未准备就绪。请在设置中下载模型。",
+    "zh-Hant": "PLaMo 尚未準備就緒。請在設定中下載模型。",
+    "ko": "PLaMo를 사용할 준비가 되지 않았습니다. 설정에서 모델을 다운로드하세요."
+  },
+  "ai.plamoLicenseNotAccepted": {
+    "ja": "PLaMoのライセンスに同意してから、モデルをダウンロードしてください。",
+    "en": "Accept the PLaMo license before downloading the model.",
+    "zh-Hans": "请先同意 PLaMo 许可证，再下载模型。",
+    "zh-Hant": "請先同意 PLaMo 授權條款，再下載模型。",
+    "ko": "PLaMo 라이선스에 동의한 후 모델을 다운로드하세요."
+  },
+  "ai.plamoDownloadRunning": {
+    "ja": "ダウンロードはすでに実行中です。",
+    "en": "A download is already running.",
+    "zh-Hans": "下载已在运行。",
+    "zh-Hant": "下載已在執行。",
+    "ko": "다운로드가 이미 실행 중입니다."
+  },
+  "ai.plamoDownloadNetworkFailed": {
+    "ja": "ダウンロードできませんでした。接続を確認してもう一度お試しください。",
+    "en": "The download failed. Check your connection and try again.",
+    "zh-Hans": "下载失败。请检查网络连接后重试。",
+    "zh-Hant": "下載失敗。請檢查網路連線後再試一次。",
+    "ko": "다운로드하지 못했습니다. 연결을 확인하고 다시 시도하세요."
+  },
+  "ai.plamoDownloadChecksumFailed": {
+    "ja": "取得したファイルが壊れていました。もう一度ダウンロードしてください。",
+    "en": "The downloaded file was damaged. Download it again.",
+    "zh-Hans": "下载的文件已损坏。请重新下载。",
+    "zh-Hant": "下載的檔案已損毀。請重新下載。",
+    "ko": "내려받은 파일이 손상되었습니다. 다시 다운로드하세요."
+  },
+  "ai.plamoDownloadWriteFailed": {
+    "ja": "ファイルを書き込めませんでした。空き容量を確認してください。",
+    "en": "Could not write the file. Check the free disk space.",
+    "zh-Hans": "无法写入文件。请检查可用磁盘空间。",
+    "zh-Hant": "無法寫入檔案。請檢查可用磁碟空間。",
+    "ko": "파일을 쓸 수 없습니다. 여유 디스크 공간을 확인하세요."
+  },
+  "ai.plamoRuntimeStartFailed": {
+    "ja": "GPUでPLaMoを起動できませんでした。設定でデバイスをCPUに切り替えてください。",
+    "en": "Could not start PLaMo on the GPU. Switch the device to CPU in Settings.",
+    "zh-Hans": "无法在 GPU 上启动 PLaMo。请在设置中将设备切换为 CPU。",
+    "zh-Hant": "無法在 GPU 上啟動 PLaMo。請在設定中將裝置切換為 CPU。",
+    "ko": "GPU에서 PLaMo를 시작할 수 없습니다. 설정에서 장치를 CPU로 전환하세요."
+  },
   "ai.progressUnavailable": {
     "ja": "AI翻訳の進捗を受け取れませんでした。",
     "en": "Could not receive AI translation progress.",

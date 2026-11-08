@@ -40,6 +40,9 @@ pub enum ProviderId {
     LmStudio,
     #[serde(rename = "anthropic")]
     Anthropic,
+    /// ローカル実行の PLaMo。API Key を持たないため資格情報ストアは使わない。
+    #[serde(rename = "plamo")]
+    Plamo,
 }
 
 impl ProviderId {
@@ -56,7 +59,17 @@ impl ProviderId {
             Self::Ollama => "ollama",
             Self::LmStudio => "lm-studio",
             Self::Anthropic => "anthropic",
+            Self::Plamo => "plamo",
         }
+    }
+
+    /// 資格情報ストアを使わないプロバイダーか。
+    ///
+    /// PLaMo はローカルの `llama-server` とだけ通信し、Secret Service や Credential Manager を
+    /// 一切必要としない。ストアが壊れている環境でもローカル翻訳を止めないため、呼び出し側は
+    /// この判定で資格情報の読み書きを丸ごと飛ばす。
+    pub const fn uses_credential_store(self) -> bool {
+        !matches!(self, Self::Plamo)
     }
 
     fn account(self) -> String {

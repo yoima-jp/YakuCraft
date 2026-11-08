@@ -2,6 +2,11 @@ pub mod commands;
 pub mod error;
 pub mod logging;
 pub mod paths;
+pub mod plamo;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod plamo_real_tests;
+
 pub mod state;
 
 use tauri::Manager;
@@ -112,6 +117,12 @@ pub fn run() {
             commands::ai::start_chatgpt_login,
             commands::ai::cancel_chatgpt_login,
             commands::ai::logout_chatgpt,
+            commands::plamo::get_plamo_status,
+            commands::plamo::accept_plamo_license,
+            commands::plamo::download_plamo_files,
+            commands::plamo::cancel_plamo_download,
+            commands::plamo::delete_plamo_model,
+            commands::plamo::open_plamo_license,
             commands::glossary::list_glossary_terms,
             commands::glossary::upsert_glossary_term,
             commands::glossary::upsert_glossary_terms,

@@ -5,6 +5,7 @@ pub mod export;
 pub mod glossary;
 pub mod logs;
 mod modpack;
+pub mod plamo;
 pub mod preview;
 pub mod project;
 pub mod settings;
