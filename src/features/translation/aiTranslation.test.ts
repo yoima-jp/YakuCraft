@@ -229,8 +229,7 @@ describe("AI translation actions", () => {
     expect(useAiJobStore.getState().activeJob).toMatchObject({ id: "job-1", total: 1 });
   });
 
-  it("設定の取得中に入力した翻訳を最新件数で確認する", async () => {
-    let finishSettings!: (settings: Awaited<ReturnType<typeof getAiSettings>>) => void;
+  it("設定の取得中に入力した翻訳を最新件数で確認する", async () => {    let finishSettings!: (settings: Awaited<ReturnType<typeof getAiSettings>>) => void;
     vi.mocked(getAiSettings).mockReturnValue(new Promise((resolve) => { finishSettings = resolve; }));
     useEditorStore.getState().loadEntries([{ ...translatedEntry, targetText: "", origin: "missing" }], "project-1");
 
@@ -309,8 +308,7 @@ describe("AI translation actions", () => {
     expect(useEditorStore.getState().entries.get(1)?.targetText).toBe("AIの訳");
   });
 
-  it("AI開始失敗で既存Redo履歴のロックを解除する", () => {
-    useEditorStore.getState().editEntry(1, "手入力");
+  it("AI開始失敗で既存Redo履歴のロックを解除する", () => {    useEditorStore.getState().editEntry(1, "手入力");
     useEditorStore.getState().undo();
     useAiJobStore.getState().begin("openai", [1], 1, "project-1");
     useEditorStore.getState().redo();
@@ -379,5 +377,57 @@ describe("AI translation actions", () => {
     expect(useAiJobStore.getState().activeJob).toBeNull();
     expect(useAiJobStore.getState().notice).toBe("AI翻訳をキャンセルしました。");
     expect(useEditorStore.getState().entries.get(1)?.targetText).toBe("りんご");
+  });
+
+  describe("ローカルプロバイダー（PLaMo）", () => {
+    beforeEach(() => {
+      // 外部送信の同意が未済でも、ローカル推論では確認を挟まないことを確かめる。
+      useSettingsStore.setState((state) => ({
+        settings: { ...state.settings, "ai.privacyNoticeAccepted": false },
+      }));
+      vi.mocked(getAiSettings).mockResolvedValue({
+        provider: "plamo",
+        configured: true,
+        model: "plamo-3-translate-2b",
+        baseUrl: "",
+        batchSize: 50,
+        concurrency: 2,
+        customPrompt: "",
+        device: "gpu",
+      });
+    });
+
+    it("選択項目の翻訳では外部送信の同意を求めず、同意状態も書き換えない", async () => {
+      requestConfirmation.mockResolvedValue(true);
+
+      await translateWithAi([1], requestConfirmation);
+
+      expect(saveSettings).not.toHaveBeenCalled();
+      expect(requestConfirmation).toHaveBeenCalledWith({
+        title: "既存の翻訳を上書きしますか？",
+        message: "1件の翻訳が置き換わります。",
+        confirmLabel: "上書き",
+      });
+      expect(startAiJob).toHaveBeenCalledOnce();
+    });
+
+    it("全体翻訳では送信の説明ではなくローカル処理の確認文を使う", async () => {
+      const missing: TranslationEntry = { ...translatedEntry, modUnitId: 1, targetText: "", origin: "missing" };
+      useEditorStore.getState().loadEntries([missing], "project-1");
+      useEditorStore.getState().activateLoadedModUnit(1, "project-1");
+      vi.mocked(listEntries).mockResolvedValue([missing]);
+      vi.mocked(listModUnits).mockResolvedValue([]);
+      requestConfirmation.mockResolvedValue(false);
+
+      await translateWholeProjectWithAi(requestConfirmation);
+
+      expect(requestConfirmation).toHaveBeenCalledWith({
+        title: "プロジェクト全体をAI翻訳しますか？",
+        message: "1件の未翻訳を翻訳します。原文はこのPCの外へ送信されません。",
+        confirmLabel: "翻訳",
+      });
+      expect(saveSettings).not.toHaveBeenCalled();
+      expect(startAiJob).not.toHaveBeenCalled();
+    });
   });
 });
