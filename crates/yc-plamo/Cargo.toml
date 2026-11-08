@@ -20,3 +20,5 @@ yc-validation = { path = "../yc-validation" }
 
 [dev-dependencies]
 wiremock = "0.6"
+yc-llama = { path = "../yc-llama" }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

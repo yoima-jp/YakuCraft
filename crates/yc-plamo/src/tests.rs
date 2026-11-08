@@ -24,6 +24,8 @@ fn options() -> PlamoProviderOptions {
         context_size: Some(4096),
         protect_strategy: ProtectStrategy::BracketedIndex,
         shader_option_detector: None,
+        entry_observer: None,
+        include_context: true,
         timeout: Duration::from_secs(5),
     }
 }
@@ -580,9 +582,106 @@ fn output_budget_grows_with_the_source_and_stays_capped() {
     let provider = PlamoProvider::new("http://127.0.0.1:9931", None, options()).unwrap();
     assert_eq!(provider.output_budget(0), 64);
     assert_eq!(provider.output_budget(5), 64);
-    assert_eq!(provider.output_budget(100), 332);
+    // 実測の最大比 1.64 を覆う 2 倍 + 24。以前の 3 倍 + 32 より要求が小さく、
+    // コンテキストに収まる長文を落とさない。
+    assert_eq!(provider.output_budget(100), 224);
+    assert_eq!(provider.output_budget(20), 64);
     // 上限で頭打ちになる。
     assert_eq!(provider.output_budget(10_000), 512);
+}
+
+#[tokio::test]
+async fn model_added_wrapping_quotes_are_removed_before_restore() {
+    // 実測で 1200 entry 中 3 件だけ、原文に引用符が無いのに出力全体が `「…」` で
+    // 包まれていた。マーカー復元の前に外さないと、引用符が訳文に残る。
+    let server = MockServer::start().await;
+    mount_tokenize(&server, 5).await;
+    mount_completion(
+        &server,
+        json!({"content": "「⟦0⟧石⟦1⟧」", "stop_type": "word", "truncated": false}),
+    )
+    .await;
+
+    let result = provider(&server, options())
+        .translate_batch(
+            &[entry(1, "§aStone§r", "ja_jp")],
+            &TranslationContext::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].translation, "§a石§r");
+
+    // 原文が引用文なら外側は意味の一部なので残す。
+    let quoted_server = MockServer::start().await;
+    mount_tokenize(&quoted_server, 5).await;
+    mount_completion(
+        &quoted_server,
+        json!({"content": "「石」", "stop_type": "word", "truncated": false}),
+    )
+    .await;
+    let result = provider(&quoted_server, options())
+        .translate_batch(
+            &[entry(1, "\"Stone\"", "ja_jp")],
+            &TranslationContext::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result[0].translation, "「石」");
+}
+
+#[tokio::test]
+async fn entry_observer_reports_the_outcome_of_every_entry() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::EntryReport;
+
+    let server = MockServer::start().await;
+    mount_tokenize(&server, 5).await;
+    mount_completion(
+        &server,
+        json!({
+            "content": "⟦0⟧石",
+            "stop_type": "word",
+            "truncated": false,
+            "timings": {"predicted_n": 7, "predicted_per_second": 42.5},
+        }),
+    )
+    .await;
+
+    let seen: Arc<Mutex<Vec<EntryReport>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let provider = provider(
+        &server,
+        PlamoProviderOptions {
+            entry_observer: Some(Arc::new(move |report: &EntryReport| {
+                sink.lock().unwrap().push(report.clone());
+            })),
+            ..options()
+        },
+    );
+    provider
+        .translate_batch(
+            &[entry(1, "§aStone", "ja_jp")],
+            &TranslationContext::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let reports = seen.lock().unwrap();
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert_eq!(report.entry_id, 1);
+    assert_eq!(report.failure, None);
+    assert_eq!(report.attempts, 1);
+    assert_eq!(report.generated_tokens, 7);
+    assert!((report.tokens_per_second - 42.5).abs() < 0.01);
+    assert_eq!(report.raw_output, "⟦0⟧石");
+    // 観測フックは翻訳の結果を変えない。
+    assert!(!report.raw_output.contains('§'));
 }
 
 #[test]

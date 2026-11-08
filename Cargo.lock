@@ -6254,8 +6254,10 @@ dependencies = [
  "tracing",
  "wiremock",
  "yc-ai",
+ "yc-llama",
  "yc-locale",
  "yc-validation",
+ "zip 9.1.2",
 ]
 
 [[package]]

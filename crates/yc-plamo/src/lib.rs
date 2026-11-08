@@ -38,8 +38,8 @@ pub use languages::{PLAMO_LANGUAGES, plamo_code_for_locale, supported_target_loc
 pub use pfml3::{Pfml3Error, PromptRequest, build_prompt};
 pub use protect::{ProtectError, ProtectStrategy, ProtectedSource};
 pub use provider::{
-    DEFAULT_MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, PlamoProvider, PlamoProviderOptions,
-    ShaderOptionDetector,
+    DEFAULT_MAX_OUTPUT_TOKENS, EntryObserver, EntryReport, MIN_OUTPUT_TOKENS, PlamoProvider,
+    PlamoProviderOptions, ShaderOptionDetector,
 };
 
 #[cfg(test)]
