@@ -82,6 +82,20 @@ pub fn replace_jar_in_place(
     target_jar: &Path,
     backup_dir: &Path,
 ) -> Result<InPlaceReplaceReport, ExportError> {
+    replace_jar_in_place_with_extra_files(input, source_jar, target_jar, backup_dir, &[])
+}
+
+/// Same as [`replace_jar_in_place`] but writes `extra_files` into the replaced JAR.
+///
+/// In-place replacement is a distribution of the JAR, so the PLaMo notice must be included and
+/// the recorded `written_sha256` must cover it.
+pub fn replace_jar_in_place_with_extra_files(
+    input: &ExportInput<'_>,
+    source_jar: &Path,
+    target_jar: &Path,
+    backup_dir: &Path,
+    extra_files: &[(String, Vec<u8>)],
+) -> Result<InPlaceReplaceReport, ExportError> {
     if source_jar.exists()
         && target_jar.exists()
         && fs::canonicalize(source_jar)? == fs::canonicalize(target_jar)?
@@ -96,7 +110,7 @@ pub fn replace_jar_in_place(
 
     let mut temporary = create_temporary_output(target_jar)?;
     drop(temporary.file.take());
-    export_modified_jar_validated(input, source_jar, &temporary.path, true)?;
+    export_modified_jar_validated(input, source_jar, &temporary.path, extra_files, true)?;
     let written_sha256 = sha256_hex(&temporary.path)?;
     fs::rename(&temporary.path, target_jar)
         .map_err(|source| target_file_error(source, target_jar))?;
@@ -122,6 +136,23 @@ pub fn replace_jar_in_place_with_backup(
     target_jar: &Path,
     backup_path: &Path,
 ) -> Result<InPlaceReplaceReport, ExportError> {
+    replace_jar_in_place_with_backup_and_extra_files(
+        input,
+        source_jar,
+        target_jar,
+        backup_path,
+        &[],
+    )
+}
+
+/// Same as [`replace_jar_in_place_with_backup`] but writes `extra_files` into the replaced JAR.
+pub fn replace_jar_in_place_with_backup_and_extra_files(
+    input: &ExportInput<'_>,
+    source_jar: &Path,
+    target_jar: &Path,
+    backup_path: &Path,
+    extra_files: &[(String, Vec<u8>)],
+) -> Result<InPlaceReplaceReport, ExportError> {
     if source_jar.exists()
         && target_jar.exists()
         && fs::canonicalize(source_jar)? == fs::canonicalize(target_jar)?
@@ -142,7 +173,7 @@ pub fn replace_jar_in_place_with_backup(
     let previous_sha256 = sha256_hex(target_jar)?;
     let mut temporary = create_temporary_output(target_jar)?;
     drop(temporary.file.take());
-    export_modified_jar_validated(input, source_jar, &temporary.path, true)?;
+    export_modified_jar_validated(input, source_jar, &temporary.path, extra_files, true)?;
     let written_sha256 = sha256_hex(&temporary.path)?;
     fs::rename(&temporary.path, target_jar)
         .map_err(|source| target_file_error(source, target_jar))?;

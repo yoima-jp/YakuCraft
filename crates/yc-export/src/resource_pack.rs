@@ -54,6 +54,10 @@ pub struct ResourcePackOptions<'a> {
     pub source_jar_filename: &'a str,
     pub minecraft_version: Option<&'a str>,
     pub manual_format: Option<ManualPackFormat>,
+    /// Additional `(archive path, bytes)` entries written at the ZIP root.
+    ///
+    /// Callers pass the PLaMo notice here; the writer stays independent of any provider.
+    pub extra_files: &'a [(String, Vec<u8>)],
 }
 
 /// A mod and its translation data for one combined resource pack.
@@ -69,6 +73,8 @@ pub struct MergedResourcePackOptions<'a> {
     pub minecraft_version: Option<&'a str>,
     pub manual_format: Option<ManualPackFormat>,
     pub pack_description: Option<&'a str>,
+    /// Additional `(archive path, bytes)` entries written at the ZIP root.
+    pub extra_files: &'a [(String, Vec<u8>)],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -259,7 +265,13 @@ pub fn export_resource_pack(
         input.target_locale,
     ));
 
-    write_resource_pack_archive(&output_path, &metadata, &language_entries, overwrite)?;
+    write_resource_pack_archive(
+        &output_path,
+        &metadata,
+        &language_entries,
+        options.extra_files,
+        overwrite,
+    )?;
     tracing::info!(path = %output_path.display(), entries = entry_count, "resource pack exported");
     Ok(output_path)
 }
@@ -458,7 +470,13 @@ pub fn export_merged_resource_pack(
         pack_format,
         options.pack_description.unwrap_or(&default_description),
     )?;
-    write_resource_pack_archive(output_path, &metadata, &language_entries, overwrite)?;
+    write_resource_pack_archive(
+        output_path,
+        &metadata,
+        &language_entries,
+        options.extra_files,
+        overwrite,
+    )?;
     tracing::info!(
         path = %output_path.display(),
         mods = mods.len(),
@@ -529,12 +547,17 @@ fn write_resource_pack_zip(
     file: &mut File,
     metadata: &[u8],
     language_entries: &[(String, Vec<u8>)],
+    extra_files: &[(String, Vec<u8>)],
 ) -> Result<(), ExportError> {
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let mut zip = ZipWriter::new(file);
     zip.start_file("pack.mcmeta", options)?;
     zip.write_all(metadata)?;
     for (path, bytes) in language_entries {
+        zip.start_file(path, options)?;
+        zip.write_all(bytes)?;
+    }
+    for (path, bytes) in extra_files {
         zip.start_file(path, options)?;
         zip.write_all(bytes)?;
     }
@@ -546,15 +569,17 @@ pub(crate) fn write_resource_pack_archive(
     output_path: &Path,
     metadata: &[u8],
     language_entries: &[(String, Vec<u8>)],
+    extra_files: &[(String, Vec<u8>)],
     overwrite: bool,
 ) -> Result<(), ExportError> {
     let expected_entries: Vec<_> = std::iter::once("pack.mcmeta".to_owned())
         .chain(language_entries.iter().map(|(path, _)| path.clone()))
+        .chain(extra_files.iter().map(|(path, _)| path.clone()))
         .collect();
     atomic_write_file(
         output_path,
         overwrite,
-        |file| write_resource_pack_zip(file, metadata, language_entries),
+        |file| write_resource_pack_zip(file, metadata, language_entries, extra_files),
         |path| validate_zip(path, &expected_entries),
     )
 }

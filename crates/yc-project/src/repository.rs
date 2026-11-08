@@ -12,10 +12,10 @@ use yc_locale::{auto_project_name, is_auto_project_name};
 use yc_validation::{PlaceholderProfile, compare_placeholders_for_profile};
 
 use crate::{
-    AnalysisData, DocumentEntryInput, DocumentProjectEntry, EntryUpdate, FileDeploymentRecord,
-    GlossaryTerm, GlossaryTermInput, IncludedNamespace, JarReplacementRecord, ModUnitRecord,
-    ModUnitSourceKind, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary, ProjectError,
-    ProjectMetadata, ProjectReviewSettings, Result, TranslationEntryKind,
+    AiJobApplication, AnalysisData, DocumentEntryInput, DocumentProjectEntry, EntryUpdate,
+    FileDeploymentRecord, GlossaryTerm, GlossaryTermInput, IncludedNamespace, JarReplacementRecord,
+    ModUnitRecord, ModUnitSourceKind, ProjectAssetIndex, ProjectEntry, ProjectEntrySummary,
+    ProjectError, ProjectMetadata, ProjectReviewSettings, Result, TranslationEntryKind,
     database::{open_database, open_read_connection},
     model::{flag_from_db, flag_to_db, origin_from_db, origin_to_db},
 };
@@ -158,6 +158,23 @@ impl Repository {
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM mod_units WHERE source_sha256 = ?1)",
                 [source_sha256],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    /// Whether any batch of this AI provider was applied to the project.
+    ///
+    /// Projects created before the provider existed simply have no rows and report `false`, so
+    /// their exports stay byte-identical to earlier releases.
+    pub fn has_applied_ai_provider(&self, provider: &str) -> Result<bool> {
+        let connection = open_read_connection(&self.database_path)?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM ai_jobs WHERE provider = ?1 AND completed_items > 0
+                 )",
+                [provider],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -1567,6 +1584,72 @@ pub(crate) fn update_entries(connection: &mut Connection, updates: Vec<EntryUpda
         if changed == 0 {
             return Err(ProjectError::EntryNotFound(update.id));
         }
+    }
+    update_project_timestamp(&transaction, &now)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Applies AI translations and records the provider usage in one transaction.
+///
+/// The usage row must commit together with the entry updates: a job that is cancelled or fails
+/// after a batch was written still leaves PLaMo output inside the project, and every export of
+/// such a project must carry the license notice. Splitting the two writes would let the entries
+/// commit while the record is lost, so exports would silently omit the notice.
+pub(crate) fn update_entries_recording_ai_job(
+    connection: &mut Connection,
+    updates: Vec<EntryUpdate>,
+    application: &AiJobApplication,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let now = now_rfc3339()?;
+    for update in &updates {
+        let source_text: Option<String> = transaction
+            .query_row(
+                "SELECT source_text FROM translation_entries WHERE id = ?1",
+                [update.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(ProjectError::EntryNotFound(update.id))?;
+        let origin = match update.origin {
+            crate::UpdateOrigin::Ai => "ai",
+            crate::UpdateOrigin::Manual => "edited",
+        };
+        let changed = transaction.execute(
+            "UPDATE translation_entries
+             SET target_text = ?1, translated_source_text = ?2, target_origin = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![&update.target_text, source_text, origin, now, update.id],
+        )?;
+        if changed == 0 {
+            return Err(ProjectError::EntryNotFound(update.id));
+        }
+    }
+    // A batch that applied nothing (every entry was rejected or unchanged) must not create a row,
+    // otherwise an unrelated export would claim to contain PLaMo output.
+    if application.applied_entries > 0 {
+        let applied = usize_to_i64(application.applied_entries, "applied entries")?;
+        // Later batches of the same job accumulate; a failure or cancellation afterwards never
+        // deletes the row because the translations stay in the project.
+        transaction.execute(
+            "INSERT INTO ai_jobs
+                 (id, provider, model, status, total_items, completed_items, created_at,
+                  finished_at, error_message)
+             VALUES (?1, ?2, ?3, 'applied', ?4, ?4, ?5, NULL, NULL)
+             ON CONFLICT(id) DO UPDATE SET
+                 completed_items = completed_items + excluded.completed_items,
+                 status = 'applied',
+                 finished_at = NULL,
+                 error_message = NULL",
+            params![
+                application.job_id,
+                application.provider,
+                application.model,
+                applied,
+                now
+            ],
+        )?;
     }
     update_project_timestamp(&transaction, &now)?;
     transaction.commit()?;

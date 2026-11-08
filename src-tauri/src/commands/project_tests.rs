@@ -1743,6 +1743,69 @@ fn modpack_refresh_preserves_excluded_kubejs_namespaces_and_selects_new_ones() {
 }
 
 #[test]
+fn modpack_zip_export_includes_the_plamo_notice_but_direct_deployment_does_not() {
+    use crate::commands::export::{ModpackFilesExportOutcome, export_modpack_files_core};
+    use std::sync::{Arc, Mutex};
+    use zip::ZipArchive;
+
+    let temporary = TemporaryDirectory::create();
+    let files = [(
+        "minecraft/kubejs/assets/example/lang/en_us.json",
+        r#"{"example.key":"English"}"#,
+    )];
+    let (created, _) = create_modpack_fixture(&temporary, &files);
+    let opened = created.opened;
+    let unit_id = first_mod_unit_id(&opened);
+    translate_modpack_entries(&opened);
+    let entry = opened
+        .repository()
+        .list_entries(Some(unit_id))
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    opened
+        .writer()
+        .update_entries_recording_ai_job(
+            vec![EntryUpdate {
+                id: entry.id,
+                target_text: "アイテム".to_owned(),
+                origin: UpdateOrigin::Ai,
+            }],
+            yc_project::AiJobApplication {
+                job_id: uuid::Uuid::new_v4().to_string(),
+                provider: "plamo".to_owned(),
+                model: "plamo-3-translate-0.8b".to_owned(),
+                applied_entries: 1,
+            },
+        )
+        .unwrap();
+
+    let output = temporary.0.join("plamo-modpack.zip");
+    let outcome = export_modpack_files_core(
+        &opened,
+        &[unit_id],
+        Some(&output),
+        false,
+        false,
+        &Arc::new(Mutex::new(std::collections::HashSet::new())),
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        ModpackFilesExportOutcome::Completed { .. }
+    ));
+    let mut archive = ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
+    let mut notice = String::new();
+    archive
+        .by_name(yc_export::PLAMO_NOTICE_FILE_NAME)
+        .expect("the modpack ZIP should carry the notice")
+        .read_to_string(&mut notice)
+        .unwrap();
+    assert_eq!(notice.lines().next(), Some("Built with PLaMo"));
+}
+
+#[test]
 fn imports_split_ftb_and_exports_the_matching_ja_jp_tree() {
     use crate::commands::export::{ModpackFilesExportOutcome, export_modpack_files_core};
     use std::sync::{Arc, Mutex};

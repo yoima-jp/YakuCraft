@@ -2,6 +2,7 @@
 
 mod deployment;
 mod modified_jar;
+mod plamo_notice;
 mod resource_pack;
 mod validation;
 mod version_detection;
@@ -18,9 +19,15 @@ use yc_language::{
 pub use deployment::{
     InPlaceReplaceReport, install_resource_pack, install_resource_pack_to,
     instance_dir_from_mods_dir, looks_like_instance_dir, replace_jar_in_place,
-    replace_jar_in_place_with_backup, restore_jar_from_backup,
+    replace_jar_in_place_with_backup, replace_jar_in_place_with_backup_and_extra_files,
+    replace_jar_in_place_with_extra_files, restore_jar_from_backup,
 };
-pub use modified_jar::{export_modified_jar, modified_jar_filename};
+pub use modified_jar::{
+    export_modified_jar, export_modified_jar_with_extra_files, modified_jar_filename,
+};
+pub use plamo_notice::{
+    PLAMO_NOTICE_FILE_NAME, plamo_notice_file, write_plamo_notice_to_directory,
+};
 pub use resource_pack::{
     ManualPackFormat, MergedPackMod, MergedResourcePackConflict, MergedResourcePackOptions,
     MergedResourcePackReport, PackMetadataFormat, ResolvedPackFormat, ResourcePackMod,

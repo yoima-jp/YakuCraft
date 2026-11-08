@@ -320,6 +320,28 @@ pub fn write_translated_zip(
     target_locale: &str,
     entries: &[(String, String)],
 ) -> Result<()> {
+    write_translated_zip_with_extra_files(
+        source,
+        output,
+        source_filename,
+        target_locale,
+        entries,
+        &[],
+    )
+}
+
+/// 翻訳済み ZIP を書き出し、`extra_files` を ZIP ルートに追加する。
+///
+/// PLaMo のライセンス通知をここで渡す。シェーダーパックの ZIP はそのまま配布されるため、
+/// 通知をルートに置く必要がある。
+pub fn write_translated_zip_with_extra_files(
+    source: &Path,
+    output: &Path,
+    source_filename: &str,
+    target_locale: &str,
+    entries: &[(String, String)],
+    extra_files: &[(String, Vec<u8>)],
+) -> Result<()> {
     let mut zip = ZipArchive::new(File::open(source)?)?;
     let root = archive_root(&mut zip)?
         .ok_or_else(|| yc_locale::t!("packaging.shaderpack_directory_missing"))?;
@@ -430,6 +452,15 @@ pub fn write_translated_zip(
         }
         writer.start_file(&target_path, SimpleFileOptions::default())?;
         writer.write_all(&write_lang_with_raw_keys(&output_entries, &raw_keys))?;
+        for (path, bytes) in extra_files {
+            if !safe(path) {
+                return Err(
+                    yc_locale::t!("packaging.shaderpack_unsafe_zip_path", path = path).into(),
+                );
+            }
+            writer.start_file(path, SimpleFileOptions::default())?;
+            writer.write_all(bytes)?;
+        }
         writer.finish()?;
         Ok(())
     })

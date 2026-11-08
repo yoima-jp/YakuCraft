@@ -15,10 +15,11 @@ use yc_export::{
     MergedResourcePackConflict, MergedResourcePackOptions, NamespaceExport,
     PatchouliDocumentExport, PatchouliDocumentTranslation, PlaceholderWarning, ResourcePackMod,
     ResourcePackOptions, ValidationIssueCode, ValidationSeverity, export_merged_resource_pack,
-    export_modified_jar as write_modified_jar, export_resource_pack as write_resource_pack,
-    install_resource_pack_to, merged_resource_pack_display_name, merged_resource_pack_filename,
-    replace_jar_in_place, replace_jar_in_place_with_backup, restore_jar_from_backup,
-    validate_export as check_export,
+    export_modified_jar_with_extra_files as write_modified_jar_with_extra_files,
+    export_resource_pack as write_resource_pack, install_resource_pack_to,
+    merged_resource_pack_display_name, merged_resource_pack_filename, plamo_notice_file,
+    replace_jar_in_place_with_backup_and_extra_files, replace_jar_in_place_with_extra_files,
+    restore_jar_from_backup, validate_export as check_export, write_plamo_notice_to_directory,
 };
 use yc_language::{
     EntryFlag, ReviewSettings, TranslationEntry, WriterOptions, is_empty_translation,
@@ -95,6 +96,8 @@ pub struct ExportOverview {
     pub units: Vec<ExportUnitStatus>,
     pub active_replacements: Vec<JarReplacementRecord>,
     pub active_file_deployments: Vec<FileDeploymentRecord>,
+    /// Whether PLaMo output was applied to the project, so exports carry the license notice.
+    pub includes_plamo_output: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -418,6 +421,7 @@ pub async fn get_export_overview(
             units,
             active_replacements,
             active_file_deployments,
+            includes_plamo_output: project_includes_plamo_output(opened)?,
         })
     })
     .await
@@ -688,6 +692,7 @@ pub(crate) fn export_resource_pack_core(
         .repository()
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?;
+    let extra_files = plamo_extra_files(project_includes_plamo_output(opened)?);
     let mut first_output = None;
     for unit in &units {
         let context = export_context(opened, unit.id)?;
@@ -699,7 +704,13 @@ pub(crate) fn export_resource_pack_core(
             continue;
         }
         let unit_output = output_path_for_mod(output, unit.id, units.len());
-        export_resource_pack_for_context(&context, &unit_output, minecraft_version, manual_format)?;
+        export_resource_pack_for_context(
+            &context,
+            &unit_output,
+            minecraft_version,
+            manual_format,
+            &extra_files,
+        )?;
         first_output.get_or_insert(unit_output);
     }
     first_output.ok_or_else(invalid_export_selection_error)
@@ -710,6 +721,7 @@ fn export_resource_pack_for_context(
     output: &Path,
     minecraft_version: &str,
     manual_format: Option<ManualPackFormatInput>,
+    extra_files: &[(String, Vec<u8>)],
 ) -> Result<(), AppError> {
     ensure_output_is_safe(&context.source_jar, output)?;
     ensure_file_extension(output, "zip")?;
@@ -731,6 +743,7 @@ fn export_resource_pack_for_context(
                     major: format.major,
                     minor: format.minor,
                 }),
+                extra_files,
             },
             &staging,
             false,
@@ -751,6 +764,7 @@ pub(crate) fn export_modified_jar_core(
         .repository()
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?;
+    let extra_files = plamo_extra_files(project_includes_plamo_output(opened)?);
     let mut first_output = None;
     for unit in units
         .iter()
@@ -768,8 +782,14 @@ pub(crate) fn export_modified_jar_core(
         ensure_output_is_safe(&context.source_jar, &unit_output)?;
         ensure_file_extension(&unit_output, "jar")?;
         ensure_has_included_namespaces(&context)?;
-        write_modified_jar(&context.input(), &context.source_jar, &unit_output, true)
-            .map_err(export_error)?;
+        write_modified_jar_with_extra_files(
+            &context.input(),
+            &context.source_jar,
+            &unit_output,
+            &extra_files,
+            true,
+        )
+        .map_err(export_error)?;
         first_output.get_or_insert(unit_output);
     }
     if units
@@ -1190,6 +1210,7 @@ fn export_selected_merged_resource_pack_core(
         )
     };
     let result = (|| {
+        let extra_files = plamo_extra_files(project_includes_plamo_output(opened)?);
         let report = export_merged_resource_pack(
             &merged_mods,
             MergedResourcePackOptions {
@@ -1199,6 +1220,7 @@ fn export_selected_merged_resource_pack_core(
                     minor: format.minor,
                 }),
                 pack_description: Some(&pack_description),
+                extra_files: &extra_files,
             },
             &staging,
             false,
@@ -1293,6 +1315,7 @@ fn export_selected_modified_jars_core(
         fs::create_dir_all(output_directory).map_err(export_error)?;
     }
     let repository = opened.repository();
+    let extra_files = plamo_extra_files(project_includes_plamo_output(opened)?);
     let mut results = Vec::with_capacity(units.len());
     for unit in units {
         let label = export_unit_display_label(&unit);
@@ -1427,17 +1450,19 @@ fn export_selected_modified_jars_core(
             // 書き出しはプロジェクト内の不変コピーを元にする。再上書きでも初回のバックアップを維持し、
             // 復元時にYakuCraft適用前のインスタンスJARへ戻せるようにする。
             let replacement = match &active {
-                Some(record) => replace_jar_in_place_with_backup(
+                Some(record) => replace_jar_in_place_with_backup_and_extra_files(
                     &context.input(),
                     &context.source_jar,
                     &target,
                     Path::new(&record.backup_path),
+                    &extra_files,
                 ),
-                None => replace_jar_in_place(
+                None => replace_jar_in_place_with_extra_files(
                     &context.input(),
                     &context.source_jar,
                     &target,
                     &backup_directory,
+                    &extra_files,
                 ),
             };
             let replacement = match replacement {
@@ -1533,8 +1558,14 @@ fn export_selected_modified_jars_core(
                 .and_then(|()| ensure_file_extension(&output, "jar"))
                 .and_then(|()| {
                     // overwrite=false also closes the race between the existence check and publish.
-                    write_modified_jar(&context.input(), &context.source_jar, &output, false)
-                        .map_err(export_operation_error)?;
+                    write_modified_jar_with_extra_files(
+                        &context.input(),
+                        &context.source_jar,
+                        &output,
+                        &extra_files,
+                        false,
+                    )
+                    .map_err(export_operation_error)?;
                     record_exported_path(exported_paths, &output)?;
                     Ok(())
                 });
@@ -1584,6 +1615,8 @@ fn export_selected_language_files_core(
 ) -> Result<Vec<ModExportResult>, AppError> {
     let units = selected_units(opened, selected_ids)?;
     fs::create_dir_all(output_directory).map_err(export_error)?;
+    // The notice goes into each per-mod output directory; a bare language file cannot carry it.
+    let includes_plamo = project_includes_plamo_output(opened)?;
     let mut results = Vec::with_capacity(units.len());
     for unit in units {
         let label = export_unit_display_label(&unit);
@@ -1654,6 +1687,9 @@ fn export_selected_language_files_core(
                 ensure_output_is_safe(&context.source_jar, &output)?;
                 ensure_output_is_within_directory(output_directory, &output)?;
                 atomic_write_selected_if_absent(&output, &bytes).map_err(export_error)?;
+                if includes_plamo {
+                    write_plamo_notice_to_directory(&unit_directory).map_err(export_error)?;
+                }
                 record_exported_path(exported_paths, &output)
             })();
             match result {
@@ -1767,6 +1803,9 @@ fn export_selected_language_files_core(
             .map_err(export_error)?;
             for path in &written {
                 record_exported_path(exported_paths, path)?;
+            }
+            if includes_plamo {
+                write_plamo_notice_to_directory(&unit_directory).map_err(export_error)?;
             }
             Ok::<(), AppError>(())
         })();
@@ -1916,6 +1955,13 @@ pub(crate) fn export_modpack_files_core(
         )
     })?;
     ensure_file_extension(output_path, "zip")?;
+    // Only the ZIP is a distribution artifact. Direct deployment into an instance stays local, and
+    // adding the notice there would also need overwrite/restore bookkeeping for a file the user
+    // never asked to have deployed.
+    if project_includes_plamo_output(opened)? {
+        let (notice_name, notice_bytes) = plamo_notice_file();
+        files.insert(notice_name.to_owned(), notice_bytes);
+    }
     let zip_bytes = write_modpack_output_zip(&files)?;
     if output_path.exists() && !overwrite {
         return Ok(ModpackFilesExportOutcome::OverwriteRequired {
@@ -1986,6 +2032,7 @@ pub(crate) fn export_selected_shaderpacks_core(
 
     let mut prepared = Vec::with_capacity(units.len());
     let mut used_names = HashSet::new();
+    let extra_files = plamo_extra_files(project_includes_plamo_output(opened)?);
     for unit in &units {
         let context = export_context(opened, unit.id)?;
         let namespace = context
@@ -2028,12 +2075,13 @@ pub(crate) fn export_selected_shaderpacks_core(
         let staging = opened
             .directory()
             .join(format!(".shaderpack-export-{}.zip", uuid::Uuid::new_v4()));
-        let write_result = yc_shaderpack::write_translated_zip(
+        let write_result = yc_shaderpack::write_translated_zip_with_extra_files(
             &source_path,
             &staging,
             &source_lang.file_name,
             &context.target_locale,
             &translations,
+            &extra_files,
         );
         if let Err(error) = write_result {
             let _ = fs::remove_file(&staging);
@@ -3358,6 +3406,8 @@ pub(crate) fn export_language_file_core(
         .repository()
         .list_mod_units()
         .map_err(|error| project_error(error.to_string()))?;
+    // The notice is written into the output directory: a bare language file cannot carry it.
+    let includes_plamo = project_includes_plamo_output(opened)?;
     let mut first_output = None;
     for unit in &units {
         let context = export_context(opened, unit.id)?;
@@ -3386,6 +3436,10 @@ pub(crate) fn export_language_file_core(
             ensure_output_is_safe(&context.source_jar, &unit_output)?;
             ensure_file_extension(&unit_output, "lang")?;
             atomic_write_selected(&unit_output, &bytes).map_err(export_error)?;
+            if includes_plamo {
+                write_plamo_notice_to_directory(unit_output.parent().unwrap_or(Path::new(".")))
+                    .map_err(export_error)?;
+            }
             first_output.get_or_insert_with(|| unit_output.clone());
             continue;
         }
@@ -3399,7 +3453,9 @@ pub(crate) fn export_language_file_core(
         if artifacts.is_empty() && documents.is_empty() {
             continue;
         }
-        let output_root = if let Some(artifact) = artifacts.first() {
+        // The language file lands beside `output_path`; `output_root` below is a separate
+        // per-mod directory that only receives Patchouli documents for multi-unit exports.
+        let language_output = artifacts.first().map(|artifact| {
             let extension = artifact
                 .file_name
                 .rsplit_once('.')
@@ -3407,29 +3463,35 @@ pub(crate) fn export_language_file_core(
                 .unwrap_or_default();
             let artifact_output = output_path.with_extension(extension);
             let unit_output = output_path_for_mod(&artifact_output, unit.id, units.len());
-            ensure_file_extension(&unit_output, extension)?;
-            atomic_write_selected(&unit_output, &artifact.bytes).map_err(export_error)?;
+            (unit_output, extension.to_owned())
+        });
+        if let Some((unit_output, extension)) = &language_output {
+            ensure_file_extension(unit_output, extension)?;
+            let artifact = artifacts.first().expect("the language file exists");
+            atomic_write_selected(unit_output, &artifact.bytes).map_err(export_error)?;
             first_output.get_or_insert_with(|| unit_output.clone());
-            if units.len() > 1 {
+        }
+        let output_root = match &language_output {
+            Some((unit_output, _)) if units.len() > 1 => {
                 let parent = unit_output.parent().unwrap_or(Path::new("."));
                 let stem = unit_output
                     .file_stem()
                     .and_then(|name| name.to_str())
                     .unwrap_or("export");
                 parent.join(stem)
-            } else {
-                unit_output.parent().unwrap_or(Path::new(".")).to_path_buf()
             }
-        } else {
-            let parent = output_path.parent().unwrap_or(Path::new("."));
-            if units.len() <= 1 {
-                parent.to_path_buf()
-            } else {
-                let stem = output_path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("export");
-                parent.join(format!("{stem}-{unit_id}", unit_id = unit.id))
+            Some((unit_output, _)) => unit_output.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            None => {
+                let parent = output_path.parent().unwrap_or(Path::new("."));
+                if units.len() <= 1 {
+                    parent.to_path_buf()
+                } else {
+                    let stem = output_path
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("export");
+                    parent.join(format!("{stem}-{unit_id}", unit_id = unit.id))
+                }
             }
         };
         fs::create_dir_all(&output_root).map_err(export_error)?;
@@ -3442,6 +3504,16 @@ pub(crate) fn export_language_file_core(
         }
         yc_export::write_patchouli_document_files(&output_root, &documents, false)
             .map_err(export_error)?;
+        if includes_plamo {
+            // Keep the notice next to the file the user actually distributes. Writing it into
+            // `output_root` would leave it in a directory that holds no language file whenever
+            // the export produced one.
+            let notice_directory = language_output
+                .as_ref()
+                .and_then(|(unit_output, _)| unit_output.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| output_root.clone());
+            write_plamo_notice_to_directory(&notice_directory).map_err(export_error)?;
+        }
         if first_output.is_none() {
             first_output = documents
                 .first()
@@ -4278,6 +4350,32 @@ fn forget_exported_path(
     Ok(())
 }
 
+/// Provider id of the local PLaMo 3 Translate provider.
+const PLAMO_PROVIDER_ID: &str = "plamo";
+
+/// Whether the project contains PLaMo output and therefore needs the license notice.
+///
+/// The PLaMo Community License Art. 4(1) requires a copy of the license and the "Built with PLaMo"
+/// statement whenever the model outputs are handed to a third party, and Art. 5(1) requires the
+/// outputs to be marked as model output. Exported packs, JARs and language files are exactly such
+/// redistributions, so every artifact written for distribution carries `PLaMo_NOTICE.txt`.
+fn project_includes_plamo_output(opened: &OpenedProject) -> Result<bool, AppError> {
+    opened
+        .repository()
+        .has_applied_ai_provider(PLAMO_PROVIDER_ID)
+        .map_err(|error| project_error(error.to_string()))
+}
+
+/// The notice as an `(archive path, bytes)` entry, or an empty list when the project has none.
+fn plamo_extra_files(includes_plamo: bool) -> Vec<(String, Vec<u8>)> {
+    if includes_plamo {
+        let (file_name, bytes) = plamo_notice_file();
+        vec![(file_name.to_owned(), bytes)]
+    } else {
+        Vec::new()
+    }
+}
+
 fn export_error(error: impl std::fmt::Display) -> AppError {
     AppError::new(
         "export",
@@ -4390,10 +4488,10 @@ mod export_path_regression_tests {
     use super::{
         ExportKindInput, MergedPackExportOutcome, MergedPackExportRequest, RestoreJarOutcome,
         active_project_for_id, benchmark_export_selected_modified_jars, export_context,
-        export_language_file_and_record, export_selected_language_files_core,
-        export_selected_merged_resource_pack_core, legacy_parse_escapes_namespaces,
-        original_jar_is_in_instance_mods, restore_modified_jar_core, sha256_file_hex,
-        validate_project_core_for_units,
+        export_language_file_and_record, export_resource_pack_core,
+        export_selected_language_files_core, export_selected_merged_resource_pack_core,
+        legacy_parse_escapes_namespaces, original_jar_is_in_instance_mods,
+        restore_modified_jar_core, sha256_file_hex, validate_project_core_for_units,
     };
     use crate::commands::editor::update_entries_batch_core;
     use crate::{
@@ -4989,6 +5087,87 @@ mod export_path_regression_tests {
             Err(error) => error,
         };
         assert_eq!(error.code, "project_changed");
+    }
+
+    /// Records a PLaMo batch so the project reports the license notice requirement.
+    fn record_plamo_usage(opened: &OpenedProject) {
+        let entries = opened
+            .repository()
+            .list_entries(None)
+            .expect("fixture entries should be listed");
+        let entry = entries.first().expect("fixture should have an entry");
+        opened
+            .writer()
+            .update_entries_recording_ai_job(
+                vec![EntryUpdate {
+                    id: entry.id,
+                    target_text: "PLaMo訳".to_owned(),
+                    origin: UpdateOrigin::Ai,
+                }],
+                yc_project::AiJobApplication {
+                    job_id: uuid::Uuid::new_v4().to_string(),
+                    provider: "plamo".to_owned(),
+                    model: "plamo-3-translate-0.8b".to_owned(),
+                    applied_entries: 1,
+                },
+            )
+            .expect("PLaMo batch should be recorded");
+    }
+
+    fn zip_entry_names(path: &Path) -> Vec<String> {
+        let file = fs::File::open(path).expect("exported ZIP should open");
+        let archive = zip::ZipArchive::new(file).expect("exported ZIP should parse");
+        (0..archive.len())
+            .filter_map(|index| archive.name_for_index(index))
+            .filter_map(Result::ok)
+            .map(|name| name.into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn resource_pack_export_adds_the_plamo_notice_only_for_plamo_projects() {
+        let (temporary, opened, _) = export_project_fixture();
+        let plain = temporary.0.join("plain.zip");
+        export_resource_pack_core(&opened, &plain, "1.20.4", None)
+            .expect("resource pack should export");
+        assert!(
+            !zip_entry_names(&plain)
+                .iter()
+                .any(|name| name == yc_export::PLAMO_NOTICE_FILE_NAME)
+        );
+
+        record_plamo_usage(&opened);
+        let with_notice = temporary.0.join("plamo.zip");
+        export_resource_pack_core(&opened, &with_notice, "1.20.4", None)
+            .expect("PLaMo resource pack should export");
+        assert!(
+            zip_entry_names(&with_notice)
+                .iter()
+                .any(|name| name == yc_export::PLAMO_NOTICE_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn selected_language_export_writes_the_plamo_notice_next_to_the_language_file() {
+        let (temporary, opened, mod_unit_id) = export_project_fixture();
+        record_plamo_usage(&opened);
+        let output_directory = temporary.0.join("plamo-language-output");
+        let exported_paths = Arc::new(Mutex::new(std::collections::HashSet::new()));
+
+        export_selected_language_files_core(
+            &opened,
+            &[mod_unit_id],
+            &output_directory,
+            "fixture",
+            &exported_paths,
+        )
+        .expect("selected language export should complete");
+
+        let notice = output_directory
+            .join(format!("fixture-{mod_unit_id}"))
+            .join(yc_export::PLAMO_NOTICE_FILE_NAME);
+        let content = fs::read_to_string(&notice).expect("notice should be written");
+        assert_eq!(content.lines().next(), Some("Built with PLaMo"));
     }
 
     #[test]

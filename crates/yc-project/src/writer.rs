@@ -7,9 +7,9 @@ use std::{
 use yc_language::{EntryFlag, ReviewSettings};
 
 use crate::{
-    AnalysisData, DocumentEntryInput, EntryUpdate, FileDeploymentRecord, GlossaryTermInput,
-    JarReplacementRecord, ModUnitSourceKind, ProjectAssetIndex, ProjectError, Result,
-    database::open_database, repository,
+    AiJobApplication, AnalysisData, DocumentEntryInput, EntryUpdate, FileDeploymentRecord,
+    GlossaryTermInput, JarReplacementRecord, ModUnitSourceKind, ProjectAssetIndex, ProjectError,
+    Result, database::open_database, repository,
 };
 
 enum WriterCommand {
@@ -23,6 +23,7 @@ enum WriterCommand {
     SaveAddedUnitReviewSettings(i64, ReviewSettings, SyncSender<Result<()>>),
     RemoveModUnit(i64, bool, SyncSender<Result<()>>),
     UpdateEntries(Vec<EntryUpdate>, SyncSender<Result<()>>),
+    UpdateEntriesRecordingAiJob(Vec<EntryUpdate>, AiJobApplication, SyncSender<Result<()>>),
     AddFlag(i64, EntryFlag, SyncSender<Result<()>>),
     RemoveFlag(i64, EntryFlag, SyncSender<Result<()>>),
     SaveJarReplacement(JarReplacementRecord, SyncSender<Result<()>>),
@@ -169,6 +170,21 @@ impl ProjectWriter {
 
     pub fn update_entries(&self, updates: Vec<EntryUpdate>) -> Result<()> {
         self.send_and_wait(|response| WriterCommand::UpdateEntries(updates, response))
+    }
+
+    /// Saves AI translations and the provider usage record in one transaction.
+    ///
+    /// Call this instead of [`Self::update_entries`] whenever the applied translations come from a
+    /// provider whose license requires attribution, so exports can add the notice even when the
+    /// job was cancelled or failed after this batch was applied.
+    pub fn update_entries_recording_ai_job(
+        &self,
+        updates: Vec<EntryUpdate>,
+        application: AiJobApplication,
+    ) -> Result<()> {
+        self.send_and_wait(|response| {
+            WriterCommand::UpdateEntriesRecordingAiJob(updates, application, response)
+        })
     }
 
     pub fn add_flag(&self, entry_id: i64, flag: EntryFlag) -> Result<()> {
@@ -327,6 +343,13 @@ fn writer_loop(
             }
             WriterCommand::UpdateEntries(updates, response) => {
                 let _ = response.send(repository::update_entries(&mut connection, updates));
+            }
+            WriterCommand::UpdateEntriesRecordingAiJob(updates, application, response) => {
+                let _ = response.send(repository::update_entries_recording_ai_job(
+                    &mut connection,
+                    updates,
+                    &application,
+                ));
             }
             WriterCommand::AddFlag(entry_id, flag, response) => {
                 let _ = response.send(repository::add_flag(&mut connection, entry_id, flag));

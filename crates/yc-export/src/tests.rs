@@ -16,10 +16,11 @@ use crate::{
     ManualPackFormat, MergedPackMod, MergedResourcePackOptions, NamespaceExport,
     PlaceholderWarning, ResourcePackMod, ResourcePackOptions, ValidationIssueCode,
     ValidationSeverity, create_language_files, export_merged_resource_pack, export_modified_jar,
-    export_resource_pack, install_resource_pack, install_resource_pack_to,
-    instance_dir_from_mods_dir, looks_like_instance_dir, merged_resource_pack_filename,
-    modified_jar_filename, pack_format_for_version, replace_jar_in_place, resource_pack_filename,
-    restore_jar_from_backup, validate_export, write_language_files,
+    export_modified_jar_with_extra_files, export_resource_pack, install_resource_pack,
+    install_resource_pack_to, instance_dir_from_mods_dir, looks_like_instance_dir,
+    merged_resource_pack_filename, modified_jar_filename, pack_format_for_version,
+    plamo_notice_file, replace_jar_in_place, resource_pack_filename, restore_jar_from_backup,
+    validate_export, write_language_files,
 };
 
 static TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -127,6 +128,16 @@ fn read_raw_entry(path: &std::path::Path, name: &str) -> (Vec<u8>, CompressionMe
     (bytes, compression)
 }
 
+fn zip_entry_names(path: &std::path::Path) -> Vec<String> {
+    let file = fs::File::open(path).unwrap();
+    let archive = ZipArchive::new(file).unwrap();
+    (0..archive.len())
+        .filter_map(|index| archive.name_for_index(index))
+        .filter_map(Result::ok)
+        .map(|name| name.into_owned())
+        .collect()
+}
+
 #[test]
 fn language_file_json_and_legacy_output_are_deterministic() {
     let entries = [
@@ -230,6 +241,7 @@ fn resource_pack_language_paths_and_filename_follow_version_boundaries() {
                 source_jar_filename: "mod.jar",
                 minecraft_version: Some(version),
                 manual_format: None,
+                extra_files: &[],
             },
             &directory,
             false,
@@ -246,6 +258,72 @@ fn resource_pack_language_paths_and_filename_follow_version_boundaries() {
         );
         fs::remove_file(output).unwrap();
     }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn resource_pack_includes_the_plamo_notice_only_when_the_caller_passes_it() {
+    let directory = temporary_directory();
+    let entries = [translation("mod", "key", "訳", 0)];
+    let namespaces = [NamespaceExport {
+        namespace: "mod".to_owned(),
+        included: true,
+    }];
+    let files = [discovered(
+        "mod",
+        "en_us",
+        LanguageFileFormat::Json,
+        "",
+        "en_us.json",
+    )];
+    let project = input(&entries, &namespaces, &files, &[], &[], "en_us");
+    let mods = [ResourcePackMod {
+        name: Some("mod".to_owned()),
+        version: Some("1.0".to_owned()),
+    }];
+    let (notice_name, notice_bytes) = plamo_notice_file();
+    let extra_files = [(notice_name.to_owned(), notice_bytes.clone())];
+
+    let without_notice = export_resource_pack(
+        &project,
+        ResourcePackOptions {
+            mods: &mods,
+            source_jar_filename: "mod.jar",
+            minecraft_version: Some("1.13"),
+            manual_format: None,
+            extra_files: &[],
+        },
+        &directory,
+        false,
+    )
+    .unwrap();
+    let notice_directory = directory.join("with-notice");
+    fs::create_dir_all(&notice_directory).unwrap();
+    let with_notice = export_resource_pack(
+        &project,
+        ResourcePackOptions {
+            mods: &mods,
+            source_jar_filename: "mod.jar",
+            minecraft_version: Some("1.13"),
+            manual_format: None,
+            extra_files: &extra_files,
+        },
+        &notice_directory,
+        false,
+    )
+    .unwrap();
+
+    // A project without PLaMo output keeps producing exactly the previous archive.
+    let mut names = zip_entry_names(&without_notice);
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "assets/mod/lang/ja_jp.json".to_owned(),
+            "pack.mcmeta".to_owned()
+        ]
+    );
+    assert_eq!(read_entry(&with_notice, notice_name), notice_bytes);
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -278,6 +356,7 @@ fn resource_pack_writes_the_generic_target_locale_path_and_neutral_description()
             source_jar_filename: "mod.jar",
             minecraft_version: Some("1.13"),
             manual_format: None,
+            extra_files: &[],
         },
         &directory,
         false,
@@ -334,6 +413,7 @@ fn pack_metadata_changes_shape_at_1_21_9() {
                 source_jar_filename: "mod.jar",
                 minecraft_version: Some(version),
                 manual_format: None,
+                extra_files: &[],
             },
             &directory,
             false,
@@ -399,6 +479,7 @@ fn unknown_resource_pack_version_accepts_manual_format() {
                 major: 90,
                 minor: 0,
             }),
+            extra_files: &[],
         },
         &directory,
         false,
@@ -641,6 +722,54 @@ fn modified_jar_keeps_json_source_format_when_legacy_japanese_exists() {
         read_entry(&source_path, "assets/mod/lang/en_us.json"),
         br#"{"key":"source"}"#
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn modified_jar_includes_the_plamo_notice_only_when_the_caller_passes_it() {
+    let directory = temporary_directory();
+    let source_path = directory.join("original.jar");
+    let plain_path = directory.join("plain.jar");
+    let notice_path = directory.join("notice.jar");
+    fs::write(
+        &source_path,
+        zip_bytes(&[
+            (
+                "assets/mod/lang/en_us.json",
+                br#"{"key":"source"}"#,
+                CompressionMethod::Deflated,
+            ),
+            (
+                "assets/mod/lang/ja_jp.json",
+                br#"{"key":"old"}"#,
+                CompressionMethod::Stored,
+            ),
+        ]),
+    )
+    .unwrap();
+    let entries = [translation("mod", "key", "updated", 0)];
+    let namespaces = [NamespaceExport {
+        namespace: "mod".to_owned(),
+        included: true,
+    }];
+    let files = [
+        discovered("mod", "en_us", LanguageFileFormat::Json, "", "en_us.json"),
+        discovered("mod", "ja_jp", LanguageFileFormat::Json, "", "ja_jp.json"),
+    ];
+    let project = input(&entries, &namespaces, &files, &[], &[], "en_us");
+    let (notice_name, notice_bytes) = plamo_notice_file();
+    let extra_files = [(notice_name.to_owned(), notice_bytes.clone())];
+
+    export_modified_jar(&project, &source_path, &plain_path, false).unwrap();
+    export_modified_jar_with_extra_files(&project, &source_path, &notice_path, &extra_files, false)
+        .unwrap();
+
+    assert!(
+        !zip_entry_names(&plain_path)
+            .iter()
+            .any(|name| name == notice_name)
+    );
+    assert_eq!(read_entry(&notice_path, notice_name), notice_bytes);
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1140,6 +1269,7 @@ fn merged_resource_pack_merges_namespaces_and_keeps_the_first_translation() {
             minecraft_version: Some("1.20.4"),
             manual_format: None,
             pack_description: Some("Fabulously Optimized の日本語訳（2 mod）"),
+            extra_files: &[],
         },
         &output,
         false,
@@ -1232,6 +1362,7 @@ fn merged_resource_pack_exports_translations_when_source_locale_file_is_missing(
             minecraft_version: Some("1.20.4"),
             manual_format: None,
             pack_description: None,
+            extra_files: &[],
         },
         &output,
         false,
@@ -1337,6 +1468,7 @@ fn legacy_resource_pack_preserves_the_source_parse_escapes_marker() {
             source_jar_filename: "mod.jar",
             minecraft_version: Some("1.12.2"),
             manual_format: None,
+            extra_files: &[],
         },
         &directory,
         false,
@@ -1408,6 +1540,7 @@ fn merged_resource_pack_uses_pack_format_across_source_formats_and_keeps_valid_d
             minecraft_version: Some("1.20.4"),
             manual_format: None,
             pack_description: None,
+            extra_files: &[],
         },
         &output,
         false,
@@ -1439,6 +1572,7 @@ fn merged_resource_pack_uses_pack_format_across_source_formats_and_keeps_valid_d
                 minecraft_version: Some("1.20.4"),
                 manual_format: None,
                 pack_description: None,
+                extra_files: &[],
             },
             &output,
             false,
