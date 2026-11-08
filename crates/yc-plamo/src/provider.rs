@@ -3,7 +3,7 @@
 //! サーバの起動とモデルのダウンロードは別クレート (`yc-llama`) の責務で、ここは
 //! 起動済みサーバの base URL と API key だけを受け取る。
 
-use std::{fmt, result, sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
@@ -41,6 +41,59 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 /// 知っている呼び出し側だけが設定する。
 pub type ShaderOptionDetector = Arc<dyn Fn(&TranslationEntry) -> bool + Send + Sync>;
 
+/// entry 1 件の処理結果。評価ハーネスと進捗表示のための観測用。
+///
+/// [`TranslationProvider::translate_batch`] は成功した訳文しか返さないため、失敗の内訳や
+/// 生成速度は外から分からない。評価で「何がどれだけ落ちたか」を測るには実際の経路の
+/// 内側から観測する必要があるので、結果をそのまま渡す口を用意する。
+#[derive(Clone, Debug)]
+pub struct EntryReport {
+    pub entry_id: i64,
+    /// 成功した strategy。全滅した場合は最後に試した strategy。
+    pub strategy: ProtectStrategy,
+    /// 成功時は `None`。失敗時は Provider が付けた理由コード。
+    pub failure: Option<&'static str>,
+    /// 成功した試行回数（1 始まり）。2 なら代替 strategy で成功した。
+    pub attempts: u32,
+    pub prompt_tokens: u32,
+    pub source_tokens: u32,
+    pub n_predict: u32,
+    /// サーバが報告した生成トークン数。timings が無ければ 0。
+    pub generated_tokens: u32,
+    /// サーバが報告した生成フェーズの速度（トークン/秒）。timings が無ければ 0。
+    pub tokens_per_second: f32,
+    pub stop_type: Option<String>,
+    pub truncated: bool,
+    /// 最後の試行の所要時間。
+    pub elapsed: Duration,
+    /// 復元前のモデル出力。代表例の抽出に使う。
+    pub raw_output: String,
+}
+
+impl EntryReport {
+    /// 計測値が何も無い状態の report。早期失敗の組み立てに使う。
+    fn default(entry_id: i64) -> Self {
+        Self {
+            entry_id,
+            strategy: ProtectStrategy::default(),
+            failure: None,
+            attempts: 0,
+            prompt_tokens: 0,
+            source_tokens: 0,
+            n_predict: 0,
+            generated_tokens: 0,
+            tokens_per_second: 0.0,
+            stop_type: None,
+            truncated: false,
+            elapsed: Duration::ZERO,
+            raw_output: String::new(),
+        }
+    }
+}
+
+/// entry ごとの結果を受け取るコールバック。
+pub type EntryObserver = Arc<dyn Fn(&EntryReport) + Send + Sync>;
+
 /// Provider の調整項目。
 #[derive(Clone)]
 pub struct PlamoProviderOptions {
@@ -52,6 +105,17 @@ pub struct PlamoProviderOptions {
     pub protect_strategy: ProtectStrategy,
     /// entry ごとのシェーダー設定判定。`None` なら該当なしとして扱う。
     pub shader_option_detector: Option<ShaderOptionDetector>,
+    /// entry ごとの結果を受け取る観測フック。`None` なら何もしない。
+    ///
+    /// 評価ハーネスと、失敗理由を UI へ出したい呼び出し側のための口。翻訳の判断には
+    /// 影響しない（戻り値を持たない）。
+    pub entry_observer: Option<EntryObserver>,
+    /// 文脈要素をプロンプトへ入れるか。既定は `true`。
+    ///
+    /// `false` にすると `context` 要素を丸ごと落とす（mod 名・namespace・翻訳キー・
+    /// entry 種別のヒントすべて）。`TranslationContext` の mod 名を空にしても翻訳キーと
+    /// 種別ヒントは残るため、文脈の効果を測るにはこの設定が要る。
+    pub include_context: bool,
     pub timeout: Duration,
 }
 
@@ -67,6 +131,8 @@ impl fmt::Debug for PlamoProviderOptions {
                 "shader_option_detector",
                 &self.shader_option_detector.is_some(),
             )
+            .field("entry_observer", &self.entry_observer.is_some())
+            .field("include_context", &self.include_context)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -79,6 +145,8 @@ impl Default for PlamoProviderOptions {
             context_size: None,
             protect_strategy: ProtectStrategy::default(),
             shader_option_detector: None,
+            entry_observer: None,
+            include_context: true,
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -249,22 +317,35 @@ impl PlamoProvider {
                 reason = "unsafe_source_text",
                 "plamo entry skipped"
             );
+            self.report(EntryReport {
+                entry_id: entry.id,
+                strategy: self.options.protect_strategy,
+                failure: Some("unsafe_source_text"),
+                attempts: 0,
+                ..EntryReport::default(entry.id)
+            });
             return Ok(None);
         }
 
-        let prompt_context = pfml3::build_context(&ContextParts {
-            mod_name: &context.mod_name,
-            namespace: &context.namespace,
-            key: &entry.key,
-            format_profile: entry.format_profile,
-            // シェーダー設定の項目名は UI ラベルと語調が違うため、呼び出し側が注入した
-            // 判定があればそれを使う。無い場合はシェーダー由来として扱わない。
-            shader_option: self
-                .options
-                .shader_option_detector
-                .as_ref()
-                .is_some_and(|detect| detect(entry)),
-        });
+        // `include_context = false` のときは `context` 要素を丸ごと落とす。mod 名を空に
+        // するだけでは翻訳キーと entry 種別のヒントが残り、「文脈なし」にならない。
+        let prompt_context = if self.options.include_context {
+            pfml3::build_context(&ContextParts {
+                mod_name: &context.mod_name,
+                namespace: &context.namespace,
+                key: &entry.key,
+                format_profile: entry.format_profile,
+                // シェーダー設定の項目名は UI ラベルと語調が違うため、呼び出し側が注入した
+                // 判定があればそれを使う。無い場合はシェーダー由来として扱わない。
+                shader_option: self
+                    .options
+                    .shader_option_detector
+                    .as_ref()
+                    .is_some_and(|detect| detect(entry)),
+            })
+        } else {
+            String::new()
+        };
         let glossary = pfml3::select_glossary_terms(&entry.source, &context.glossary_terms);
 
         let mut strategy = self.options.protect_strategy;
@@ -272,7 +353,8 @@ impl PlamoProvider {
             if attempt > 0 {
                 strategy = strategy.alternative();
             }
-            match self
+            let started = std::time::Instant::now();
+            let outcome = self
                 .attempt(
                     entry,
                     source_language,
@@ -282,25 +364,41 @@ impl PlamoProvider {
                     strategy,
                     cancellation,
                 )
-                .await?
-            {
-                Ok(translation) => {
+                .await?;
+            let elapsed = started.elapsed();
+            match outcome {
+                Attempt::Translated { translation, stats } => {
+                    self.report(EntryReport {
+                        strategy,
+                        failure: None,
+                        attempts: attempt + 1,
+                        elapsed,
+                        ..stats.into_report(entry.id)
+                    });
                     return Ok(Some(AiTranslation {
                         id: entry.id,
                         translation,
                     }));
                 }
-                Err(EntryFailure::Fatal(reason)) => {
-                    tracing::warn!(entry_id = entry.id, reason, "plamo entry skipped");
-                    return Ok(None);
-                }
-                Err(EntryFailure::Format(reason)) => {
-                    if attempt == 1 {
-                        tracing::warn!(
-                            entry_id = entry.id,
-                            reason,
-                            "plamo entry skipped after both protect strategies"
-                        );
+                Attempt::Failed { failure, stats } => {
+                    let reason = failure.reason();
+                    if !failure.is_retryable() || attempt == 1 {
+                        if failure.is_retryable() {
+                            tracing::warn!(
+                                entry_id = entry.id,
+                                reason,
+                                "plamo entry skipped after both protect strategies"
+                            );
+                        } else {
+                            tracing::warn!(entry_id = entry.id, reason, "plamo entry skipped");
+                        }
+                        self.report(EntryReport {
+                            strategy,
+                            failure: Some(reason),
+                            attempts: attempt + 1,
+                            elapsed,
+                            ..stats.into_report(entry.id)
+                        });
                         return Ok(None);
                     }
                     tracing::debug!(
@@ -314,6 +412,13 @@ impl PlamoProvider {
         Ok(None)
     }
 
+    /// 観測フックへ 1 件分の結果を渡す。登録が無ければ何もしない。
+    fn report(&self, report: EntryReport) {
+        if let Some(observer) = self.options.entry_observer.as_ref() {
+            observer(&report);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn attempt(
         &self,
@@ -324,7 +429,7 @@ impl PlamoProvider {
         glossary: &[(String, String)],
         strategy: ProtectStrategy,
         cancellation: &CancellationToken,
-    ) -> Result<result::Result<String, EntryFailure>> {
+    ) -> Result<Attempt> {
         let protected = ProtectedSource::new(&entry.source, entry.format_profile, strategy);
         let prompt = match pfml3::build_prompt(&PromptRequest {
             source_text: protected.masked_text(),
@@ -335,10 +440,22 @@ impl PlamoProvider {
         }) {
             Ok(prompt) => prompt,
             Err(Pfml3Error::UnsafeSourceText) => {
-                return Ok(Err(EntryFailure::Fatal("unsafe_source_text")));
+                return Ok(Attempt::Failed {
+                    failure: EntryFailure::Fatal("unsafe_source_text"),
+                    stats: AttemptStats::default(),
+                });
             }
             Err(Pfml3Error::MissingTargetLanguage) => {
-                return Ok(Err(EntryFailure::Fatal("missing_target_language")));
+                return Ok(Attempt::Failed {
+                    failure: EntryFailure::Fatal("missing_target_language"),
+                    stats: AttemptStats::default(),
+                });
+            }
+            Err(Pfml3Error::InvalidLanguage) => {
+                return Ok(Attempt::Failed {
+                    failure: EntryFailure::Fatal("invalid_language"),
+                    stats: AttemptStats::default(),
+                });
             }
         };
 
@@ -347,41 +464,82 @@ impl PlamoProvider {
             .tokenize(protected.masked_text(), false, cancellation)
             .await?;
         let n_predict = self.output_budget(source_tokens);
+        let stats = AttemptStats {
+            prompt_tokens,
+            source_tokens,
+            n_predict,
+            ..AttemptStats::default()
+        };
         let slot_context = self.slot_context(cancellation).await?;
         if prompt_tokens.saturating_add(n_predict) > slot_context {
             // 途中で切れた訳文は返せない。コンテキストに収まらない entry は失敗させる。
-            return Ok(Err(EntryFailure::Fatal("prompt_too_long")));
+            return Ok(Attempt::Failed {
+                failure: EntryFailure::Fatal("prompt_too_long"),
+                stats,
+            });
         }
 
         let response = self.complete(&prompt, n_predict, cancellation).await?;
+        let stats = AttemptStats {
+            generated_tokens: response
+                .timings
+                .as_ref()
+                .map_or(0, |timings| timings.predicted_n),
+            tokens_per_second: response
+                .timings
+                .as_ref()
+                .map_or(0.0, |timings| timings.predicted_per_second),
+            stop_type: response.stop_type.clone(),
+            truncated: response.truncated,
+            ..stats
+        };
         if response.truncated || response.stop_type.as_deref() == Some("limit") {
             // 生成上限で切れた本文は文の途中で終わっている可能性が高い。
-            return Ok(Err(EntryFailure::Fatal("output_limit")));
+            return Ok(Attempt::Failed {
+                failure: EntryFailure::Fatal("output_limit"),
+                stats,
+            });
         }
         let content = pfml3::strip_trailing_stop_token(&response.content);
+        // モデルが本文全体を引用符で包むことがある（実測: 1200 entry 中 3 件）。
+        // 原文が引用文でない場合だけ外側 1 組を落とす。
+        let content = pfml3::strip_wrapping_quotes(content, &entry.source);
+        let stats = AttemptStats {
+            raw_output: content.to_owned(),
+            ..stats
+        };
         if content.trim().is_empty() {
-            return Ok(Err(EntryFailure::Fatal("empty_output")));
+            return Ok(Attempt::Failed {
+                failure: EntryFailure::Fatal("empty_output"),
+                stats,
+            });
         }
 
         match protected.restore(content) {
-            Ok(translation) => Ok(Ok(translation)),
-            Err(ProtectError::UnknownMarker | ProtectError::SpanMismatch) => {
-                Ok(Err(EntryFailure::Format("format_mismatch")))
-            }
+            Ok(translation) => Ok(Attempt::Translated { translation, stats }),
+            Err(ProtectError::UnknownMarker | ProtectError::SpanMismatch) => Ok(Attempt::Failed {
+                failure: EntryFailure::Format("format_mismatch"),
+                stats,
+            }),
         }
     }
 
     /// 原文トークン数から生成上限を決める。
     ///
-    /// 訳文は原文より長くなりやすい（日本語は英語より文字数が増える）ので 3 倍を見込み、
-    /// 短い原文でも最低限の余裕を残す。上限は設定値で頭打ちにする。
-    /// `max_output_tokens >= MIN_OUTPUT_TOKENS` は構築時に検査済みなので、
-    /// ここでの `clamp` 下限は設定値を超えない。
+    /// 実測（Create / Farmer's Delight / Mekanism / Supplementaries / Ars Nouveau の
+    /// 1200 entry、0.8B・2B・8B の CPU/GPU）で、生成トークン数 / 原文トークン数 は
+    /// 平均 1.20、p99 2.00、最大 1.64（下限 64 を超える長文だけを見た場合）。
+    /// つまり 2 倍 + 余白で足りる。以前は 3 倍 + 32 を見込んでいたが、その分だけ
+    /// `prompt_tokens + n_predict` が膨らみ、コンテキストに収まるはずの長文を
+    /// `prompt_too_long` で落としていた（スロット 8192 で原文 232 トークンの entry は
+    /// 3 倍だと 728 を要求する）。2 倍 + 24 に詰めても上記サンプルで切り捨ては 0 件だった。
+    /// 上限は設定値で頭打ちにする。`max_output_tokens >= MIN_OUTPUT_TOKENS` は構築時に
+    /// 検査済みなので、ここでの `clamp` 下限は設定値を超えない。
     pub(crate) fn output_budget(&self, source_tokens: u32) -> u32 {
         let cap = self.options.max_output_tokens;
         source_tokens
-            .saturating_mul(3)
-            .saturating_add(32)
+            .saturating_mul(2)
+            .saturating_add(24)
             .clamp(MIN_OUTPUT_TOKENS.min(cap), cap)
     }
 }
@@ -392,6 +550,63 @@ enum EntryFailure {
     Fatal(&'static str),
     /// マスク方式との相性かもしれない。
     Format(&'static str),
+}
+
+impl EntryFailure {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Fatal(reason) | Self::Format(reason) => reason,
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::Format(_))
+    }
+}
+
+/// 1 回の試行の結果。
+enum Attempt {
+    Translated {
+        translation: String,
+        stats: AttemptStats,
+    },
+    Failed {
+        failure: EntryFailure,
+        stats: AttemptStats,
+    },
+}
+
+/// 試行中に分かった計測値。失敗しても分かる範囲は残す。
+#[derive(Default)]
+struct AttemptStats {
+    prompt_tokens: u32,
+    source_tokens: u32,
+    n_predict: u32,
+    generated_tokens: u32,
+    tokens_per_second: f32,
+    stop_type: Option<String>,
+    truncated: bool,
+    raw_output: String,
+}
+
+impl AttemptStats {
+    fn into_report(self, entry_id: i64) -> EntryReport {
+        EntryReport {
+            entry_id,
+            strategy: ProtectStrategy::default(),
+            failure: None,
+            attempts: 0,
+            prompt_tokens: self.prompt_tokens,
+            source_tokens: self.source_tokens,
+            n_predict: self.n_predict,
+            generated_tokens: self.generated_tokens,
+            tokens_per_second: self.tokens_per_second,
+            stop_type: self.stop_type,
+            truncated: self.truncated,
+            elapsed: Duration::ZERO,
+            raw_output: self.raw_output,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -411,6 +626,19 @@ struct CompletionResponse {
     stop_type: Option<String>,
     #[serde(default)]
     truncated: bool,
+    /// 生成速度の計測値。llama-server は常に返すが、無くても翻訳自体は成立する。
+    #[serde(default)]
+    timings: Option<CompletionTimings>,
+}
+
+#[derive(Deserialize)]
+struct CompletionTimings {
+    /// 実際に生成したトークン数。`stop` で止まった場合も含む。
+    #[serde(default)]
+    predicted_n: u32,
+    /// 生成フェーズの実測速度（トークン/秒）。プロンプト処理は含まない。
+    #[serde(default)]
+    predicted_per_second: f32,
 }
 
 #[derive(serde::Serialize)]
