@@ -21,6 +21,12 @@
   outline-offset: var(--focus-ring-offset);
 }
 
+/* 対応状況の取得待ちなどで変更できない間も、選択済みの値は読める状態に保つ。 */
+.target-language-picker__input:disabled {
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+}
+
 /* global.css のリングは !important なので、マウスで入ったときの打ち消しにも !important が要る。 */
 .target-language-picker__input[data-pointer-focus]:focus-visible {
   outline: none !important;
@@ -78,6 +84,24 @@
 
 .target-language-picker__option code {
   color: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* 選べない候補は、選べないことと理由を同時に示す。 */
+.target-language-picker__option[aria-disabled="true"] {
+  color: var(--color-disabled);
+  cursor: not-allowed;
+}
+
+.target-language-picker__option[aria-disabled="true"]:hover,
+.target-language-picker__option[aria-disabled="true"][data-active="true"] {
+  background: transparent;
+  color: var(--color-disabled);
+}
+
+.target-language-picker__unavailable {
+  grid-column: 1 / -1;
   font-size: 0.75rem;
   font-weight: 500;
 }

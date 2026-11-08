@@ -1,17 +1,23 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 
 import {
+  acceptPlamoLicense,
   cancelChatgptLogin,
+  cancelPlamoDownload,
+  deletePlamoModel,
   detectMinecraftJars,
+  downloadPlamoFiles,
   getAiSettings,
   getAppInfo,
   getMinecraftJarSetting,
+  getPlamoStatus,
   getSettings,
   listAiModels,
   logoutChatgpt,
+  openPlamoLicense,
   saveAiProvider,
   saveSettings,
   startChatgptLogin,
@@ -19,20 +25,27 @@ import {
 import { SettingsScreen } from "./SettingsScreen";
 import { useAppStore } from "../../stores/appStore";
 import { SETTING_DEFAULTS, useSettingsStore } from "../../stores/settingsStore";
+import type { AiSettingsDto, PlamoDownloadEvent, PlamoStatusDto } from "../../types/ai";
 
 vi.mock("../../lib/tauri", () => ({
   AppCommandError: class extends Error {},
   clearCache: vi.fn(),
   cancelChatgptLogin: vi.fn(),
+  cancelPlamoDownload: vi.fn(),
+  acceptPlamoLicense: vi.fn(),
+  deletePlamoModel: vi.fn(),
   detectMinecraftJars: vi.fn(),
   deleteAiProvider: vi.fn(),
+  downloadPlamoFiles: vi.fn(),
   getAiSettings: vi.fn(),
   getAppInfo: vi.fn(),
   getMinecraftJarSetting: vi.fn(),
+  getPlamoStatus: vi.fn(),
   getSettings: vi.fn(),
   getSystemLocale: vi.fn().mockResolvedValue("ja-JP"),
   listAiModels: vi.fn().mockResolvedValue([]),
   logoutChatgpt: vi.fn(),
+  openPlamoLicense: vi.fn(),
   saveAiProvider: vi.fn(),
   saveSettings: vi.fn(),
   startChatgptLogin: vi.fn(),
@@ -49,6 +62,38 @@ function settings(provider: "openai" | "chatgpt", configured: boolean, accountLa
     batchSize: 50,
     concurrency: 2,
     customPrompt: "",
+  };
+}
+
+const PLAMO_MODELS = [
+  { id: "plamo-3-translate-0.8b" as const, parameterLabel: "0.8B", sizeBytes: 612_000_000, downloaded: false },
+  { id: "plamo-3-translate-2b" as const, parameterLabel: "2B", sizeBytes: 1_610_000_000, downloaded: false },
+  { id: "plamo-3-translate-8b" as const, parameterLabel: "8B", sizeBytes: 5_370_000_000, downloaded: false },
+];
+
+function plamoSettings(overrides: Partial<AiSettingsDto> = {}): AiSettingsDto {
+  return {
+    provider: "plamo",
+    configured: false,
+    model: "plamo-3-translate-2b",
+    baseUrl: "",
+    batchSize: 50,
+    concurrency: 2,
+    customPrompt: "",
+    device: "gpu",
+    ...overrides,
+  };
+}
+
+function plamoStatus(overrides: Partial<PlamoStatusDto> = {}): PlamoStatusDto {
+  return {
+    models: PLAMO_MODELS,
+    runtimeReady: { cpu: false, gpu: false },
+    runtimeSizeBytes: { cpu: 120_000_000, gpu: 240_000_000 },
+    licenseAccepted: false,
+    supportedTargetLocales: ["ja_jp", "en_us", "de_de"],
+    downloading: false,
+    ...overrides,
   };
 }
 
@@ -335,5 +380,211 @@ describe("SettingsScreen API Key field", () => {
     fireEvent.keyDown(window, { key: "Escape" });
 
     await waitFor(() => expect(useAppStore.getState().route).toBe("export"));
+  });
+});
+
+describe("SettingsScreen PLaMo panel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    useAppStore.setState({ settingsCategory: "ai" });
+    useSettingsStore.setState({
+      settings: { schemaVersion: 1, ...SETTING_DEFAULTS, "ai.provider": "plamo" },
+      loaded: true,
+      error: null,
+    });
+    vi.mocked(getSettings).mockResolvedValue({ schemaVersion: 1, ...SETTING_DEFAULTS, "ai.provider": "plamo" });
+    vi.mocked(saveSettings).mockResolvedValue(undefined);
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings());
+    vi.mocked(saveAiProvider).mockImplementation(async (config) => plamoSettings(config));
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus());
+    vi.mocked(acceptPlamoLicense).mockResolvedValue(undefined);
+    vi.mocked(downloadPlamoFiles).mockResolvedValue(undefined);
+    vi.mocked(cancelPlamoDownload).mockResolvedValue(true);
+    vi.mocked(deletePlamoModel).mockResolvedValue(undefined);
+    vi.mocked(openPlamoLicense).mockResolvedValue(undefined);
+    vi.mocked(getAppInfo).mockResolvedValue({
+      appName: "YakuCraft",
+      version: "0.1.0",
+      dataDirectory: "C:/app-data",
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  async function selectPlamo() {
+    fireEvent.click(screen.getByRole("combobox", { name: "プロバイダー" }));
+    fireEvent.click(screen.getByRole("option", { name: "PLaMo（ローカル）" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "モデル" })).toBeTruthy());
+  }
+
+  it("モデルとデバイスとダウンロードを表示し、APIキー・追加指示・送信件数・削除を出さない", async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    expect(screen.getByRole("combobox", { name: "モデル" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "デバイス" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /ダウンロード/ })).toBeTruthy();
+    expect(screen.queryByLabelText(/APIキー/)).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "モデル" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "接続先URL" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "詳細設定" }));
+    expect(screen.queryByRole("spinbutton", { name: "1回の送信件数" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "追加指示" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "並列数" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "削除" })).toBeNull();
+  });
+
+  it("ライセンス未同意では確認ダイアログを挟み、同意してからダウンロードを開始する", async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    fireEvent.click(screen.getByRole("button", { name: /ダウンロード/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "PLaMo のライセンス" });
+    expect(dialog.textContent).toContain("Preferred Networks");
+    expect(downloadPlamoFiles).not.toHaveBeenCalled();
+    expect(acceptPlamoLicense).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "同意してダウンロード" }));
+
+    await waitFor(() => expect(acceptPlamoLicense).toHaveBeenCalledOnce());
+    await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledWith(
+      "plamo-3-translate-2b",
+      "gpu",
+      expect.any(Function),
+    ));
+  });
+
+  it("ライセンス同意済みならダイアログを出さずにダウンロードする", async () => {
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({ licenseAccepted: true }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    fireEvent.click(screen.getByRole("button", { name: /ダウンロード/ }));
+
+    await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(acceptPlamoLicense).not.toHaveBeenCalled();
+  });
+
+  it("進捗イベントでバーとフェーズ表示を更新し、キャンセルを呼ぶ", async () => {
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({ licenseAccepted: true }));
+    let emit!: (event: PlamoDownloadEvent) => void;
+    vi.mocked(downloadPlamoFiles).mockImplementation((_modelId, _device, onEvent) => {
+      emit = onEvent;
+      return new Promise(() => {});
+    });
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    fireEvent.click(screen.getByRole("button", { name: /ダウンロード/ }));
+    await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledOnce());
+
+    act(() => emit({ kind: "progress", phase: "model", receivedBytes: 1024 ** 3, totalBytes: 2 * 1024 ** 3 }));
+
+    const bar = await screen.findByRole("progressbar", { name: "ダウンロードの進行状況" });
+    expect(bar.getAttribute("value")).toBe("50");
+    expect(screen.getByText(/モデル · 1 GB \/ 2 GB/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+    await waitFor(() => expect(cancelPlamoDownload).toHaveBeenCalledOnce());
+  });
+
+  it("ダウンロード失敗時はバックエンドのメッセージを出し、再試行できる", async () => {
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({ licenseAccepted: true }));
+    let emit!: (event: PlamoDownloadEvent) => void;
+    vi.mocked(downloadPlamoFiles).mockImplementation(async (_modelId, _device, onEvent) => {
+      emit = onEvent;
+    });
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    fireEvent.click(screen.getByRole("button", { name: /ダウンロード/ }));
+    await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledOnce());
+
+    act(() => emit({
+      kind: "failed",
+      error: { code: "plamo_download_failed", userMessage: "接続を確認してください。", recoverable: true },
+    }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("接続を確認してください。");
+    fireEvent.click(screen.getByRole("button", { name: /ダウンロード/ }));
+    await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledTimes(2));
+  });
+
+  it("ダウンロード済みモデルは削除でき、確認後にモデル削除を呼ぶ", async () => {
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({
+      licenseAccepted: true,
+      models: PLAMO_MODELS.map((model) => ({ ...model, downloaded: true })),
+      runtimeReady: { cpu: true, gpu: true },
+    }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    expect(screen.queryByRole("button", { name: /ダウンロード/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "削除" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "モデルを削除しますか？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "削除" }));
+
+    await waitFor(() => expect(deletePlamoModel).toHaveBeenCalledWith("plamo-3-translate-2b"));
+  });
+
+  it("Built with PLaMo の表示からライセンスを開き、日本語UIではjaを渡す", async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    expect(screen.getByText("Built with PLaMo")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "ライセンス" }));
+
+    await waitFor(() => expect(openPlamoLicense).toHaveBeenCalledWith("ja"));
+  });
+
+  it("保存するとdeviceを含めて保存し、PLaMoの設定と状態を取り直す", async () => {
+    // 契約ではPLaMoの接続先と追加指示は空文字なので、画面の値が残っていても空で送ることを確かめる。
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings({
+      baseUrl: "https://stale.example.com/v1",
+      customPrompt: "古い追加指示",
+    }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "デバイス" }));
+    fireEvent.click(screen.getByRole("option", { name: "CPU" }));
+    const statusCallsBeforeSave = vi.mocked(getPlamoStatus).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(saveAiProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "plamo", model: "plamo-3-translate-2b", device: "cpu", baseUrl: "", customPrompt: "" }),
+      undefined,
+    ));
+    await waitFor(() => expect(getAiSettings).toHaveBeenCalledWith("plamo"));
+    await waitFor(() => expect(vi.mocked(getPlamoStatus).mock.calls.length).toBeGreaterThan(statusCallsBeforeSave));
+  });
+
+  it("翻訳先の選択肢でPLaMo非対応言語を選べなくする", async () => {
+    useAppStore.setState({ settingsCategory: "language" });
+    render(<SettingsScreen />);
+
+    await waitFor(() => expect(getPlamoStatus).toHaveBeenCalled());
+    fireEvent.focus(screen.getByRole("combobox", { name: "翻訳先の言語" }));
+
+    const unsupported = await screen.findByRole("option", { name: /Afrikaans/ });
+    expect(unsupported.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(unsupported);
+    expect(saveSettings).not.toHaveBeenCalledWith(expect.objectContaining({ "language.targetLocale": "af_za" }));
+
+    const supported = screen.getByRole("option", { name: /Deutschland/ });
+    expect(supported.getAttribute("aria-disabled")).toBeNull();
   });
 });

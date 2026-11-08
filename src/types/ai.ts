@@ -12,7 +12,12 @@ export type AiProviderId =
   | "groq"
   | "ollama"
   | "lm-studio"
-  | "anthropic";
+  | "anthropic"
+  | "plamo";
+
+export type PlamoModelId = "plamo-3-translate-0.8b" | "plamo-3-translate-2b" | "plamo-3-translate-8b";
+
+export type PlamoDevice = "gpu" | "cpu";
 
 export interface AiSettingsDto {
   provider: AiProviderId;
@@ -23,6 +28,8 @@ export interface AiSettingsDto {
   batchSize: number;
   concurrency: number;
   customPrompt: string;
+  // PLaMo のみ。ローカル実行に使うデバイスで、未指定時はバックエンドが gpu として扱う。
+  device?: PlamoDevice;
 }
 
 export interface SaveAiProviderDto extends Omit<AiSettingsDto, "configured" | "accountLabel"> {}
@@ -44,3 +51,27 @@ export type AiJobEventDto =
   | { kind: "completed"; jobId: string; completed: number; total: number }
   | { kind: "cancelled"; jobId: string; completed: number; total: number }
   | { kind: "failed"; jobId: string; error: AppError };
+
+export interface PlamoModelDto {
+  id: PlamoModelId;
+  parameterLabel: string;
+  sizeBytes: number;
+  downloaded: boolean;
+}
+
+export interface PlamoStatusDto {
+  models: PlamoModelDto[];
+  runtimeReady: { cpu: boolean; gpu: boolean };
+  runtimeSizeBytes: { cpu: number; gpu: number };
+  licenseAccepted: boolean;
+  // PLaMo が翻訳先として扱える Minecraft ロケール（小文字）。
+  supportedTargetLocales: string[];
+  // 画面を開き直した場合も、既に走っているダウンロードを表示できるようにする。
+  downloading: boolean;
+}
+
+export type PlamoDownloadEvent =
+  | { kind: "progress"; phase: "runtime" | "model"; receivedBytes: number; totalBytes: number }
+  | { kind: "completed" }
+  | { kind: "cancelled" }
+  | { kind: "failed"; error: AppError };

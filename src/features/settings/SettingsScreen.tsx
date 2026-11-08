@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, getRecentLog, listAiModels, logoutChatgpt, openLogFolder, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
+import { AppCommandError, cancelChatgptLogin, clearCache, deleteAiProvider, getAiSettings, getAppInfo, getPlamoStatus, getRecentLog, listAiModels, logoutChatgpt, openLogFolder, saveAiProvider, startChatgptLogin, testAiProvider } from "../../lib/tauri";
 import { logFrontendError } from "../../lib/errorLogging";
 import { openFileDialog } from "../../lib/dialogs";
 import { isImeCompositionKeyDown } from "../../lib/keyboard";
@@ -9,9 +9,10 @@ import { SecondaryButton } from "../../components/button/Buttons";
 import { useAppStore } from "../../stores/appStore";
 import { SETTING_DEFAULTS, useSettingsStore } from "../../stores/settingsStore";
 import { checkForUpdate, loadUpdateSupport, useUpdaterStore } from "../updater/updater";
-import type { AiProviderId, AiSettingsDto } from "../../types/ai";
+import type { AiProviderId, AiSettingsDto, PlamoStatusDto } from "../../types/ai";
 import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
+import { PlamoSection } from "./PlamoSection";
 import { TargetLanguagePicker } from "../../components/TargetLanguagePicker";
 import { UI_LANGUAGES, UI_LANGUAGE_INFO, isUiLanguage, t, useT, useUiLanguage, setUiLanguage } from "../../i18n";
 import "./SettingsScreen.css";
@@ -36,7 +37,8 @@ type SettingsProviderKey =
   | "settings.providerOllama"
   | "settings.providerLmStudio"
   | "settings.providerOpenaiCompatible"
-  | "settings.providerDeepl";
+  | "settings.providerDeepl"
+  | "settings.providerPlamo";
 
 const CATEGORIES: Array<[SettingsCategory, SettingsCategoryKey]> = [
   ["general", "settings.generalCategory"],
@@ -61,16 +63,21 @@ const PROVIDERS: Array<[AiProviderId, SettingsProviderKey]> = [
   ["lm-studio", "settings.providerLmStudio"],
   ["openai-compatible", "settings.providerOpenaiCompatible"],
   ["deepl", "settings.providerDeepl"],
+  ["plamo", "settings.providerPlamo"],
 ];
 
 function aiSaveConfig(settings: AiSettingsDto) {
+  // PLaMo はローカル実行で接続先も追加指示も持たないため、契約どおり空文字を送る。
+  const isPlamo = settings.provider === "plamo";
   return {
     provider: settings.provider,
     model: settings.model,
-    baseUrl: settings.baseUrl,
+    baseUrl: isPlamo ? "" : settings.baseUrl,
     batchSize: settings.batchSize,
     concurrency: settings.concurrency,
-    customPrompt: settings.customPrompt,
+    customPrompt: isPlamo ? "" : settings.customPrompt,
+    // PLaMo だけが device を使う。他プロバイダーには送らず、既存の保存内容を変えない。
+    ...(isPlamo ? { device: settings.device ?? "gpu" } : {}),
   };
 }
 
@@ -184,9 +191,26 @@ export function SettingsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
+  // PLaMo の状態はパネルの表示と翻訳先の選択肢の両方で使うため、この画面で1回だけ取得して共有する。
+  const [plamoStatus, setPlamoStatus] = useState<PlamoStatusDto | null>(null);
+  const [plamoStatusFailed, setPlamoStatusFailed] = useState(false);
+  const [plamoRefreshKey, setPlamoRefreshKey] = useState(0);
+  // ダウンロード中にプロバイダーを切り替えると、完了後の再取得で表示が戻るため、切り替えを止める。
+  const [plamoDownloading, setPlamoDownloading] = useState(false);
   const modelProvider = ai?.provider;
   const modelBaseUrl = ai?.baseUrl;
   const modelProviderConfigured = ai?.configured ?? false;
+  const savedProvider = useSettingsStore((state) => state.settings["ai.provider"]);
+  // 設定を読み込む前でも翻訳先の選択肢を絞れるよう、AI 欄の編集中の値を優先する。
+  const effectiveProvider = (ai?.provider ?? savedProvider) as AiProviderId | undefined;
+  // 別プロバイダーへ切り替えたときに、PLaMo の対応言語で選択肢を絞り続けないようにする。
+  const plamoSupportedLocales = plamoStatus && effectiveProvider === "plamo"
+    ? plamoStatus.supportedTargetLocales.map((code) => code.toLowerCase())
+    : null;
+  // 対応言語が未取得（取得中・失敗）のまま選ばせると、非対応の翻訳先を保存できてしまう。
+  // 取得できるまでは変更を止め、選択済みの値は表示したままにする。
+  const targetPickerLocked = effectiveProvider === "plamo" && plamoSupportedLocales === null;
+  const targetLocale = stringSetting(settings, "language.targetLocale", String(SETTING_DEFAULTS["language.targetLocale"]));
 
   const refreshModels = useCallback(async (config: Pick<AiSettingsDto, "provider" | "baseUrl">, key?: string) => {
     const generation = ++modelRequestGeneration.current;
@@ -246,6 +270,52 @@ export function SettingsScreen() {
       .catch((cause: unknown) => setError(errorMessage(cause)));
   }, [refreshModels]);
 
+  // PLaMo の状態は、そのプロバイダーを表示しているときだけ取得する。
+  useEffect(() => {
+    if (effectiveProvider !== "plamo") return;
+    let active = true;
+    void getPlamoStatus()
+      .then((status) => {
+        if (!active) return;
+        setPlamoStatus(status);
+        setPlamoStatusFailed(false);
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        void logFrontendError(cause, "plamo status");
+        setPlamoStatusFailed(true);
+      });
+    return () => { active = false; };
+  }, [effectiveProvider, plamoRefreshKey]);
+
+  const refreshPlamo = useCallback(async () => {
+    try {
+      const saved = await getAiSettings("plamo");
+      // 取得中に別プロバイダーへ切り替えた場合、その選択を PLaMo で上書きしない。
+      setAi((current) => (current && current.provider !== "plamo" ? current : saved));
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+    }
+    setPlamoRefreshKey((current) => current + 1);
+  }, []);
+
+  // ダウンロードは選択中のモデル・デバイスで行うため、先に保存してから開始する。
+  const savePlamoSelection = useCallback(async () => {
+    if (!ai || ai.provider !== "plamo") return false;
+    setBusy(true);
+    setError(null);
+    try {
+      setAi(await saveAiProvider(aiSaveConfig(ai)));
+      await loadSettings();
+      return true;
+    } catch (cause: unknown) {
+      setError(errorMessage(cause));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [ai, loadSettings]);
+
   const persist = useCallback(async (patch: Record<string, unknown>) => {
     setError(null);
     setMessage(null);
@@ -288,6 +358,8 @@ export function SettingsScreen() {
       setApiKey("");
       setMessage(translate("settings.saved"));
       await loadSettings();
+      // 保存で configured とダウンロード状態が変わるため、PLaMo は設定と状態を取り直す。
+      if (ai.provider === "plamo") await refreshPlamo();
     } catch (cause: unknown) {
       setError(errorMessage(cause));
     } finally {
@@ -451,11 +523,17 @@ export function SettingsScreen() {
                 <TargetLanguagePicker
                   id="settings-target-language"
                   aria-label={translate("settings.targetLanguage")}
-                  value={stringSetting(settings, "language.targetLocale", String(SETTING_DEFAULTS["language.targetLocale"]))}
+                  value={targetLocale}
+                  disabled={targetPickerLocked}
                   onChange={(value) => void persist({ "language.targetLocale": value })}
+                  // 非対応言語を隠すと一覧から消えて理由も分からないため、選べない状態で残す。
+                  isOptionDisabled={plamoSupportedLocales
+                    ? (code) => !plamoSupportedLocales.includes(code.toLowerCase())
+                    : undefined}
+                  disabledOptionReason={translate("settings.plamoUnsupportedLanguage")}
                 />
                 <span className="settings-field__hint">{translate("settings.targetLanguageHelp")}</span>
-                {stringSetting(settings, "language.targetLocale", "en_us").toLowerCase() === "en_us" && (
+                {targetLocale.toLowerCase() === "en_us" && (
                   <span className="settings-field__hint">{translate("settings.englishTargetWarning")}</span>
                 )}
               </label>
@@ -530,7 +608,7 @@ export function SettingsScreen() {
                 <Select
                   aria-label={translate("settings.provider")}
                   value={ai?.provider ?? "chatgpt"}
-                  disabled={busy || loginPending || !ai}
+                  disabled={busy || loginPending || plamoDownloading || !ai}
                   onChange={(provider) => void selectProvider(provider as AiProviderId)}
                   options={PROVIDERS.map(([value, labelKey]) => ({ value, label: translate(labelKey) }))}
                 />
@@ -554,7 +632,8 @@ export function SettingsScreen() {
                   </div>
                 )
               ) : (
-                !(ai?.provider === "ollama" || ai?.provider === "lm-studio") && (
+                // PLaMo はローカル実行で認証情報を持たないため、APIキー欄を出さない。
+                ai?.provider !== "plamo" && !(ai?.provider === "ollama" || ai?.provider === "lm-studio") && (
                   <label className="settings-field">
                   {translate("settings.apiKey")}
                   <input
@@ -568,7 +647,19 @@ export function SettingsScreen() {
                   </label>
                 )
               )}
-              {ai?.provider !== "deepl" && (
+              {ai?.provider === "plamo" ? (
+                <PlamoSection
+                  settings={ai}
+                  status={plamoStatus}
+                  statusFailed={plamoStatusFailed}
+                  busy={busy || loginPending}
+                  targetLocale={targetLocale}
+                  onSettingsChange={(patch) => setAi((current) => current ? { ...current, ...patch } : current)}
+                  onSaveSelection={savePlamoSelection}
+                  onRefresh={refreshPlamo}
+                  onDownloadingChange={setPlamoDownloading}
+                />
+              ) : ai?.provider !== "deepl" && (
                   <div className="settings-field">
                     <label htmlFor="ai-model">{translate("settings.model")}</label>
                     <Combobox
@@ -600,19 +691,22 @@ export function SettingsScreen() {
               )}
               <Disclosure className="settings-advanced" title={translate("settings.advancedSettings")}>
                 <div className="settings-fields">
-                  <label className="settings-field" htmlFor="ai-batch-size">
-                    {translate("settings.requestsPerBatch")}
-                    <NumberInput
-                      id="ai-batch-size"
-                      min={1}
-                      max={50}
-                      value={ai?.batchSize ?? 50}
-                      onChange={(event) => {
-                        const batchSize = Number(event.currentTarget.value);
-                        setAi((current) => current ? { ...current, batchSize } : current);
-                      }}
-                    />
-                  </label>
+                  {/* PLaMo はバックエンドが送信件数を無視するため、意味のない欄を出さない。 */}
+                  {ai?.provider !== "plamo" && (
+                    <label className="settings-field" htmlFor="ai-batch-size">
+                      {translate("settings.requestsPerBatch")}
+                      <NumberInput
+                        id="ai-batch-size"
+                        min={1}
+                        max={50}
+                        value={ai?.batchSize ?? 50}
+                        onChange={(event) => {
+                          const batchSize = Number(event.currentTarget.value);
+                          setAi((current) => current ? { ...current, batchSize } : current);
+                        }}
+                      />
+                    </label>
+                  )}
                   <div className="settings-field">
                     <span>{translate("settings.parallelRequests")}</span>
                     <Select
@@ -622,7 +716,8 @@ export function SettingsScreen() {
                       options={[1, 2, 3, 4].map((value) => ({ value: String(value), label: String(value) }))}
                     />
                   </div>
-                  {ai?.provider !== "deepl" && (
+                  {/* PLaMo は指示追従モデルではないため、追加指示の欄を出さない。 */}
+                  {ai?.provider !== "deepl" && ai?.provider !== "plamo" && (
                     <label className="settings-field">
                     {translate("settings.additionalInstructions")}
                       <textarea
@@ -640,7 +735,8 @@ export function SettingsScreen() {
               <div className="settings-actions">
                 <button className="settings-action" type="button" disabled={busy || loginPending || !ai} onClick={() => void saveProvider()}>{translate("settings.save")}</button>
                 <button className="settings-action" type="button" disabled={busy || loginPending || !ai?.configured} onClick={() => void testProvider()}>{translate("settings.testConnection")}</button>
-                {ai?.configured && ai.provider !== "chatgpt" && (
+                {/* PLaMo は認証情報を持たず delete_ai_provider を使わないため、削除はモデル単位で行う。 */}
+                {ai?.configured && ai.provider !== "chatgpt" && ai.provider !== "plamo" && (
                   <button className="settings-action settings-action--quiet" type="button" disabled={busy} onClick={() => void removeProvider()}>{translate("settings.delete")}</button>
                 )}
               </div>

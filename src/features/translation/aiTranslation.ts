@@ -26,7 +26,13 @@ const PROVIDER_LABELS: Record<Exclude<AiProviderId, "openai-compatible">, string
   groq: "Groq",
   ollama: "Ollama",
   "lm-studio": "LM Studio",
+  plamo: "PLaMo",
 };
+
+// PLaMo はこのPC内で推論するため、外部送信の同意を求める必要がない。
+function isLocalProvider(provider: AiProviderId) {
+  return provider === "plamo";
+}
 
 function providerLabel(provider: AiProviderId) {
   return provider === "openai-compatible"
@@ -116,7 +122,8 @@ export async function translateWithAi(entryIds: number[], requestConfirmation: R
     let targetWarningShown = false;
 
     const settingsStore = useSettingsStore.getState();
-    if (!settingsStore.value<boolean>("ai.privacyNoticeAccepted")) {
+    // ローカル推論では原文がPC外へ出ないため、外部送信の同意は求めず、同意状態も読み書きしない。
+    if (!isLocalProvider(settings.provider) && !settingsStore.value<boolean>("ai.privacyNoticeAccepted")) {
       const warning = support.level === "limited" ? support.message : null;
       const accepted = await requestConfirmation({
         title: t("ai.sendNoticeTitle"),
@@ -229,7 +236,10 @@ export async function translateWholeProjectWithAi(requestConfirmation: RequestCo
     if (!(await requestConfirmation({
       title: t(modUnitId === undefined ? "ai.wholeProjectTitle" : "ai.thisModTitle"),
       message: withTargetWarning(
-        t("ai.wholeMessage", { count: formatNumber(missing.length) }),
+        // ローカル推論では送信の説明が誤りになるため、PC外へ出ないことを伝える。
+        t(isLocalProvider(settings.provider) ? "ai.wholeMessageLocal" : "ai.wholeMessage", {
+          count: formatNumber(missing.length),
+        }),
         support.level === "limited" ? support.message : null,
       ),
       confirmLabel: t("ai.translate"),
@@ -432,6 +442,8 @@ async function confirmAiPrivacy(
   requestConfirmation: RequestConfirmation,
   scope: "mod" | "project",
 ) {
+  // ローカル推論では原文がPC外へ出ないため、外部送信の同意は求めず、同意状態も読み書きしない。
+  if (isLocalProvider(provider)) return true;
   const settingsStore = useSettingsStore.getState();
   if (settingsStore.value<boolean>("ai.privacyNoticeAccepted")) return true;
   const noticeKey = scope === "project" ? "ai.sendProjectNotice" : "ai.sendModNotice";

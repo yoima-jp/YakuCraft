@@ -4,7 +4,7 @@ import { logFrontendError } from "./errorLogging";
 import { t } from "../i18n";
 import type { AnalysisChannelEvent, AppError, OperationProgressDto } from "../types/commands";
 export type { AnalysisChannelEvent, AnalysisProgressDto, AppError } from "../types/commands";
-import type { AiJobEventDto, AiProviderId, AiSettingsDto, ChatGptCredentialStatusDto, SaveAiProviderDto } from "../types/ai";
+import type { AiJobEventDto, AiProviderId, AiSettingsDto, ChatGptCredentialStatusDto, PlamoDevice, PlamoDownloadEvent, PlamoModelId, PlamoStatusDto, SaveAiProviderDto } from "../types/ai";
 import type { ExportKind, ExportValidationDto, ManualPackFormatDto } from "../types/export";
 import type {
   ProjectDetailsDto,
@@ -144,6 +144,37 @@ export function cancelChatgptLogin() {
 
 export function logoutChatgpt() {
   return invokeApp<void>("logout_chatgpt");
+}
+
+export function getPlamoStatus() {
+  return invokeApp<PlamoStatusDto>("get_plamo_status");
+}
+
+export function acceptPlamoLicense() {
+  return invokeApp<void>("accept_plamo_license");
+}
+
+export function downloadPlamoFiles(
+  modelId: PlamoModelId,
+  device: PlamoDevice,
+  onEvent: (event: PlamoDownloadEvent) => void,
+) {
+  const channel = new Channel<PlamoDownloadEvent>();
+  channel.onmessage = onEvent;
+  // このコマンドの引数名は契約どおり onEvent。バックエンドはこの名前でChannelを受け取る。
+  return invokeApp<void>("download_plamo_files", { modelId, device, onEvent: channel });
+}
+
+export function cancelPlamoDownload() {
+  return invokeApp<boolean>("cancel_plamo_download");
+}
+
+export function deletePlamoModel(modelId: PlamoModelId) {
+  return invokeApp<void>("delete_plamo_model", { modelId });
+}
+
+export function openPlamoLicense(language: "ja" | "en") {
+  return invokeApp<void>("open_plamo_license", { language });
 }
 
 export function startAiJob(

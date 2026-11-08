@@ -9,12 +9,25 @@ import "./TargetLanguagePicker.css";
 interface TargetLanguagePickerProps {
   "aria-label": string;
   className?: string;
+  disabled?: boolean;
   id?: string;
   value: string;
   onChange: (value: string) => void;
+  // 選択できない言語も一覧には残す。隠すと、なぜその言語が無いのか分からなくなるため。
+  isOptionDisabled?: (code: string) => boolean;
+  disabledOptionReason?: string;
 }
 
-export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: givenId, value, onChange }: TargetLanguagePickerProps) {
+export function TargetLanguagePicker({
+  "aria-label": ariaLabel,
+  className,
+  disabled = false,
+  id: givenId,
+  value,
+  onChange,
+  isOptionDisabled,
+  disabledOptionReason,
+}: TargetLanguagePickerProps) {
   const generatedId = useId();
   const id = givenId ?? `target-language-${generatedId}`;
   const t = useT();
@@ -45,6 +58,16 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
       .sort((left, right) => compareText(left.name, right.name, uiLanguage));
   }, [localizedLanguageNames, query, uiLanguage]);
   const activeOptionIndex = options.length > 0 ? Math.min(activeIndex, options.length - 1) : -1;
+  const isDisabled = (code: string) => isOptionDisabled?.(code) === true;
+  const firstEnabledIndex = () => options.findIndex((language) => !isDisabled(language.code));
+  // 矢印キーは無効な候補を飛ばし、全候補が無効なら現在位置を維持する。
+  const nextEnabledIndex = (from: number, direction: 1 | -1) => {
+    for (let offset = 1; offset <= options.length; offset += 1) {
+      const index = (from + direction * offset + options.length * 2) % options.length;
+      if (!isDisabled(options[index].code)) return index;
+    }
+    return -1;
+  };
 
   useEffect(() => {
     if (open && activeOptionIndex >= 0) {
@@ -53,29 +76,35 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
   }, [activeOptionIndex, open]);
 
   const choose = (code: string) => {
+    if (disabled || isDisabled(code)) return;
     onChange(code);
     setQuery("");
     setOpen(false);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (disabled) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
       if (!open) {
         setOpen(true);
-        setActiveIndex(0);
+        setActiveIndex(firstEnabledIndex());
       } else if (options.length > 0) {
-        setActiveIndex((current) => (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length);
+        const next = nextEnabledIndex(activeOptionIndex, direction);
+        if (next >= 0) setActiveIndex(next);
       }
     } else if (event.key === "Home" && open && options.length > 0) {
       event.preventDefault();
-      setActiveIndex(0);
+      const first = firstEnabledIndex();
+      if (first >= 0) setActiveIndex(first);
     } else if (event.key === "End" && open && options.length > 0) {
       event.preventDefault();
-      setActiveIndex(options.length - 1);
-    } else if (event.key === "Enter" && open && options[activeIndex]) {
+      const last = nextEnabledIndex(0, -1);
+      if (last >= 0) setActiveIndex(last);
+    } else if (event.key === "Enter" && open && options[activeOptionIndex]) {
       event.preventDefault();
-      choose(options[activeIndex].code);
+      choose(options[activeOptionIndex].code);
     } else if (event.key === "Escape" && open) {
       event.preventDefault();
       event.stopPropagation();
@@ -93,11 +122,13 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
         role="combobox"
         aria-label={ariaLabel}
         aria-autocomplete="list"
-        aria-expanded={open}
-        aria-controls={open && options.length > 0 ? `${id}-listbox` : undefined}
-        aria-activedescendant={open && activeOptionIndex >= 0 ? `${id}-option-${activeOptionIndex}` : undefined}
+        aria-expanded={open && !disabled}
+        aria-controls={open && !disabled && options.length > 0 ? `${id}-listbox` : undefined}
+        aria-activedescendant={open && !disabled && activeOptionIndex >= 0 ? `${id}-option-${activeOptionIndex}` : undefined}
         autoComplete="off"
-        value={open ? query : selectedLabel}
+        // 無効中も選択済みの値は見せ続け、何が保存されているか分かるようにする。
+        disabled={disabled}
+        value={open && !disabled ? query : selectedLabel}
         placeholder={t("common.targetLanguageSearch")}
         data-pointer-focus={pointerFocused || undefined}
         onPointerDown={() => {
@@ -106,13 +137,15 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
         onFocus={() => {
           setPointerFocused(pointerDownRef.current);
           pointerDownRef.current = false;
+          if (disabled) return;
           setQuery("");
           setOpen(true);
-          setActiveIndex(0);
+          setActiveIndex(firstEnabledIndex());
         }}
         onChange={(event) => {
+          if (disabled) return;
           setQuery(event.currentTarget.value);
-          setActiveIndex(0);
+          setActiveIndex(firstEnabledIndex());
           setOpen(true);
         }}
         onKeyDown={handleKeyDown}
@@ -125,7 +158,7 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
           setQuery("");
         }}
       />
-      {open && options.length > 0 && (
+      {open && !disabled && options.length > 0 && (
         <ul className="target-language-picker__list" id={`${id}-listbox`} role="listbox" aria-label={ariaLabel} ref={listRef}>
           {options.map((language, index) => (
             <li
@@ -134,9 +167,10 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
               key={language.code}
               role="option"
               aria-selected={language.code === value}
+              aria-disabled={isDisabled(language.code) || undefined}
               data-active={index === activeOptionIndex || undefined}
               tabIndex={-1}
-              onMouseEnter={() => setActiveIndex(index)}
+              onMouseEnter={() => { if (!isDisabled(language.code)) setActiveIndex(index); }}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => choose(language.code)}
               onKeyDown={(event) => {
@@ -149,11 +183,14 @@ export function TargetLanguagePicker({ "aria-label": ariaLabel, className, id: g
               <span className="target-language-picker__name" dir="auto">{language.name}</span>
               <span className="target-language-picker__region" dir="auto">{language.region}</span>
               <code>{language.code}</code>
+              {isDisabled(language.code) && disabledOptionReason && (
+                <span className="target-language-picker__unavailable">{disabledOptionReason}</span>
+              )}
             </li>
           ))}
         </ul>
       )}
-      {open && options.length === 0 && (
+      {open && !disabled && options.length === 0 && (
         <output className="target-language-picker__list target-language-picker__empty" aria-live="polite">
           {t("common.noLanguagesFound")}
         </output>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { RadioGroup } from "../../components/Controls";
 import { PrimaryButton, SecondaryButton } from "../../components/button/Buttons";
@@ -6,6 +6,7 @@ import { TargetLanguagePicker } from "../../components/TargetLanguagePicker";
 import { autoTargetLocale, detectTargetLocale } from "../../i18n/detect";
 import { UI_LANGUAGES, UI_LANGUAGE_INFO, useT, useUiLanguage, setUiLanguage } from "../../i18n";
 import type { UiLanguage } from "../../i18n/uiLanguages";
+import { getPlamoStatus } from "../../lib/tauri";
 import { useSettingsStore } from "../../stores/settingsStore";
 import "./OnboardingScreen.css";
 
@@ -14,11 +15,30 @@ export function OnboardingScreen() {
   const translate = useT();
   const systemLocale = useSettingsStore((state) => state.systemLocale);
   const save = useSettingsStore((state) => state.save);
+  const savedProvider = useSettingsStore((state) => state.settings["ai.provider"]);
   const osLocale = systemLocale ?? (typeof navigator === "undefined" ? null : navigator.languages[0] ?? null);
   const [targetLocale, setTargetLocale] = useState(() => detectTargetLocale(osLocale));
   const [targetStep, setTargetStep] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [plamoSupportedLocales, setPlamoSupportedLocales] = useState<string[] | null>(null);
+
+  // 対応言語は PLaMo のときだけ必要なので、他プロバイダーでは取得しない。
+  useEffect(() => {
+    if (savedProvider !== "plamo") return;
+    let active = true;
+    void getPlamoStatus()
+      .then((status) => {
+        if (active) setPlamoSupportedLocales(status.supportedTargetLocales.map((code) => code.toLowerCase()));
+      })
+      .catch(() => {
+        // 取得に失敗した場合は null のままにし、翻訳先の変更を止めて非対応言語の保存を防ぐ。
+      });
+    return () => { active = false; };
+  }, [savedProvider]);
+
+  // 対応言語が未取得のまま選ばせると、非対応の翻訳先を保存できてしまう。
+  const targetPickerLocked = savedProvider === "plamo" && plamoSupportedLocales === null;
 
   const complete = async () => {
     if (saving) return;
@@ -81,7 +101,12 @@ export function OnboardingScreen() {
                 id="onboarding-target-language"
                 aria-label={translate("onboarding.targetLanguage")}
                 value={targetLocale}
+                disabled={targetPickerLocked}
                 onChange={setTargetLocale}
+                isOptionDisabled={plamoSupportedLocales
+                  ? (code) => !plamoSupportedLocales.includes(code.toLowerCase())
+                  : undefined}
+                disabledOptionReason={translate("settings.plamoUnsupportedLanguage")}
               />
             </label>
             <div className="onboarding-card__actions">
