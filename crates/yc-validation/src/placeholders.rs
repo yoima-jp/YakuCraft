@@ -51,6 +51,23 @@ static FTBQUESTS_FORMATTING_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("FTB Quests formatting regex is a compile-time constant")
 });
 
+// `§x` は 6 桁の RGB を続けて書く 16 進カラー指定で、上の `§[0-9a-fk-or]` には含まれない。
+static MINECRAFT_HEX_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i:§x(?:§[0-9a-f]){6})")
+        .expect("Minecraft hex color regex is a compile-time constant")
+});
+
+static FTBQUESTS_HEX_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i:&x(?:&[0-9a-f]){6})")
+        .expect("FTB Quests hex color regex is a compile-time constant")
+});
+
+// `{name}` 形式は Java の MessageFormat 由来で、`{0}` とは別に名前付き引数として使われる。
+static BRACE_NAME_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+        .expect("brace name placeholder regex is a compile-time constant")
+});
+
 /// 検出したトークンの分類。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +83,11 @@ pub enum PlaceholderKind {
     FtbQuestsFormatting,
     FtbQuestsTag,
     FtbQuestsJson,
+    /// `{name}` 形式の名前付き引数。
+    ///
+    /// [`extract_placeholders_for_profile`] は比較対象にしない（既存の判定を変えないため）。
+    /// [`extract_protected_spans`] だけが、マスク対象としてこの分類を返す。
+    BraceName,
 }
 
 /// Placeholder の書式プロファイル。`lang` は既存の比較動作を維持する。
@@ -121,6 +143,20 @@ pub fn extract_placeholders_for_profile(
     text: &str,
     profile: PlaceholderProfile,
 ) -> Vec<PlaceholderToken> {
+    extract_placeholders_with_ranges(text, profile)
+        .into_iter()
+        .map(|(_, _, token)| token)
+        .collect()
+}
+
+/// 既存の抽出器と同じ判定を、原文のバイト範囲付きで返す。
+///
+/// 範囲を持つ版を別に用意し、公開済みの [`extract_placeholders_for_profile`] の
+/// 戻り値と順序はそのまま保つ。範囲はマスク処理のように原文の位置が必要な用途だけが使う。
+fn extract_placeholders_with_ranges(
+    text: &str,
+    profile: PlaceholderProfile,
+) -> Vec<(usize, usize, PlaceholderToken)> {
     let mut found = Vec::new();
     let mut opaque_ranges = Vec::new();
 
@@ -141,6 +177,7 @@ pub fn extract_placeholders_for_profile(
         };
         found.push((
             matched.start(),
+            matched.end(),
             PlaceholderToken {
                 kind,
                 value: matched.as_str().to_owned(),
@@ -151,6 +188,7 @@ pub fn extract_placeholders_for_profile(
     for matched in NUMBERED_PATTERN.find_iter(text) {
         found.push((
             matched.start(),
+            matched.end(),
             PlaceholderToken {
                 kind: PlaceholderKind::Numbered,
                 value: matched.as_str().to_owned(),
@@ -161,6 +199,7 @@ pub fn extract_placeholders_for_profile(
     for matched in NAMED_PATTERN.find_iter(text) {
         found.push((
             matched.start(),
+            matched.end(),
             PlaceholderToken {
                 kind: PlaceholderKind::Named,
                 value: matched.as_str().to_owned(),
@@ -177,6 +216,7 @@ pub fn extract_placeholders_for_profile(
         };
         found.push((
             matched.start(),
+            matched.end(),
             PlaceholderToken {
                 kind: PlaceholderKind::Escape,
                 value: value.to_owned(),
@@ -187,6 +227,7 @@ pub fn extract_placeholders_for_profile(
     for matched in MINECRAFT_PATTERN.find_iter(text) {
         found.push((
             matched.start(),
+            matched.end(),
             PlaceholderToken {
                 kind: PlaceholderKind::MinecraftFormatting,
                 value: matched.as_str().to_owned(),
@@ -203,6 +244,7 @@ pub fn extract_placeholders_for_profile(
             opaque_ranges.push((matched.start(), matched.end()));
             found.push((
                 matched.start(),
+                matched.end(),
                 PlaceholderToken {
                     kind: PlaceholderKind::PatchouliFormatting,
                     value: matched.as_str().to_owned(),
@@ -213,6 +255,7 @@ pub fn extract_placeholders_for_profile(
             opaque_ranges.push((matched.start(), matched.end()));
             found.push((
                 matched.start(),
+                matched.end(),
                 PlaceholderToken {
                     kind: PlaceholderKind::PatchouliTemplateVariable,
                     value: matched.as_str().to_owned(),
@@ -225,6 +268,7 @@ pub fn extract_placeholders_for_profile(
         for matched in FTBQUESTS_FORMATTING_PATTERN.find_iter(text) {
             found.push((
                 matched.start(),
+                matched.end(),
                 PlaceholderToken {
                     kind: PlaceholderKind::FtbQuestsFormatting,
                     value: matched.as_str().to_owned(),
@@ -237,6 +281,7 @@ pub fn extract_placeholders_for_profile(
             opaque_ranges.push((*start, *end));
             found.push((
                 *start,
+                *end,
                 PlaceholderToken {
                     kind: PlaceholderKind::FtbQuestsJson,
                     value: text[*start..*end].to_owned(),
@@ -262,6 +307,7 @@ pub fn extract_placeholders_for_profile(
             }
             found.push((
                 start,
+                end,
                 PlaceholderToken {
                     kind: PlaceholderKind::FtbQuestsTag,
                     value: value.to_owned(),
@@ -271,16 +317,101 @@ pub fn extract_placeholders_for_profile(
         }
     }
 
-    found.retain(|(position, token)| {
-        !opaque_ranges.iter().any(|(start, end)| {
-            *start <= *position
-                && *position + token.value.len() <= *end
-                && (*start != *position || *end != *position + token.value.len())
+    found.retain(|(start, end, _)| {
+        !opaque_ranges.iter().any(|(opaque_start, opaque_end)| {
+            *opaque_start <= *start
+                && *end <= *opaque_end
+                && (*opaque_start != *start || *opaque_end != *end)
         })
     });
 
-    found.sort_by_key(|(position, _)| *position);
-    found.into_iter().map(|(_, token)| token).collect()
+    found.sort_by_key(|(start, _, _)| *start);
+    found
+}
+
+/// 原文の保護対象区間。マスク処理が原文をそのまま復元できるよう、生の文字列も持つ。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedSpan {
+    pub kind: PlaceholderKind,
+    pub start: usize,
+    pub end: usize,
+    pub raw: String,
+}
+
+/// 指定した書式プロファイルで、訳文へそのまま残す必要がある区間を原文のバイト範囲付きで返す。
+///
+/// [`extract_placeholders_for_profile`] は比較用に正規化した値だけを返し、原文の位置も
+/// `§` の 16 進カラー、`{name}` 形式、FTB の `&x` カラーを持たない。翻訳前のマスクと
+/// 翻訳後の復元には生の区間が必要なので、その用途専用にこの関数を別途用意する。
+/// 既存の比較関数の判定はここでは変更しない。
+pub fn extract_protected_spans(text: &str, profile: PlaceholderProfile) -> Vec<ProtectedSpan> {
+    let mut spans: Vec<ProtectedSpan> = extract_placeholders_with_ranges(text, profile)
+        .into_iter()
+        .map(|(start, end, token)| ProtectedSpan {
+            kind: token.kind,
+            start,
+            end,
+            raw: text[start..end].to_owned(),
+        })
+        .collect();
+
+    // 追加分は既存抽出器が対象外にしている記法。`§x` の 16 進カラーは内側の `§1` 等も
+    // 既存抽出器が拾うため、区間が入れ子になる。マスクは区間の重なりを許さないので、
+    // 同じ開始位置では長い区間を優先し、外側に完全に含まれる内側の区間は捨てる。
+    let mut additions = Vec::new();
+    for matched in MINECRAFT_HEX_PATTERN.find_iter(text) {
+        additions.push((
+            matched.start(),
+            matched.end(),
+            PlaceholderKind::MinecraftFormatting,
+        ));
+    }
+    for matched in BRACE_NAME_PATTERN.find_iter(text) {
+        // `{0}` 形式の数値引数は既存の Numbered が担当する。ここでは名前付きだけを足す。
+        additions.push((matched.start(), matched.end(), PlaceholderKind::BraceName));
+    }
+    if profile == PlaceholderProfile::FtbQuests {
+        for matched in FTBQUESTS_HEX_PATTERN.find_iter(text) {
+            additions.push((
+                matched.start(),
+                matched.end(),
+                PlaceholderKind::FtbQuestsFormatting,
+            ));
+        }
+    }
+    spans.extend(
+        additions
+            .into_iter()
+            .map(|(start, end, kind)| ProtectedSpan {
+                kind,
+                start,
+                end,
+                raw: text[start..end].to_owned(),
+            }),
+    );
+
+    spans.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| right.end.cmp(&left.end))
+    });
+    let mut selected: Vec<ProtectedSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match selected.last_mut() {
+            // 外側の区間が既に覆っている内側の区間は捨てる。
+            Some(previous) if span.start < previous.end => {
+                if span.end > previous.end {
+                    // 入れ子ではなく部分的な重なり。区間を分割するとマーカーが壊れるため、
+                    // 覆えていない末尾まで広げて 1 区間として扱う。
+                    previous.end = span.end;
+                    previous.raw = text[previous.start..span.end].to_owned();
+                }
+            }
+            _ => selected.push(span),
+        }
+    }
+    selected
 }
 
 fn ftbquests_json_component_ranges(text: &str) -> Vec<(usize, usize)> {
@@ -1186,5 +1317,106 @@ mod tests {
             PlaceholderProfile::FtbQuests,
         );
         assert!(!changed_json.is_valid);
+    }
+
+    #[test]
+    fn protected_spans_report_raw_byte_ranges_in_source_order() {
+        let source = "§aDeals %1$s to {0} and ${name}\\n§x§1§2§3§4§5§6end";
+        let spans = extract_protected_spans(source, PlaceholderProfile::Lang);
+        let raws: Vec<_> = spans.iter().map(|span| span.raw.as_str()).collect();
+        assert_eq!(
+            raws,
+            [
+                "§a",
+                "%1$s",
+                "{0}",
+                "${name}",
+                "\\n",
+                // 16 進カラーは既存抽出器が拾わない 7 文字ぶんを 1 区間にまとめる。
+                "§x§1§2§3§4§5§6",
+            ]
+        );
+        // 範囲は原文と一致し、重ならない。
+        let mut cursor = 0;
+        for span in &spans {
+            assert!(span.start >= cursor, "spans must not overlap");
+            assert_eq!(&source[span.start..span.end], span.raw);
+            cursor = span.end;
+        }
+    }
+
+    #[test]
+    fn protected_spans_cover_profile_specific_syntax() {
+        let patchouli = extract_protected_spans("$(l)Stone#var#", PlaceholderProfile::Patchouli);
+        assert_eq!(
+            patchouli
+                .iter()
+                .map(|span| span.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["$(l)", "#var#"]
+        );
+
+        let ftbquests = extract_protected_spans(
+            "&aTitle &x&1&2&3&4&5&6 {@pagebreak}",
+            PlaceholderProfile::FtbQuests,
+        );
+        assert_eq!(
+            ftbquests
+                .iter()
+                .map(|span| span.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["&a", "&x&1&2&3&4&5&6", "{@pagebreak}"]
+        );
+    }
+
+    #[test]
+    fn protected_spans_never_overlap_even_when_patterns_nest() {
+        // `§x§1§2§3§4§5§6` の内側の `§1` 等は既存抽出器も拾う。区間が重なるとマスクの
+        // 置換位置がずれるため、返る区間は必ず昇順かつ非重複でなければならない。
+        for source in [
+            "§x§1§2§3§4§5§6text",
+            "§x§a§b§c§d§e§f§rreset",
+            "&x&1&2&3&4&5&6text",
+            "{@pagebreak}{count}{0}",
+        ] {
+            for profile in [
+                PlaceholderProfile::Lang,
+                PlaceholderProfile::Patchouli,
+                PlaceholderProfile::FtbQuests,
+            ] {
+                let spans = extract_protected_spans(source, profile);
+                let mut cursor = 0;
+                for span in &spans {
+                    assert!(span.start >= cursor, "{source} ({profile:?}) overlaps");
+                    assert!(span.start < span.end, "{source} ({profile:?}) is empty");
+                    assert_eq!(&source[span.start..span.end], span.raw);
+                    cursor = span.end;
+                }
+                assert!(cursor <= source.len());
+            }
+        }
+    }
+
+    #[test]
+    fn brace_name_spans_do_not_change_existing_extraction() {
+        // 追加した `{name}` 分類は保護区間だけが使い、比較用の抽出結果は変えない。
+        let source = "Value {count} and {0}";
+        assert_eq!(
+            extract_placeholders_for_profile(source, PlaceholderProfile::Lang)
+                .iter()
+                .map(|token| (token.kind, token.value.as_str()))
+                .collect::<Vec<_>>(),
+            [(PlaceholderKind::Numbered, "{0}")]
+        );
+        assert_eq!(
+            extract_protected_spans(source, PlaceholderProfile::Lang)
+                .iter()
+                .map(|span| (span.kind, span.raw.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (PlaceholderKind::BraceName, "{count}"),
+                (PlaceholderKind::Numbered, "{0}"),
+            ]
+        );
     }
 }

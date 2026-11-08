@@ -3,8 +3,9 @@ mod validation;
 
 pub use placeholders::{
     PlaceholderComparison, PlaceholderDifference, PlaceholderKind, PlaceholderProfile,
-    PlaceholderSeverity, PlaceholderToken, compare_placeholders, compare_placeholders_for_profile,
-    extract_placeholders, extract_placeholders_for_profile,
+    PlaceholderSeverity, PlaceholderToken, ProtectedSpan, compare_placeholders,
+    compare_placeholders_for_profile, extract_placeholders, extract_placeholders_for_profile,
+    extract_protected_spans,
 };
 pub use validation::{
     AiTranslation, BatchValidation, InvalidControlCharacter, ManualEditValidation,
