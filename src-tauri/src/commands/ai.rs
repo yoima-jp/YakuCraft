@@ -28,6 +28,7 @@ use yc_validation::PlaceholderProfile;
 use crate::{
     commands::editor::EditorEntry,
     error::AppError,
+    plamo,
     state::{AiJobControl, AppState},
 };
 
@@ -128,6 +129,9 @@ pub struct AiSettings {
     pub batch_size: usize,
     pub concurrency: usize,
     pub custom_prompt: String,
+    /// PLaMo だけが使うローカル実行デバイス。他のプロバイダーには出さない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -153,6 +157,9 @@ pub struct SaveAiProviderInput {
     pub batch_size: usize,
     pub concurrency: usize,
     pub custom_prompt: String,
+    /// PLaMo だけが使う。他のプロバイダーでは無視する。
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -232,9 +239,12 @@ struct AiJobRunContext<'a> {
     active_project: &'a Arc<std::sync::Mutex<Option<OpenedProject>>>,
     project_id: &'a str,
     config: &'a AiSettings,
+    provider_id: ProviderId,
     provider: Arc<dyn TranslationProvider>,
     cancellation: CancellationToken,
     apply_gate: Arc<std::sync::Mutex<()>>,
+    /// PLaMo のときだけ入る。適用時に利用記録（`ai_jobs`）へ残すモデル ID。
+    plamo_model_id: Option<String>,
 }
 
 #[tauri::command]
@@ -247,6 +257,12 @@ pub async fn get_ai_settings(
         Some(provider) => parse_provider(&provider)?,
         None => provider_from_settings(&settings)?,
     };
+    // PLaMo は資格情報を使わないため、ストアの状態を一切参照しない。壊れた Secret Service が
+    // ローカル翻訳の設定表示を壊さないようにするための分岐。
+    if !provider.uses_credential_store() {
+        let configured = plamo::configured(&state.plamo, &settings);
+        return Ok(ai_settings_from(&settings, provider, configured, None));
+    }
     let credential_status = match state.credentials.as_ref() {
         Some(credentials) => credentials
             .status(provider)
@@ -274,6 +290,12 @@ pub async fn get_ai_target_support(
 ) -> Result<AiTargetSupport, AppError> {
     let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
     let provider = provider_from_settings(&settings)?;
+    // PLaMo の対応言語はカタログ由来の固定表で決まるため、資格情報もネットワークも要らない。
+    if !provider.uses_credential_store() {
+        return Ok(AiTargetSupport {
+            level: target_support_level(provider, &target_locale, None),
+        });
+    }
     let deepl_supported = if provider != ProviderId::DeepL
         || yc_ai::deepl::deepl_target_languages(&target_locale).is_none()
     {
@@ -418,7 +440,10 @@ pub async fn save_ai_provider(
         ));
     }
 
-    if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+    // PLaMo は API Key を持たない。資格情報ストアへは触らず、渡されても無視する。
+    if provider.uses_credential_store()
+        && let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty())
+    {
         let credentials = state
             .credentials
             .as_ref()
@@ -446,23 +471,50 @@ pub async fn save_ai_provider(
                     Value::String(config.base_url.trim().to_owned()),
                 );
             }
-            settings.values.insert(
-                setting_key(provider, "batchSize"),
-                Value::from(config.batch_size),
-            );
+            if provider == ProviderId::Plamo {
+                // PLaMo は接続先も追加指示も持たない。保存済みの古い値が残っていると
+                // 画面の表示と実際の動作がずれるため、ここで消す。
+                settings.values.remove(&setting_key(provider, "baseUrl"));
+                settings
+                    .values
+                    .remove(&setting_key(provider, "customPrompt"));
+                settings.values.insert(
+                    setting_key(provider, "device"),
+                    Value::String(
+                        config
+                            .device
+                            .as_deref()
+                            .unwrap_or(plamo::default_device_str())
+                            .to_owned(),
+                    ),
+                );
+            } else {
+                settings.values.insert(
+                    setting_key(provider, "customPrompt"),
+                    Value::String(config.custom_prompt),
+                );
+            }
+            // PLaMo は 1 リクエスト 1 項目なので送信件数を持たない。保存しない。
+            if provider != ProviderId::Plamo {
+                settings.values.insert(
+                    setting_key(provider, "batchSize"),
+                    Value::from(config.batch_size),
+                );
+            }
             settings.values.insert(
                 setting_key(provider, "concurrency"),
                 Value::from(config.concurrency),
-            );
-            settings.values.insert(
-                setting_key(provider, "customPrompt"),
-                Value::String(config.custom_prompt),
             );
             Ok(())
         },
         settings_error,
         settings_error,
     )?;
+
+    if !provider.uses_credential_store() {
+        let configured = plamo::configured(&state.plamo, &settings);
+        return Ok(ai_settings_from(&settings, provider, configured, None));
+    }
 
     let credential_status = match state.credentials.as_ref() {
         Some(credentials) => credentials
@@ -490,6 +542,11 @@ pub async fn delete_ai_provider(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     let provider = parse_provider(&provider)?;
+    // PLaMo は資格情報を持たず、削除もモデル単位で行う。ここで設定を消すと画面の
+    // 選択が既定へ戻るだけなので、何もせず成功として扱う。
+    if !provider.uses_credential_store() {
+        return Ok(());
+    }
     if let Some(credentials) = state.credentials.as_ref() {
         credentials
             .remove_api_key(provider)
@@ -530,6 +587,9 @@ pub async fn test_ai_provider(
 ) -> Result<(), AppError> {
     let provider = parse_provider(&provider)?;
     let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
+    if !provider.uses_credential_store() {
+        return test_plamo(&state, &settings).await;
+    }
     let credential = load_provider_credential(state.credentials.as_deref(), provider).await?;
     let configured = provider_is_configured(&settings, provider, credential.is_some());
     if !configured {
@@ -548,6 +608,28 @@ pub async fn test_ai_provider(
         .map_err(ai_error)
 }
 
+/// 保存済み設定でサーバを起動し、`/health` と 1 回の生成を確かめる。
+async fn test_plamo(state: &AppState, settings: &AppSettings) -> Result<(), AppError> {
+    if !plamo::configured(&state.plamo, settings) {
+        return Err(plamo::not_ready_error());
+    }
+    let config = plamo::run_config(&state.plamo, settings)?;
+    let slots = setting_usize(settings, ProviderId::Plamo, "concurrency", 2).clamp(1, 4);
+    let server_config = plamo::server_config(&config, slots)?;
+    // 起動と使用中モデルの記録を削除と排他して行う。分けると、読み込み中のモデルを
+    // 削除が「未使用」と誤認して消し得る。
+    let lease = state
+        .plamo
+        .start_server(&server_config, config.model_path.clone())
+        .await
+        .map_err(|error| plamo::runtime_start_error(config.device, error))?;
+    let provider = build_plamo_provider(&lease, None)?;
+    provider
+        .test_connection(&CancellationToken::new())
+        .await
+        .map_err(ai_error)
+}
+
 #[tauri::command]
 pub async fn list_ai_models(
     provider: String,
@@ -556,6 +638,13 @@ pub async fn list_ai_models(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
     let provider = parse_provider(&provider)?;
+    // PLaMo のモデル一覧はカタログ由来。ネットワークも資格情報も使わない。
+    if provider == ProviderId::Plamo {
+        return Ok(yc_plamo::models()
+            .iter()
+            .map(|model| model.id.to_owned())
+            .collect());
+    }
     if provider == ProviderId::ChatGpt {
         let fallback = || {
             CHATGPT_MODELS
@@ -612,7 +701,7 @@ pub async fn list_ai_models(
             Some(api_key) => AnthropicProvider::list_models(api_key, &cancellation).await,
             None => Err(AiError::InvalidConfiguration),
         },
-        ProviderId::DeepL | ProviderId::ChatGpt => Ok(Vec::new()),
+        ProviderId::DeepL | ProviderId::ChatGpt | ProviderId::Plamo => Ok(Vec::new()),
     };
     models.map_err(ai_error)
 }
@@ -647,6 +736,13 @@ pub async fn start_ai_job(
         ));
     }
 
+    // PLaMo はローカル実行なので、ジョブを作る前に翻訳先と実行環境を確かめる。ここで落とせば
+    // サーバを起動せずに済み、UI は開始直後に理由を受け取れる。
+    if provider == ProviderId::Plamo {
+        let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
+        validate_plamo_job_start(&state, &settings, &expected_project_id)?;
+    }
+
     let job = state.ai_jobs.start_job().map_err(ai_error)?;
     let job_id = job.id().to_string();
     let cancellation = job.cancellation_token();
@@ -672,41 +768,56 @@ pub async fn start_ai_job(
     let active_project = Arc::clone(&state.active_project);
     let settings_file = state.paths.settings_file.clone();
     let credentials = state.credentials.clone();
+    let plamo_state = Arc::clone(&state.plamo);
     let job_tokens = Arc::clone(&state.ai_job_tokens);
     let event_channel = channel.clone();
     let total = selected_ids.len();
     let returned_job_id = job_id.clone();
     tauri::async_runtime::spawn(async move {
+        // PLaMo のサーバリースはジョブ全体で保持する。`ServerLease` を落とすとアイドル停止の
+        // 計測が始まり、長いジョブの途中でサーバが落ちてしまう。
+        let mut plamo_lease: Option<yc_llama::ServerLease> = None;
         let result = async {
             if cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
             let settings = load_settings(&settings_file).map_err(settings_error)?;
-            let credential = load_provider_credential(credentials.as_deref(), provider).await?;
-            if cancellation.is_cancelled() {
-                return Err(cancelled_error());
+            let ai_settings = ai_settings_from(&settings, provider, true, None);
+            // PLaMo はサーバの用意と項目の準備を分けて行う。Provider へ渡すシェーダー設定の
+            // 判定には準備後の項目一覧が要るため、サーバを先に立ててから組み立てる。
+            let mut plamo_model_id = String::new();
+            if provider == ProviderId::Plamo {
+                let config = plamo::run_config(&plamo_state, &settings)?;
+                let server_config = plamo::server_config(&config, ai_settings.concurrency)?;
+                // 起動と使用中モデルの記録を削除と排他して行う。分けると、読み込み中の
+                // モデルを削除が「未使用」と誤認して消し得る。
+                let lease = plamo_state
+                    .start_server(&server_config, config.model_path.clone())
+                    .await
+                    .map_err(|error| plamo::runtime_start_error(config.device, error))?;
+                tracing::info!(
+                    model_id = config.model_id,
+                    device = config.device.as_str(),
+                    slots = server_config.slots,
+                    "plamo server started"
+                );
+                plamo_model_id = config.model_id;
+                plamo_lease = Some(lease);
             }
-            let configured = provider_is_configured(&settings, provider, credential.is_some());
-            if !configured {
-                return Err(not_configured_error());
-            }
-            let ai_settings = ai_settings_from(&settings, provider, configured, None);
-            let client = Arc::<dyn TranslationProvider>::from(build_provider(
-                provider,
-                &ai_settings,
-                credential,
-                credentials.clone(),
-            )?);
 
             let prepare_active_project = Arc::clone(&active_project);
             let prepare_cancellation = cancellation.clone();
+            let selected = selected_ids.clone();
+            let expected = expected_by_id.clone();
+            let mod_names = mod_names_by_unit_and_namespace.clone();
+            let project_id_expected = expected_project_id.clone();
             let (project_id, entries) = tauri::async_runtime::spawn_blocking(move || {
                 prepare_ai_job_entries(
                     &prepare_active_project,
-                    &selected_ids,
-                    &expected_by_id,
-                    &mod_names_by_unit_and_namespace,
-                    &expected_project_id,
+                    &selected,
+                    &expected,
+                    &mod_names,
+                    &project_id_expected,
                     &prepare_cancellation,
                 )
             })
@@ -716,19 +827,54 @@ pub async fn start_ai_job(
                 return Err(cancelled_error());
             }
 
+            let client: Arc<dyn TranslationProvider> = if provider == ProviderId::Plamo {
+                let lease = plamo_lease.as_ref().ok_or_else(not_configured_error)?;
+                // シェーダーパックの設定項目は UI ラベルと語調が違う。どの項目が該当するかを
+                // ここで確定させ、Provider には判定だけを渡す。
+                let shader_entries = entries
+                    .iter()
+                    .filter(|entry| entry.shader_format)
+                    .map(|entry| entry.translation.id)
+                    .collect::<HashSet<_>>();
+                Arc::from(build_plamo_provider(
+                    lease,
+                    (!shader_entries.is_empty()).then(|| Arc::new(shader_entries)),
+                )?)
+            } else {
+                let credential = load_provider_credential(credentials.as_deref(), provider).await?;
+                if cancellation.is_cancelled() {
+                    return Err(cancelled_error());
+                }
+                let configured = provider_is_configured(&settings, provider, credential.is_some());
+                if !configured {
+                    return Err(not_configured_error());
+                }
+                Arc::from(build_provider(
+                    provider,
+                    &ai_settings,
+                    credential,
+                    credentials.clone(),
+                )?)
+            };
+
             let context = AiJobRunContext {
                 job_id: &job_id,
                 channel: &event_channel,
                 active_project: &active_project,
                 project_id: &project_id,
                 config: &ai_settings,
+                provider_id: provider,
                 provider: client,
                 cancellation: cancellation.clone(),
                 apply_gate: Arc::clone(&apply_gate),
+                plamo_model_id: (provider == ProviderId::Plamo).then_some(plamo_model_id),
             };
             run_ai_job(context, entries).await
         }
         .await;
+        // リースを落としてよい。停止はマネージャのアイドル判定に任せ、直後の再実行で
+        // モデルを読み直さずに済むようにする。
+        drop(plamo_lease);
         let completed = result.as_ref().copied().unwrap_or(0);
         let terminal = if cancellation.is_cancelled() {
             AiJobEvent::Cancelled {
@@ -756,6 +902,43 @@ pub async fn start_ai_job(
     });
 
     Ok(returned_job_id)
+}
+
+/// PLaMo のジョブを始められるか、サーバを起動する前に確かめる。
+///
+/// 翻訳先の対応表と実行環境のどちらも、サーバ起動（数秒〜数十秒）より前に判定したい。
+/// 失敗の理由は利用者がそのまま次の操作へ移れる文言にする。
+fn validate_plamo_job_start(
+    state: &AppState,
+    settings: &AppSettings,
+    expected_project_id: &str,
+) -> Result<(), AppError> {
+    let active = state
+        .active_project
+        .lock()
+        .map_err(|_| internal_state_error("active Project state"))?;
+    let opened = active.as_ref().ok_or_else(|| {
+        AppError::simple("project_required", &yc_locale::t!("ai.projectRequired"))
+    })?;
+    if opened.summary().id != expected_project_id {
+        return Err(project_changed_error());
+    }
+    let target_locale = opened
+        .repository()
+        .target_locale()
+        .map_err(|error| database_error(error.to_string()))?;
+    if yc_plamo::plamo_code_for_locale(&target_locale).is_none() {
+        return Err(AppError::simple(
+            "ai_target_unsupported",
+            &yc_locale::t!(
+                "ai.targetUnsupportedByProvider",
+                provider = provider_display_name(ProviderId::Plamo)
+            ),
+        ));
+    }
+    drop(active);
+    // ライセンス未同意・モデル未取得・ランタイム未取得は、それぞれ別の案内になる。
+    plamo::run_config(&state.plamo, settings).map(|_| ())
 }
 
 fn prepare_ai_job_entries(
@@ -925,14 +1108,25 @@ async fn run_ai_job(
         active_project,
         project_id,
         config,
+        provider_id,
         provider,
         cancellation,
         apply_gate,
+        plamo_model_id,
     } = context;
     let total = entries.len();
-    let batches = split_job_batches(entries, config.batch_size);
+    // PLaMo は 1 リクエスト 1 項目しか扱えず、外側のバッチに複数入れると Mod 名・用語集・
+    // 進捗が先頭項目のものに固定される。項目ごとに 1 バッチへ分け、並列度はスロット数で保つ。
+    let batch_size = if plamo_model_id.is_some() {
+        1
+    } else {
+        config.batch_size
+    };
+    let batches = split_job_batches(entries, batch_size);
     let completed = Arc::new(AtomicUsize::new(0));
     let concurrency = config.concurrency.clamp(1, 4);
+    // 追加指示を渡すかどうかはバッチごとの分岐で参照するだけなので、事前に真偽値へ落とす。
+    let is_plamo = plamo_model_id.is_some();
     let jobs = stream::iter(batches.into_iter().map(|batch| {
         let provider = Arc::clone(&provider);
         let cancellation = cancellation.clone();
@@ -957,7 +1151,8 @@ async fn run_ai_job(
             let context = TranslationContext {
                 mod_name,
                 namespace: namespace.to_owned(),
-                custom_prompt: Some(custom_prompt),
+                // PLaMo は指示追従モデルではないため、追加指示は渡さない。
+                custom_prompt: (!is_plamo).then_some(custom_prompt),
                 glossary_terms,
             };
             let translation_entries: Vec<_> = batch
@@ -983,7 +1178,7 @@ async fn run_ai_job(
         if cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
-        let outcome = outcome.map_err(ai_error)?;
+        let outcome = outcome.map_err(|error| ai_error_for_provider(error, provider_id))?;
         let (applied, rejected) = {
             let active = active_project
                 .lock()
@@ -998,8 +1193,17 @@ async fn run_ai_job(
             if cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let (applied, rejected) =
-                apply_outcome_to_project(opened, &batch, &outcome, &cancellation)?;
+            let (applied, rejected) = apply_outcome_to_project(
+                opened,
+                &batch,
+                &outcome,
+                &cancellation,
+                plamo_model_id.as_ref().map(|model| AiJobRecord {
+                    job_id,
+                    provider: ProviderId::Plamo.as_str(),
+                    model,
+                }),
+            )?;
             let applied_ids: HashSet<_> = applied.iter().map(|entry| entry.id).collect();
             let repository = opened.repository();
             let mut editor_entries: Vec<_> = repository
@@ -1043,11 +1247,19 @@ async fn run_ai_job(
     Ok(completed.load(Ordering::Relaxed))
 }
 
+/// 適用と同時に `ai_jobs` へ残す利用記録。PLaMo のときだけ渡す。
+struct AiJobRecord<'a> {
+    job_id: &'a str,
+    provider: &'a str,
+    model: &'a str,
+}
+
 fn apply_outcome_to_project(
     opened: &OpenedProject,
     batch: &[AiJobEntry],
     outcome: &TranslationOutcome,
     cancellation: &CancellationToken,
+    ai_job: Option<AiJobRecord<'_>>,
 ) -> Result<(Vec<ProjectEntry>, Vec<AiRejectedEntry>), AppError> {
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
@@ -1107,7 +1319,22 @@ fn apply_outcome_to_project(
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
-    if !updates.is_empty() {
+    if let Some(record) = ai_job {
+        // 訳文の反映と利用記録を同じトランザクションで書く。分けると、記録だけ残って
+        // 訳文が入らない（またはその逆）状態になり、書き出しのライセンス表記がずれる。
+        opened
+            .writer()
+            .update_entries_recording_ai_job(
+                updates.clone(),
+                yc_project::AiJobApplication {
+                    job_id: record.job_id.to_owned(),
+                    provider: record.provider.to_owned(),
+                    model: record.model.to_owned(),
+                    applied_entries: updates.len(),
+                },
+            )
+            .map_err(|error| database_error(error.to_string()))?;
+    } else if !updates.is_empty() {
         opened
             .writer()
             .update_entries(updates.clone())
@@ -1235,6 +1462,7 @@ fn ai_settings_from(
     let model_default = match provider {
         ProviderId::OpenAi => DEFAULT_OPENAI_MODEL,
         ProviderId::ChatGpt => DEFAULT_CHATGPT_MODEL,
+        ProviderId::Plamo => yc_plamo::DEFAULT_MODEL_ID,
         _ => "",
     };
     AiSettings {
@@ -1250,6 +1478,9 @@ fn ai_settings_from(
         batch_size: setting_usize(settings, provider, "batchSize", MAX_BATCH_ENTRIES),
         concurrency: setting_usize(settings, provider, "concurrency", 2).clamp(1, 4),
         custom_prompt: setting_string(settings, provider, "customPrompt", ""),
+        // PLaMo だけがデバイスを持つ。他のプロバイダーへ出すと画面側の契約が増えるため省く。
+        device: (provider == ProviderId::Plamo)
+            .then(|| setting_string(settings, provider, "device", plamo::default_device_str())),
     }
 }
 
@@ -1264,6 +1495,11 @@ fn provider_is_configured(
     }
     if provider == ProviderId::DeepL {
         return has_credential;
+    }
+    // PLaMo は資格情報ではなく、モデル・ランタイム・ライセンス同意で決まる。
+    // この関数は資格情報しか見られないため、呼び出し側が別経路で判定する。
+    if provider == ProviderId::Plamo {
+        return false;
     }
     let config = ai_settings_from(settings, provider, false, None);
     if provider_requires_api_key(provider) && !has_credential {
@@ -1288,7 +1524,7 @@ fn provider_is_configured(
             config.model,
         )
         .is_ok(),
-        ProviderId::DeepL | ProviderId::ChatGpt => false,
+        ProviderId::DeepL | ProviderId::ChatGpt | ProviderId::Plamo => false,
     }
 }
 
@@ -1297,7 +1533,14 @@ fn target_support_level(
     target_locale: &str,
     deepl_supported: Option<bool>,
 ) -> AiTargetSupportLevel {
-    if provider == ProviderId::DeepL {
+    if provider == ProviderId::Plamo {
+        // PLaMo の対応言語はカタログの固定表で決まる。未対応なら翻訳そのものを開始しない。
+        if yc_plamo::plamo_code_for_locale(target_locale).is_none() {
+            AiTargetSupportLevel::Unsupported
+        } else {
+            AiTargetSupportLevel::Supported
+        }
+    } else if provider == ProviderId::DeepL {
         if yc_ai::deepl::deepl_target_languages(target_locale).is_none()
             || deepl_supported == Some(false)
         {
@@ -1336,6 +1579,8 @@ fn provider_base_url(provider: ProviderId, custom_url: &str) -> &str {
         ProviderId::Ollama => OLLAMA_URL,
         ProviderId::LmStudio => LM_STUDIO_URL,
         ProviderId::Anthropic => ANTHROPIC_URL,
+        // PLaMo はローカルのサーバへ繋ぐため、利用者が指定する接続先を持たない。
+        ProviderId::Plamo => "",
         ProviderId::DeepL | ProviderId::ChatGpt => custom_url,
     }
 }
@@ -1395,6 +1640,7 @@ fn parse_provider(provider: &str) -> Result<ProviderId, AppError> {
         "ollama" => Ok(ProviderId::Ollama),
         "lm-studio" => Ok(ProviderId::LmStudio),
         "anthropic" => Ok(ProviderId::Anthropic),
+        "plamo" => Ok(ProviderId::Plamo),
         _ => Err(AppError::simple(
             "invalid_ai_provider",
             &yc_locale::t!("ai.providerSelect"),
@@ -1404,10 +1650,29 @@ fn parse_provider(provider: &str) -> Result<ProviderId, AppError> {
 
 fn validate_ai_config(config: &SaveAiProviderInput) -> Result<(), AppError> {
     let provider = parse_provider(&config.provider)?;
-    if config.batch_size == 0
-        || config.batch_size > MAX_BATCH_ENTRIES
-        || !(1..=4).contains(&config.concurrency)
-    {
+    if !(1..=4).contains(&config.concurrency) {
+        return Err(AppError::simple(
+            "invalid_ai_settings",
+            &yc_locale::t!("ai.settingsCheck"),
+        ));
+    }
+    // PLaMo はカタログのモデル ID とデバイスだけを受け付ける。接続先・追加指示・
+    // 送信件数は持たないため、値が来ても検証しない（画面は空文字や既定値を送る）。
+    if provider == ProviderId::Plamo {
+        if yc_plamo::find_model(config.model.trim()).is_none() {
+            return Err(AppError::simple(
+                "invalid_ai_settings",
+                &yc_locale::t!("ai.modelRequired"),
+            ));
+        }
+        if let Some(device) = config.device.as_deref()
+            && plamo::PlamoDevice::parse(device).is_none()
+        {
+            return Err(plamo::invalid_settings_error());
+        }
+        return Ok(());
+    }
+    if config.batch_size == 0 || config.batch_size > MAX_BATCH_ENTRIES {
         return Err(AppError::simple(
             "invalid_ai_settings",
             &yc_locale::t!("ai.settingsCheck"),
@@ -1500,8 +1765,31 @@ fn build_provider(
             )
             .map_err(ai_error)?,
         ),
+        // PLaMo は起動済みサーバの情報が必要なため、`start_ai_job` が別経路で組み立てる。
+        ProviderId::Plamo => return Err(not_configured_error()),
     };
     Ok(client)
+}
+
+/// 起動中のサーバを指す PLaMo Provider を作る。
+///
+/// `shader_entries` はシェーダーパック由来の項目 ID。PFML3 のコンテキストに
+/// 「設定項目名」の語調を入れるためだけに使い、原文や訳文は渡さない。
+fn build_plamo_provider(
+    lease: &yc_llama::ServerLease,
+    shader_entries: Option<Arc<HashSet<i64>>>,
+) -> Result<Box<dyn TranslationProvider>, AppError> {
+    let options = yc_plamo::PlamoProviderOptions {
+        shader_option_detector: shader_entries.map(|ids| {
+            Arc::new(move |entry: &AiTranslationEntry| ids.contains(&entry.id))
+                as yc_plamo::ShaderOptionDetector
+        }),
+        ..Default::default()
+    };
+    let provider =
+        yc_plamo::PlamoProvider::new(lease.base_url(), Some(lease.api_key().to_owned()), options)
+            .map_err(ai_error)?;
+    Ok(Box::new(provider))
 }
 
 async fn load_provider_credential(
@@ -1590,6 +1878,40 @@ fn ai_error(error: AiError) -> AppError {
     AppError::new(code, &user_message, Some(error.to_string()))
 }
 
+/// `ai_error` のプロバイダー別版。未対応の翻訳先は DeepL 専用の文言ではなく、
+/// 選んだプロバイダー名を差し込んだ文言にする。
+fn ai_error_for_provider(error: AiError, provider: ProviderId) -> AppError {
+    if matches!(error, AiError::UnsupportedTargetLanguage) && provider != ProviderId::DeepL {
+        return AppError::new(
+            "ai_target_unsupported",
+            &yc_locale::t!(
+                "ai.targetUnsupportedByProvider",
+                provider = provider_display_name(provider)
+            ),
+            Some(error.to_string()),
+        );
+    }
+    ai_error(error)
+}
+
+/// 利用者向けのプロバイダー名。翻訳キーではなく製品名なので、ここで固定する。
+fn provider_display_name(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::OpenAi => "OpenAI",
+        ProviderId::OpenAiCompatible => "OpenAI-compatible",
+        ProviderId::DeepL => "DeepL",
+        ProviderId::ChatGpt => "ChatGPT",
+        ProviderId::Gemini => "Gemini",
+        ProviderId::OpenRouter => "OpenRouter",
+        ProviderId::DeepSeek => "DeepSeek",
+        ProviderId::Groq => "Groq",
+        ProviderId::Ollama => "Ollama",
+        ProviderId::LmStudio => "LM Studio",
+        ProviderId::Anthropic => "Claude",
+        ProviderId::Plamo => "PLaMo",
+    }
+}
+
 fn cancelled_error() -> AppError {
     AppError::simple("ai_job_cancelled", &yc_locale::t!("ai.cancelled"))
 }
@@ -1637,16 +1959,16 @@ mod tests {
     };
 
     use super::{
-        AiEntryBaseline, AiJobEntry, AiSettings, AiTargetSupportLevel, ai_settings_from,
-        apply_outcome_to_project, parse_provider, prepare_ai_job_entries, provider_base_url,
-        provider_from_settings, target_support_level,
+        AiEntryBaseline, AiJobEntry, AiSettings, AiTargetSupportLevel, SaveAiProviderInput,
+        ai_error_for_provider, ai_settings_from, apply_outcome_to_project, parse_provider,
+        prepare_ai_job_entries, provider_base_url, provider_from_settings, provider_is_configured,
+        split_job_batches, target_support_level, validate_ai_config,
     };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
-    #[cfg(target_os = "linux")]
-    use yc_ai::AiError;
     use yc_ai::{
-        CredentialBackend, CredentialManager, CredentialStoreError, ProviderId, TranslationOutcome,
+        AiError, CredentialBackend, CredentialManager, CredentialStoreError, ProviderId,
+        TranslationOutcome,
     };
     use yc_language::{EntryFlag, LanguageFileFormat, TranslationOrigin};
     use yc_project::{
@@ -1662,7 +1984,6 @@ mod tests {
 
     #[derive(Default)]
     struct MemoryCredentialStore(HashMap<ProviderId, String>);
-
     impl CredentialBackend for MemoryCredentialStore {
         fn get(&mut self, provider: ProviderId) -> Result<Option<String>, CredentialStoreError> {
             Ok(self.0.get(&provider).cloned())
@@ -1686,6 +2007,51 @@ mod tests {
 
         assert!(error.user_message.contains("GNOME Keyring"));
         assert!(error.user_message.contains("is running"));
+    }
+
+    /// 資格情報ストアが壊れている環境を再現する。PLaMo の経路がここへ触れないことを確かめる。
+    #[derive(Default)]
+    struct FailingCredentialStore;
+
+    impl CredentialBackend for FailingCredentialStore {
+        fn get(&mut self, _: ProviderId) -> Result<Option<String>, CredentialStoreError> {
+            Err(CredentialStoreError)
+        }
+
+        fn set(&mut self, _: ProviderId, _: &str) -> Result<(), CredentialStoreError> {
+            Err(CredentialStoreError)
+        }
+
+        fn delete(&mut self, _: ProviderId) -> Result<(), CredentialStoreError> {
+            Err(CredentialStoreError)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_broken_credential_store_still_reports_plamo_settings() {
+        // Secret Service が落ちていても、PLaMo の設定表示は資格情報ストアを参照しないため
+        // 失敗しない。`get_ai_settings` と同じ分岐をここで直接確かめる。
+        let manager = CredentialManager::new(FailingCredentialStore).unwrap();
+        assert!(manager.status(ProviderId::OpenAi).await.is_err());
+
+        let mut settings = yc_project::AppSettings::new();
+        settings.values.insert(
+            "ai.plamo.model".into(),
+            serde_json::Value::String(yc_plamo::DEFAULT_MODEL_ID.into()),
+        );
+        assert!(!ProviderId::Plamo.uses_credential_store());
+        let config = ai_settings_from(&settings, ProviderId::Plamo, false, None);
+        assert_eq!(config.provider, "plamo");
+        assert_eq!(config.model, yc_plamo::DEFAULT_MODEL_ID);
+    }
+
+    #[tokio::test]
+    async fn plamo_settings_never_read_or_write_credentials() {
+        // 資格情報を渡しても保存しない。壊れたストアでも PLaMo の保存は成立する。
+        let manager = CredentialManager::new(FailingCredentialStore).unwrap();
+        assert!(!ProviderId::Plamo.uses_credential_store());
+        // 資格情報経路を使う他プロバイダーは同じストアで失敗する（分岐の対照）。
+        assert!(manager.status(ProviderId::Anthropic).await.is_err());
     }
 
     struct TemporaryDirectory(PathBuf);
@@ -1965,6 +2331,206 @@ mod tests {
     }
 
     #[test]
+    fn plamo_target_support_follows_the_catalog_language_table() {
+        // PLaMo の対応表はカタログ由来。冗談言語や方言も「限定」ではなく「非対応」にする。
+        assert_eq!(
+            target_support_level(ProviderId::Plamo, "ja_jp", None),
+            AiTargetSupportLevel::Supported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::Plamo, "zh_cn", None),
+            AiTargetSupportLevel::Supported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::Plamo, "pt_br", None),
+            AiTargetSupportLevel::Unsupported,
+        );
+        assert_eq!(
+            target_support_level(ProviderId::Plamo, "en_ud", None),
+            AiTargetSupportLevel::Unsupported,
+        );
+        // DeepL の応答は PLaMo の判定に影響しない。
+        assert_eq!(
+            target_support_level(ProviderId::Plamo, "de_de", Some(false)),
+            AiTargetSupportLevel::Supported,
+        );
+    }
+
+    #[test]
+    fn unsupported_target_errors_name_the_selected_provider() {
+        let deepl = ai_error_for_provider(AiError::UnsupportedTargetLanguage, ProviderId::DeepL);
+        assert_eq!(
+            deepl.user_message,
+            yc_locale::t!("ai.deeplTargetUnsupported")
+        );
+
+        let plamo = ai_error_for_provider(AiError::UnsupportedTargetLanguage, ProviderId::Plamo);
+        assert_eq!(plamo.code, "ai_target_unsupported");
+        assert!(plamo.user_message.contains("PLaMo"));
+        assert!(!plamo.user_message.contains("DeepL"));
+
+        // 未対応言語以外の変換は従来どおり。
+        let network = ai_error_for_provider(AiError::Network, ProviderId::Plamo);
+        assert_eq!(network.user_message, yc_locale::t!("ai.providerFailed"));
+    }
+
+    #[test]
+    fn plamo_settings_accept_only_catalog_models_and_known_devices() {
+        let valid = SaveAiProviderInput {
+            provider: "plamo".into(),
+            model: yc_plamo::DEFAULT_MODEL_ID.into(),
+            base_url: String::new(),
+            batch_size: 50,
+            concurrency: 2,
+            custom_prompt: String::new(),
+            device: Some("cpu".into()),
+        };
+        assert!(validate_ai_config(&valid).is_ok());
+        // device 未指定は既定へ倒すので通す。
+        assert!(
+            validate_ai_config(&SaveAiProviderInput {
+                device: None,
+                ..valid.clone()
+            })
+            .is_ok()
+        );
+
+        let unknown_model = SaveAiProviderInput {
+            model: "plamo-3-translate-31b".into(),
+            ..valid.clone()
+        };
+        assert_eq!(
+            validate_ai_config(&unknown_model).unwrap_err().code,
+            "invalid_ai_settings"
+        );
+
+        let unknown_device = SaveAiProviderInput {
+            device: Some("tpu".into()),
+            ..valid.clone()
+        };
+        assert_eq!(
+            validate_ai_config(&unknown_device).unwrap_err().code,
+            "invalid_ai_settings"
+        );
+
+        // 並列度の範囲は既存プロバイダーと同じ規則。
+        let bad_concurrency = SaveAiProviderInput {
+            concurrency: 5,
+            ..valid
+        };
+        assert_eq!(
+            validate_ai_config(&bad_concurrency).unwrap_err().code,
+            "invalid_ai_settings"
+        );
+    }
+
+    #[test]
+    fn plamo_settings_report_the_device_and_catalog_model() {
+        let mut settings = yc_project::AppSettings::new();
+        settings.values.insert(
+            "ai.plamo.device".into(),
+            serde_json::Value::String("cpu".into()),
+        );
+        let config = ai_settings_from(&settings, ProviderId::Plamo, false, None);
+        assert_eq!(config.provider, "plamo");
+        assert_eq!(config.model, yc_plamo::DEFAULT_MODEL_ID);
+        assert_eq!(config.device.as_deref(), Some("cpu"));
+        assert_eq!(config.base_url, "");
+        assert_eq!(config.custom_prompt, "");
+
+        // 他のプロバイダーにはデバイスを出さない（画面側の契約を増やさない）。
+        let openai = ai_settings_from(&settings, ProviderId::OpenAi, false, None);
+        assert!(openai.device.is_none());
+    }
+
+    #[test]
+    fn plamo_never_reports_configured_through_the_credential_path() {
+        // 資格情報の有無だけで PLaMo を「設定済み」にしてはいけない。実行可否は
+        // モデル・ランタイム・ライセンスで決まるため、この経路は常に false を返す。
+        let mut settings = yc_project::AppSettings::new();
+        settings.values.insert(
+            "ai.plamo.model".into(),
+            serde_json::Value::String(yc_plamo::DEFAULT_MODEL_ID.into()),
+        );
+        assert!(!provider_is_configured(&settings, ProviderId::Plamo, true));
+    }
+
+    #[test]
+    fn plamo_is_the_only_provider_that_skips_the_credential_store() {
+        for provider in [
+            ProviderId::OpenAi,
+            ProviderId::OpenAiCompatible,
+            ProviderId::DeepL,
+            ProviderId::ChatGpt,
+            ProviderId::Gemini,
+            ProviderId::OpenRouter,
+            ProviderId::DeepSeek,
+            ProviderId::Groq,
+            ProviderId::Ollama,
+            ProviderId::LmStudio,
+            ProviderId::Anthropic,
+        ] {
+            assert!(provider.uses_credential_store(), "{provider:?}");
+        }
+        assert!(!ProviderId::Plamo.uses_credential_store());
+        assert_eq!(parse_provider("plamo").unwrap(), ProviderId::Plamo);
+        assert_eq!(ProviderId::Plamo.as_str(), "plamo");
+    }
+
+    #[test]
+    fn plamo_outer_batches_hold_exactly_one_entry() {
+        // PLaMo は 1 リクエスト 1 項目しか扱えない。外側のバッチを 1 項目に切らないと、
+        // Mod 名・用語集・進捗がバッチ先頭の項目のものに固定される。
+        let entries: Vec<_> = (0..5)
+            .map(|index| AiJobEntry {
+                translation: yc_ai::TranslationEntry::new(
+                    index,
+                    format!("key.{index}"),
+                    "Apple %s",
+                    "en_us",
+                    "ja_jp",
+                ),
+                glossary_terms: Vec::new(),
+                namespace: "test".into(),
+                mod_name: format!("Mod {index}"),
+                before_target: String::new(),
+                before_origin: TranslationOrigin::Missing,
+                shader_format: false,
+            })
+            .collect();
+
+        let batches = split_job_batches(entries, 1);
+        assert_eq!(batches.len(), 5);
+        for (index, batch) in batches.iter().enumerate() {
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].mod_name, format!("Mod {index}"));
+        }
+    }
+
+    #[test]
+    fn other_providers_keep_the_configured_batch_size() {
+        let entries: Vec<_> = (0..5)
+            .map(|index| AiJobEntry {
+                translation: yc_ai::TranslationEntry::new(
+                    index,
+                    format!("key.{index}"),
+                    "Apple %s",
+                    "en_us",
+                    "ja_jp",
+                ),
+                glossary_terms: Vec::new(),
+                namespace: "test".into(),
+                mod_name: "Test".into(),
+                before_target: String::new(),
+                before_origin: TranslationOrigin::Missing,
+                shader_format: false,
+            })
+            .collect();
+
+        assert_eq!(split_job_batches(entries, 3).len(), 2);
+    }
+
+    #[test]
     fn legacy_patchouli_flag_selects_patchouli_profile_for_ai_validation() {
         let (_temporary, opened, entry) = legacy_patchouli_project_with_entry();
         let project_id = opened.summary().id.clone();
@@ -2150,7 +2716,8 @@ mod tests {
             rejected: Vec::new(),
         };
         let (updated, rejected) =
-            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new()).unwrap();
+            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new(), None)
+                .unwrap();
         assert!(rejected.is_empty());
         assert_eq!(updated[0].origin, TranslationOrigin::Ai);
         assert_eq!(
@@ -2186,7 +2753,7 @@ mod tests {
         };
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        assert!(apply_outcome_to_project(&opened, &batch, &outcome, &cancellation).is_err());
+        assert!(apply_outcome_to_project(&opened, &batch, &outcome, &cancellation, None).is_err());
         let unchanged = opened.repository().list_entries(None).unwrap().remove(0);
         assert!(unchanged.target_text.is_none());
         assert_eq!(unchanged.origin, TranslationOrigin::Missing);
@@ -2220,7 +2787,8 @@ mod tests {
             rejected: validation.rejected,
         };
         let (updated, rejected) =
-            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new()).unwrap();
+            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new(), None)
+                .unwrap();
         assert!(updated.is_empty());
         assert_eq!(rejected.len(), 1);
         let stored = opened.repository().list_entries(None).unwrap().remove(0);
@@ -2290,7 +2858,8 @@ mod tests {
         };
 
         let (updated, rejected) =
-            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new()).unwrap();
+            apply_outcome_to_project(&opened, &batch, &outcome, &CancellationToken::new(), None)
+                .unwrap();
 
         assert!(updated.is_empty());
         assert!(rejected.is_empty());

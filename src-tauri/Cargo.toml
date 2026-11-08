@@ -35,9 +35,11 @@ yc-archive = { path = "../crates/yc-archive" }
 yc-assets = { path = "../crates/yc-assets" }
 yc-export = { path = "../crates/yc-export" }
 yc-language = { path = "../crates/yc-language" }
+yc-llama = { path = "../crates/yc-llama" }
 yc-locale = { path = "../crates/yc-locale" }
 yc-metadata = { path = "../crates/yc-metadata" }
 yc-modpack = { path = "../crates/yc-modpack" }
+yc-plamo = { path = "../crates/yc-plamo" }
 yc-project = { path = "../crates/yc-project" }
 yc-shaderpack = { path = "../crates/yc-shaderpack" }
 yc-validation = { path = "../crates/yc-validation" }

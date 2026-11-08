@@ -11,7 +11,7 @@ use yc_ai::{CredentialBackend, CredentialManager, CredentialStoreError, JobManag
 use yc_analysis::{AnalysisData, CancellationToken};
 use yc_project::{OpenedProject, ProjectAssetIndex};
 
-use crate::paths::AppPaths;
+use crate::{paths::AppPaths, plamo::PlamoState};
 
 pub struct AppState {
     pub paths: AppPaths,
@@ -25,6 +25,9 @@ pub struct AppState {
     pub ai_job_tokens: Arc<Mutex<HashMap<String, AiJobControl>>>,
     pub(crate) deleting_projects: Arc<Mutex<HashSet<String>>>,
     pub credentials: Option<Arc<CredentialManager>>,
+    /// PLaMo のローカル実行状態。資格情報ストアが壊れていても翻訳できるよう、ここへ分離する。
+    /// 翻訳ジョブのタスクへ渡すため `Arc` で持つ。
+    pub plamo: Arc<PlamoState>,
     pub exported_paths: Arc<Mutex<HashSet<PathBuf>>>,
     pub recent_lock: Arc<Mutex<()>>,
     pub(crate) preview_context: Arc<Mutex<Option<crate::commands::preview::PreviewContext>>>,
@@ -110,6 +113,7 @@ impl AppState {
         };
 
         Self {
+            plamo: Arc::new(PlamoState::new(&paths.data_dir)),
             paths,
             active_project: Arc::new(Mutex::new(None)),
             project_io_lock: Arc::new(Mutex::new(())),
@@ -227,6 +231,15 @@ impl AppState {
                 tracing::error!(%error, "Preview cache could not be cleared during shutdown")
             }
         }
+        // 進行中のダウンロードは `.part` を残して止める。次回起動時にレジュームできる。
+        self.plamo.cancel_download();
+        // `RunEvent::Exit` は非同期を待てないため、同期版でllama-serverを確実に止める。
+        // ここを飛ばすとモデルを読み込んだプロセスがアプリ終了後も残る。起動と対になるよう
+        // 停止も info で残す（アイドル停止・明示停止はランチャー側で記録している）。
+        let server_running = self.plamo.runtime().is_running();
+        tracing::info!(server_running, "stopping the plamo server for app exit");
+        self.plamo.runtime().shutdown_blocking();
+        self.plamo.clear_active_model();
     }
 }
 
