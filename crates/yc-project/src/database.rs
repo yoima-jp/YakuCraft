@@ -1,6 +1,6 @@
 use std::{fs, path::Path, time::Duration};
 
-use rusqlite::{Connection, MAIN_DB, OpenFlags};
+use rusqlite::{Connection, MAIN_DB, OpenFlags, backup::NO_PROGRESS};
 
 use crate::{ProjectError, Result, files};
 
@@ -99,7 +99,7 @@ fn backup_database(connection: &Connection, database_path: &Path) -> Result<()> 
     let backup_path = database_path.with_file_name("project.sqlite.backup");
     let temporary_path = files::temporary_sibling(&backup_path);
     let backup_result = (|| -> Result<()> {
-        connection.backup(MAIN_DB, &temporary_path, None)?;
+        connection.backup(MAIN_DB, &temporary_path, NO_PROGRESS)?;
         fs::OpenOptions::new()
             .read(true)
             .write(true)
