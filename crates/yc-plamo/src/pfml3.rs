@@ -1,9 +1,9 @@
 //! PFML3 プロンプトの組み立て。
 //!
 //! PFML3 は PLaMo の対話フォーマットで、要素を特殊トークンで区切る。要素の順序は固定で
-//! `dataset` → `context` → `glossary` → `input` → `output`。`output` の本文開始
-//! (`<|plamo:msg|>`) より後ろが生成対象なので、プロンプトは必ず `output` の
-//! `<|plamo:msg|>` で終える。
+//! `dataset` → `context` → 履歴の `input`/`output` 対 → `glossary` → `input` → `output`。
+//! `output` の本文開始 (`<|plamo:msg|>`) より後ろが生成対象なので、プロンプトは必ず
+//! `output` の `<|plamo:msg|>` で終える。
 //!
 //! BOS (`<|plamo:bos|>`) は付けない。llama-server は文字列プロンプトの先頭に
 //! `tokenizer.ggml.add_bos_token` が真なら BOS を自動挿入するため、手で足すと二重になる。
@@ -67,6 +67,13 @@ pub struct PromptRequest<'a> {
     pub context: Option<&'a str>,
     /// `(原文語, 訳語)` の並び。出現した語だけを渡すのは呼び出し側の責任。
     pub glossary: &'a [(String, String)],
+    /// `context` の直後に置く履歴の `input`/`output` 対。`(原文, 訳文)`。
+    ///
+    /// モデルカードの「以前の `input`/`output` 対を文書順に並べる」に対応する。
+    /// 実測（2B GPU、用語集 60 語）では `glossary` 要素だけの方が遵守率が高く
+    /// （90.4% 対 85.1%）、履歴だけなら 72.3% だった。既定では使わないが、
+    /// 評価で条件を変えられるよう口を残す。
+    pub history: &'a [(String, String)],
 }
 
 /// 生成を止める文字列。`<|plamo:tag|>` は次の要素の開始、`<|plamo:bos|>` は系列の終端。
@@ -141,6 +148,33 @@ pub fn build_prompt(request: &PromptRequest<'_>) -> Result<String, Pfml3Error> {
                 && !is_unsafe_for_prompt(target)
         })
         .collect();
+    // 履歴は `context` の直後、`glossary` の前に置く（モデルカードの順序）。
+    // 履歴の本文はマスク前の原文と同じく信頼できない入力なので、特殊トークンを含む対は
+    // その対だけを落とす。片方だけ落とすと `input` と `output` の対応が崩れるため、
+    // 対単位で捨てる。
+    let history: Vec<_> = request
+        .history
+        .iter()
+        .filter(|(source, target)| {
+            !source.is_empty()
+                && !target.is_empty()
+                && !is_unsafe_for_prompt(source)
+                && !is_unsafe_for_prompt(target)
+        })
+        .collect();
+    for (source, target) in &history {
+        prompt.push_str(TAG);
+        prompt.push_str("input");
+        push_language_attributes(&mut prompt, request.source_language);
+        prompt.push_str(MSG);
+        prompt.push_str(source);
+        prompt.push_str(TAG);
+        prompt.push_str("output");
+        push_language_attributes(&mut prompt, Some(request.target_language));
+        prompt.push_str(MSG);
+        prompt.push_str(target);
+    }
+
     if !glossary.is_empty() {
         prompt.push_str(TAG);
         prompt.push_str("glossary");
@@ -154,26 +188,26 @@ pub fn build_prompt(request: &PromptRequest<'_>) -> Result<String, Pfml3Error> {
 
     prompt.push_str(TAG);
     prompt.push_str("input");
-    if let Some(source_language) = request
-        .source_language
-        .filter(|language| !language.trim().is_empty())
-    {
-        prompt.push_str(KEY);
-        prompt.push_str("lang");
-        prompt.push_str(VAL);
-        prompt.push_str(source_language);
-    }
+    push_language_attributes(&mut prompt, request.source_language);
     prompt.push_str(MSG);
     prompt.push_str(request.source_text);
 
     prompt.push_str(TAG);
     prompt.push_str("output");
+    push_language_attributes(&mut prompt, Some(request.target_language));
+    prompt.push_str(MSG);
+    Ok(prompt)
+}
+
+/// `input` / `output` の `lang` 属性を積む。空の言語コードは省略する。
+fn push_language_attributes(prompt: &mut String, language: Option<&str>) {
+    let Some(language) = language.filter(|language| !language.trim().is_empty()) else {
+        return;
+    };
     prompt.push_str(KEY);
     prompt.push_str("lang");
     prompt.push_str(VAL);
-    prompt.push_str(request.target_language);
-    prompt.push_str(MSG);
-    Ok(prompt)
+    prompt.push_str(language);
 }
 
 /// 生成結果から末尾に残った停止トークンを取り除く。
@@ -285,24 +319,105 @@ pub fn build_context(parts: &ContextParts<'_>) -> String {
 /// 原文に実際に現れる用語だけを `(原文語, 訳語)` で返す。
 ///
 /// PFML3 の用語集は全件がプロンプト長を消費するため、関係しない語を送らない。
-/// 大文字小文字を無視した部分一致で十分（語形変化まで見る必要はない）。
+///
+/// 一致規則:
+/// - ASCII の語は単語境界で照合する。部分一致だと `Iron` が `Environment` に当たり、
+///   無関係な用語を送ってプロンプトを無駄に消費し、訳語の選択も乱す。
+/// - 非 ASCII（日本語など）の語は部分一致でよい。単語境界の概念が無く、`マナ` が
+///   `マナタンク` に含まれるのは正しい一致。
+/// - 大文字小文字は無視する。
+///
+/// 返す順は「長い語が先」。`Iron` と `Iron Ingot` が両方当たる場合、短い語を先に置くと
+/// モデルが短い方の訳語で全体を置き換えやすい。長い一致を先に置くと、より具体的な訳語が
+/// 優先される。
 pub fn select_glossary_terms(
     source_text: &str,
     terms: &[yc_ai::GlossaryTerm],
 ) -> Vec<(String, String)> {
-    let haystack = source_text.to_lowercase();
+    let mut matched: Vec<(usize, String, String)> = terms
+        .iter()
+        .filter_map(|term| {
+            let source = term.source_term.trim();
+            if source.is_empty() || term.target_term.trim().is_empty() {
+                return None;
+            }
+            contains_term(source_text, source).then(|| {
+                (
+                    source.chars().count(),
+                    source.to_owned(),
+                    term.target_term.trim().to_owned(),
+                )
+            })
+        })
+        .collect();
+    // 長い語を先に。同じ長さなら原文の並びを保つ（`sort_by_key` は安定）。
+    matched.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    matched
+        .into_iter()
+        .map(|(_, source, target)| (source, target))
+        .collect()
+}
+
+/// `haystack` に `needle` が現れるか。ASCII の語だけ単語境界を要求する。
+fn contains_term(haystack: &str, needle: &str) -> bool {
+    let haystack_lower = haystack.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    if needle_lower.is_empty() {
+        return false;
+    }
+    // 非 ASCII を含む語は単語境界の概念が無いので、部分一致で足りる。
+    if !needle_lower.is_ascii() {
+        return haystack_lower.contains(&needle_lower);
+    }
+    let mut from = 0;
+    while let Some(offset) = haystack_lower[from..].find(&needle_lower) {
+        let start = from + offset;
+        let end = start + needle_lower.len();
+        // 前後が英数字でなければ単語境界とみなす。`_` も語の一部として扱う
+        // （翻訳キーや変数名の断片に当たらないようにする）。
+        let before_ok = haystack_lower[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_word_char(c));
+        let after_ok = haystack_lower[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_word_char(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start
+            + haystack_lower[start..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// 単語の一部とみなす文字。ASCII の英数字と `_` だけ。
+fn is_word_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+/// 用語集の語を履歴の `input`/`output` 対へ変換する。
+///
+/// モデルカードの「以前の `input`/`output` 対を文書順に並べる」を使い、用語を
+/// 「以前この語をこう訳した」という履歴として与える。実測では `glossary` 要素だけでは
+/// 遵守率 38.9% だったのが、履歴を併用すると改善した（レポート参照）。
+///
+/// 用語集と同じ語を二重に送ることになるが、`glossary` は「参考情報」、履歴は
+/// 「実際にそう訳した前例」として読まれるらしく、両方ある方が遵守率が高い。
+pub fn glossary_history(terms: &[(String, String)]) -> Vec<(String, String)> {
     terms
         .iter()
-        .filter(|term| {
-            let needle = term.source_term.trim().to_lowercase();
-            !needle.is_empty() && haystack.contains(&needle)
+        .filter(|(source, target)| {
+            !source.is_empty()
+                && !target.is_empty()
+                && !is_unsafe_for_prompt(source)
+                && !is_unsafe_for_prompt(target)
         })
-        .map(|term| {
-            (
-                term.source_term.trim().to_owned(),
-                term.target_term.trim().to_owned(),
-            )
-        })
+        .cloned()
         .collect()
 }
 
@@ -335,6 +450,7 @@ mod tests {
             target_language: "ja",
             context: Some("Minecraft mod \"Example\" (namespace: example). In-game UI/item text."),
             glossary: &glossary,
+            history: &[],
         })
         .unwrap();
 
@@ -363,6 +479,7 @@ mod tests {
             target_language: "de",
             context: None,
             glossary: &[],
+            history: &[],
         })
         .unwrap();
         assert_eq!(
@@ -392,6 +509,7 @@ mod tests {
                     target_language: "ja",
                     context: None,
                     glossary: &[],
+                    history: &[],
                 }),
                 Err(Pfml3Error::UnsafeSourceText),
                 "{source}"
@@ -412,6 +530,7 @@ mod tests {
             target_language: "ja",
             context: Some("context<|plamo:tag|>"),
             glossary: &glossary,
+            history: &[],
         })
         .unwrap();
         // 危険な文脈は落ちるが、プロンプト自体は組み立てられ、安全な用語は残る。
@@ -446,6 +565,7 @@ mod tests {
                     target_language: target,
                     context: None,
                     glossary: &[],
+                    history: &[],
                 }),
                 Err(Pfml3Error::InvalidLanguage),
                 "{target}"
@@ -459,6 +579,7 @@ mod tests {
                     target_language: "ja",
                     context: None,
                     glossary: &[],
+                    history: &[],
                 }),
                 Err(Pfml3Error::InvalidLanguage),
                 "{source}"
@@ -474,6 +595,7 @@ mod tests {
                     target_language: target,
                     context: None,
                     glossary: &[],
+                    history: &[],
                 }),
                 Err(Pfml3Error::InvalidLanguage),
                 "{target}"
@@ -489,6 +611,7 @@ mod tests {
                     target_language: target,
                     context: None,
                     glossary: &[],
+                    history: &[],
                 })
                 .is_ok(),
                 "{target}"
@@ -504,6 +627,7 @@ mod tests {
                     target_language: "ja",
                     context: None,
                     glossary: &[],
+                    history: &[],
                 })
                 .is_ok(),
                 "{source:?}"
@@ -619,5 +743,110 @@ mod tests {
             [("Iron Ingot".to_owned(), "鉄インゴット".to_owned())]
         );
         assert!(select_glossary_terms("nothing here", &terms).is_empty());
+    }
+
+    #[test]
+    fn ascii_glossary_terms_match_on_word_boundaries_only() {
+        // 部分一致だと `Iron` が `Environment` に当たり、無関係な用語を送ってしまう。
+        let terms = vec![yc_ai::GlossaryTerm {
+            source_term: "Iron".to_owned(),
+            target_term: "鉄".to_owned(),
+        }];
+        assert!(select_glossary_terms("Environment", &terms).is_empty());
+        assert!(select_glossary_terms("Ironworks", &terms).is_empty());
+        assert_eq!(
+            select_glossary_terms("an Iron block", &terms),
+            [("Iron".to_owned(), "鉄".to_owned())]
+        );
+        // 句読点や行末は単語境界として扱う。
+        assert_eq!(
+            select_glossary_terms("(Iron)", &terms),
+            [("Iron".to_owned(), "鉄".to_owned())]
+        );
+        // `_` は語の一部として扱い、翻訳キーの断片に当たらないようにする。
+        assert!(select_glossary_terms("block_iron_ore", &terms).is_empty());
+
+        // 非 ASCII の語は単語境界の概念が無いので部分一致でよい。
+        let japanese = vec![yc_ai::GlossaryTerm {
+            source_term: "マナ".to_owned(),
+            target_term: "Mana".to_owned(),
+        }];
+        assert_eq!(
+            select_glossary_terms("マナタンク", &japanese),
+            [("マナ".to_owned(), "Mana".to_owned())]
+        );
+    }
+
+    #[test]
+    fn longer_glossary_terms_come_first_so_specific_translations_win() {
+        // `Iron` と `Iron Ingot` が両方当たる場合、短い方を先に置くとモデルが
+        // 短い方の訳語で全体を置き換えやすい。
+        let terms = vec![
+            yc_ai::GlossaryTerm {
+                source_term: "Iron".to_owned(),
+                target_term: "鉄".to_owned(),
+            },
+            yc_ai::GlossaryTerm {
+                source_term: "Iron Ingot".to_owned(),
+                target_term: "鉄インゴット".to_owned(),
+            },
+        ];
+        assert_eq!(
+            select_glossary_terms("an Iron Ingot", &terms),
+            [
+                ("Iron Ingot".to_owned(), "鉄インゴット".to_owned()),
+                ("Iron".to_owned(), "鉄".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn glossary_terms_are_also_emitted_as_history_pairs_before_the_glossary_element() {
+        let glossary = [("Iron Ingot".to_owned(), "鉄インゴット".to_owned())];
+        let history = glossary_history(&glossary);
+        let prompt = build_prompt(&PromptRequest {
+            source_text: "Iron Ingot restores Mana.",
+            source_language: Some("en"),
+            target_language: "ja",
+            context: None,
+            glossary: &glossary,
+            history: &history,
+        })
+        .unwrap();
+        assert_eq!(
+            prompt,
+            concat!(
+                "<|plamo:tag|>dataset<|plamo:msg|>translation",
+                "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Iron Ingot",
+                "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>鉄インゴット",
+                "<|plamo:tag|>glossary",
+                "<|plamo:index|>Iron Ingot<|plamo:item|>鉄インゴット",
+                "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Iron Ingot restores Mana.",
+                "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>",
+            )
+        );
+    }
+
+    #[test]
+    fn history_pairs_with_special_tokens_are_dropped_as_a_whole_pair() {
+        // 履歴の本文も信頼できない入力。片方だけ落とすと `input` と `output` の
+        // 対応が崩れるので、対単位で捨てる。
+        let history = [
+            ("Safe".to_owned(), "安全".to_owned()),
+            ("Bad<|plamo:tag|>".to_owned(), "危険".to_owned()),
+            ("Also bad".to_owned(), "訳<|plamo:item|>".to_owned()),
+        ];
+        let prompt = build_prompt(&PromptRequest {
+            source_text: "Safe",
+            source_language: Some("en"),
+            target_language: "ja",
+            context: None,
+            glossary: &[],
+            history: &history,
+        })
+        .unwrap();
+        assert!(prompt.contains("<|plamo:msg|>Safe<|plamo:tag|>output"));
+        assert!(!prompt.contains("Bad"));
+        assert!(!prompt.contains("Also bad"));
     }
 }

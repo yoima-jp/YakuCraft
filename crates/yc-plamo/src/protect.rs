@@ -22,24 +22,46 @@ pub enum ProtectStrategy {
     /// `__YC_PH_0000__` 形式。ASCII だけで構成され、トークナイザによっては
     /// 記号の連続より安定して 1 語として扱われる。
     AsciiMarker,
+    /// `<x0>…</x0>` 形式。対になった書式コードを開き／閉じのタグとして表し、
+    /// 挟まれた本文が「訳す対象」であることをモデルへ示す。
+    ///
+    /// 実測: `$(item)heat$()` のような Patchouli マクロでは、`⟦0⟧heat⟦1⟧` だと
+    /// モデルが `heat` を原文のまま複写する（未訳のまま残る）。開き／閉じの形にすると
+    /// 内側を本文として訳す率が上がる。
+    PairedTag,
 }
 
 impl ProtectStrategy {
     /// 区間 `index` を置き換える文字列。`Verbatim` は置き換えない。
     fn marker(self, index: usize) -> Option<String> {
+        self.marker_text(index, PairRole::Single)
+    }
+
+    /// 区間 `index` を、対の役割 `role` に応じた表記へ置き換える文字列。
+    fn marker_text(self, index: usize, role: PairRole) -> Option<String> {
         match self {
             Self::Verbatim => None,
             Self::BracketedIndex => Some(format!("⟦{index}⟧")),
             Self::AsciiMarker => Some(format!("__YC_PH_{index:04}__")),
+            Self::PairedTag => Some(match role {
+                PairRole::Open => format!("<x{index}>"),
+                PairRole::Close => format!("</x{index}>"),
+                PairRole::Single => format!("<x{index}/>"),
+            }),
         }
     }
 
     fn delimiters(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Self::Verbatim => None,
+            Self::Verbatim | Self::PairedTag => None,
             Self::BracketedIndex => Some(("⟦", "⟧")),
             Self::AsciiMarker => Some(("__YC_PH_", "__")),
         }
+    }
+
+    /// 保護区間をマーカーへ置き換えるか。`Verbatim` だけが置き換えない。
+    fn masks(self) -> bool {
+        !matches!(self, Self::Verbatim)
     }
 
     /// 1 回だけ試す代替手段。マーカーが化けた場合は別の表記へ、
@@ -48,9 +70,116 @@ impl ProtectStrategy {
         match self {
             Self::BracketedIndex => Self::AsciiMarker,
             Self::AsciiMarker => Self::BracketedIndex,
-            Self::Verbatim => Self::BracketedIndex,
+            Self::Verbatim | Self::PairedTag => Self::BracketedIndex,
         }
     }
+
+    /// profile ごとの既定。
+    ///
+    /// 実測（2B GPU、書式コードに挟まれた本文を持つ 24 entry・38 区間）で、
+    /// 未訳のまま残った本文の率は
+    /// `BracketedIndex` 2.6% / `PairedTag` 2.6% / `Verbatim` 18.4% / `AsciiMarker` 26.3%。
+    /// 内訳が違う:
+    ///
+    /// - Patchouli（`$(item)heat$()`）は `BracketedIndex` だと `heat` を原文のまま複写する
+    ///   （7 件中 1 件が未訳）。`PairedTag` は 0 件で、`$(item)熱$()` と訳す。
+    /// - Minecraft の `§7`（`§7(Hidden Advancement)`）は `PairedTag` だと
+    ///   `Hidden Advancement` を残す（17 件中 1 件）。`BracketedIndex` は 0 件。
+    ///
+    /// どちらも 1 件差なので率だけでは決められないが、chrF は `PairedTag` が最も高い
+    /// （0.4532 対 0.4426）。Patchouli の本文は長く、訳す語が多いので chrF への寄与が
+    /// 大きい。`§` コードは行末まで効く短いラベルが中心で、`PairedTag` の開き／閉じが
+    /// 本文の範囲を誤って示すことがある。
+    ///
+    /// したがって Patchouli は `PairedTag`、それ以外は `BracketedIndex` を既定にする。
+    pub fn for_profile(profile: PlaceholderProfile) -> Self {
+        match profile {
+            PlaceholderProfile::Patchouli => Self::PairedTag,
+            PlaceholderProfile::Lang | PlaceholderProfile::FtbQuests => Self::BracketedIndex,
+        }
+    }
+}
+
+/// 対になった書式コードでの、保護区間 1 つ分の役割。
+///
+/// [`ProtectStrategy::PairedTag`] だけが使う。開き側と閉じ側を別の表記にすると、
+/// 挟まれた本文が「訳す対象」であることがモデルへ伝わる。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PairRole {
+    /// 開き側。`<x0>` で表す。
+    Open,
+    /// 閉じ側。`</x0>` で表す。
+    Close,
+    /// 対になっていない区間。`<x0/>` で表す。
+    Single,
+}
+
+/// 閉じ側の書式コードかどうか。
+///
+/// Patchouli のマクロは `$(item)…$()` の形で閉じる。Minecraft / FTB の書式コードは
+/// `§r` / `&r`（リセット）が閉じ側。
+///
+/// 評価ハーネスも同じ規則で「書式コードに挟まれた本文」を切り出す。規則を 2 箇所に
+/// 書くと、測っている対象と製品が保護している対象がずれる。
+pub fn is_closing_code(raw: &str) -> bool {
+    raw == "$()" || raw.eq_ignore_ascii_case("§r") || raw.eq_ignore_ascii_case("&r")
+}
+
+/// 閉じ側と組になる開き側かどうか。
+///
+/// 開き側として扱うのは**実際の書式コードだけ**。`$(…)` マクロと `§` / `&` の装飾
+/// コードが対象で、次のものは開き側にしない:
+///
+/// - `$(br)`（改行）と `$(k:…)`（キーバインド参照）。実データ（Ars Nouveau の
+///   Patchouli 本文 1,200 entry）で `$()` と組になるのは装飾マクロだけで、この 2 つは
+///   閉じない。開き側として積むと後続の `$()` が別のマクロの閉じ側と組になり、
+///   挟まれた本文が誤って「対の中」と判定される。
+/// - `#item.name#` のようなテンプレート変数。保護区間ではあるが書式コードではない。
+///   開き側にすると `$(item)heat#item.name#$()` で `$(item)` が単独扱いになり、
+///   `heat` が対タグの外に残って訳されなくなる。
+/// - `{0}` / `%s` / `\n` などの placeholder。書式コードではない。
+pub fn is_opening_code(raw: &str) -> bool {
+    if raw.starts_with("$(") {
+        // 閉じないマクロ。実データに現れるのはこの 2 種類だけ。
+        return raw != "$(br)" && !raw.starts_with("$(k:");
+    }
+    // `§` / `&` の装飾コードだけを開き側にする。`§r` / `&r` は閉じ側なので除く。
+    is_decoration_code(raw) && !is_closing_code(raw)
+}
+
+/// `§` / `&` の装飾コード（`§a` / `&7` など）かどうか。
+///
+/// `§x§1§2…` の 16 進カラーは抽出時に 1 区間にまとまるが、先頭が `§` + 英数字なので
+/// ここでも装飾コードとして扱う。
+fn is_decoration_code(raw: &str) -> bool {
+    let mut characters = raw.chars();
+    matches!(characters.next(), Some('§' | '&'))
+        && characters
+            .next()
+            .is_some_and(|code| code.is_ascii_alphanumeric())
+}
+
+/// 保護区間ごとの対の役割を求める。
+///
+/// 閉じ側は直前の対になっていない開き側と組にする。組にできなかった区間は
+/// [`PairRole::Single`] のままにする。復元時はこの役割と、出力に現れたタグの表記
+/// （開き／閉じ／単独）が一致することを要求する。一致を見ないと、モデルが
+/// `</x0>…<x1>` のように開きと閉じを入れ替えた出力でも「番号が揃っている」という
+/// 理由で通り、`$(item)` と `$()` が入れ替わったまま復元される。
+fn pair_roles(spans: &[ProtectedSpan]) -> Vec<PairRole> {
+    let mut roles = vec![PairRole::Single; spans.len()];
+    let mut open: Vec<usize> = Vec::new();
+    for (index, span) in spans.iter().enumerate() {
+        if is_closing_code(&span.raw) {
+            if let Some(opener) = open.pop() {
+                roles[opener] = PairRole::Open;
+                roles[index] = PairRole::Close;
+            }
+        } else if is_opening_code(&span.raw) {
+            open.push(index);
+        }
+    }
+    roles
 }
 
 /// 復元時の失敗。呼び出し側は entry を失敗として扱い、代替 strategy で 1 回だけ再試行する。
@@ -91,12 +220,19 @@ pub struct ProtectedSource {
     ///
     /// 生成マーカーは常に正規形なので、不正列はすべて原文由来。個数を数えて消費する。
     malformed_literals: BTreeMap<String, usize>,
+    /// 保護区間ごとの、[`ProtectStrategy::PairedTag`] での表記の役割。
+    ///
+    /// 復元時に「出力に現れたタグの役割」と突き合わせる。番号だけを数えると、
+    /// `</x0>…<x1>` のように開きと閉じを入れ替えた出力でも通ってしまい、
+    /// `$(item)` と `$()` が入れ替わったまま復元される。
+    pair_roles: Vec<PairRole>,
 }
 
 impl ProtectedSource {
     pub fn new(source: &str, profile: PlaceholderProfile, strategy: ProtectStrategy) -> Self {
         let spans = extract_protected_spans(source, profile);
-        let (masked, roles, malformed_literals) = mask(source, &spans, strategy);
+        let pair_roles = pair_roles(&spans);
+        let (masked, roles, malformed_literals) = mask(source, &spans, &pair_roles, strategy);
         Self {
             source: source.to_owned(),
             profile,
@@ -105,6 +241,7 @@ impl ProtectedSource {
             masked,
             roles,
             malformed_literals,
+            pair_roles,
         }
     }
 
@@ -144,8 +281,8 @@ impl ProtectedSource {
         let mut role_cursor: BTreeMap<String, usize> = BTreeMap::new();
         let mut markers = Vec::with_capacity(scan.markers.len());
 
-        for (start, end, index) in scan.markers {
-            let text = trimmed[start..end].to_owned();
+        for marker in scan.markers {
+            let text = trimmed[marker.start..marker.end].to_owned();
             let ordinal = role_cursor.entry(text.clone()).or_insert(0);
             let roles = self.roles.get(&text);
             let role = roles.and_then(|roles| roles.get(*ordinal)).copied();
@@ -153,7 +290,7 @@ impl ProtectedSource {
             // 原文に無い表記・原文の出現数を超えた分は生成マーカーとして扱う。
             match role {
                 Some(MarkerRole::Literal) => {}
-                Some(MarkerRole::Generated) | None => markers.push((start, end, index)),
+                Some(MarkerRole::Generated) | None => markers.push(marker),
             }
         }
         // 表記ごとの出現数がマスク後と食い違っていれば、対応づけは信用できない。
@@ -171,9 +308,21 @@ impl ProtectedSource {
         }
         if markers
             .iter()
-            .any(|(_, _, index)| *index >= self.spans.len())
+            .any(|marker| marker.index >= self.spans.len())
         {
             return Err(ProtectError::UnknownMarker);
+        }
+        // 対のタグは、出力に現れた表記の役割がマスク側の記録と一致することを要求する。
+        // 番号だけを数えると `</x0>…<x1>`（開きと閉じの入れ替え）でも「番号が 1 回ずつ
+        // 揃っている」として通り、`$(item)` と `$()` が入れ替わったまま復元される。
+        if self.strategy == ProtectStrategy::PairedTag
+            && markers.iter().any(|marker| {
+                marker
+                    .role
+                    .is_none_or(|role| self.pair_roles.get(marker.index) != Some(&role))
+            })
+        {
+            return Err(ProtectError::SpanMismatch);
         }
         for (text, roles) in &self.roles {
             if !roles.contains(&MarkerRole::Literal) {
@@ -193,11 +342,11 @@ impl ProtectedSource {
 
         let mut restored = String::with_capacity(trimmed.len() + 32);
         let mut cursor = 0;
-        for (start, end, index) in markers {
-            let span = &self.spans[index];
-            restored.push_str(&trimmed[cursor..start]);
+        for marker in markers {
+            let span = &self.spans[marker.index];
+            restored.push_str(&trimmed[cursor..marker.start]);
             restored.push_str(&span.raw);
-            cursor = end;
+            cursor = marker.end;
         }
         restored.push_str(&trimmed[cursor..]);
 
@@ -259,6 +408,7 @@ enum Edge {
 fn mask(
     source: &str,
     spans: &[ProtectedSpan],
+    pair_roles: &[PairRole],
     strategy: ProtectStrategy,
 ) -> (
     String,
@@ -276,7 +426,7 @@ fn mask(
             &source[cursor..span.start],
             strategy,
         );
-        match strategy.marker(index) {
+        match strategy.marker_text(index, pair_roles[index]) {
             Some(marker) => {
                 roles
                     .entry(marker.clone())
@@ -308,19 +458,32 @@ fn push_verbatim(
     fragment: &str,
     strategy: ProtectStrategy,
 ) {
-    for (start, end, _) in scan_markers(fragment, strategy).markers {
+    for marker in scan_markers(fragment, strategy).markers {
         roles
-            .entry(fragment[start..end].to_owned())
+            .entry(fragment[marker.start..marker.end].to_owned())
             .or_default()
             .push(MarkerRole::Literal);
     }
     masked.push_str(fragment);
 }
 
+/// 出力から読み取った正規形のマーカー 1 つ分。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScannedMarker {
+    start: usize,
+    end: usize,
+    /// 保護区間の番号。
+    index: usize,
+    /// [`ProtectStrategy::PairedTag`] のときの表記の役割（開き／閉じ／単独）。
+    ///
+    /// 他の strategy は `None`。復元時にマスク側が記録した役割と一致することを要求する。
+    role: Option<PairRole>,
+}
+
 /// 出力中のマーカー走査結果。
 struct MarkerScan {
-    /// 正規形のマーカー `(開始, 終了, 番号)`。
-    markers: Vec<(usize, usize, usize)>,
+    /// 正規形のマーカー。
+    markers: Vec<ScannedMarker>,
     /// マーカー風だが正規形でない並び `(開始, 終了)`。
     ///
     /// これがあると、モデルがマーカーを書き損じたまま本文へ残した状態になる。番号として
@@ -339,6 +502,9 @@ struct MarkerScan {
 /// 正規形に一致しない並びは黙って読み飛ばさず [`MarkerScan::malformed`] へ入れる。読み飛ばすと
 /// `⟦0⟧石⟦x⟧` のように壊れたマーカーが本文に残ったまま検証を通ってしまう。
 fn scan_markers(text: &str, strategy: ProtectStrategy) -> MarkerScan {
+    if strategy == ProtectStrategy::PairedTag {
+        return scan_paired_tags(text);
+    }
     let Some((prefix, suffix)) = strategy.delimiters() else {
         return MarkerScan {
             markers: Vec::new(),
@@ -393,7 +559,12 @@ fn scan_markers(text: &str, strategy: ProtectStrategy) -> MarkerScan {
             .and_then(|index| strategy.marker(index).map(|marker| (index, marker)))
             .is_some_and(|(_, canonical)| canonical == text[start..end]);
         match index {
-            Some(index) if canonical => scan.markers.push((start, end, index)),
+            Some(index) if canonical => scan.markers.push(ScannedMarker {
+                start,
+                end,
+                index,
+                role: None,
+            }),
             _ => scan.malformed.push((start, end)),
         }
         cursor = end;
@@ -409,24 +580,107 @@ fn span_multiset(spans: &[ProtectedSpan]) -> BTreeMap<&str, usize> {
     counts
 }
 
+/// [`ProtectStrategy::PairedTag`] のマーカーを走査する。
+///
+/// `<x0>` / `</x0>` / `<x0/>` の 3 表記を読み、区間番号と表記の役割の両方を記録する。
+/// 役割を捨てて番号だけを数えると、モデルが `</x0>…<x1>` のように開きと閉じを
+/// 入れ替えた出力でも「番号が 1 回ずつ揃っている」として通り、`$(item)` と `$()` が
+/// 入れ替わったまま復元される。役割は [`ProtectedSource::restore`] がマスク側の記録と
+/// 突き合わせる。
+fn scan_paired_tags(text: &str) -> MarkerScan {
+    let mut scan = MarkerScan {
+        markers: Vec::new(),
+        malformed: Vec::new(),
+    };
+    let bytes = text.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'<' {
+            cursor += 1;
+            continue;
+        }
+        let Some((end, number, role)) = parse_paired_tag(text, cursor) else {
+            cursor += 1;
+            continue;
+        };
+        match (number, role) {
+            (Some(number), Some(role)) => scan.markers.push(ScannedMarker {
+                start: cursor,
+                end,
+                index: number,
+                role: Some(role),
+            }),
+            _ => scan.malformed.push((cursor, end)),
+        }
+        cursor = end;
+    }
+    scan
+}
+
+/// `text[start..]` の先頭が `<x…>` 形式なら `(終了位置, 区間番号, 表記の役割)` を返す。
+///
+/// 正規形は `<x0>` / `</x0>` / `<x0/>` の 3 つだけ。`<x00>` や `<x>` は番号として読めても
+/// 受理しない（改変されたマーカーが厳密検証をすり抜けるため）。`</x0/>` のように
+/// 開きと閉じを兼ねた矛盾した表記も正規形ではない。
+fn parse_paired_tag(text: &str, start: usize) -> Option<(usize, Option<usize>, Option<PairRole>)> {
+    let rest = &text[start..];
+    let after_open = rest.strip_prefix('<')?;
+    let (body, closing_form) = match after_open.strip_prefix('/') {
+        Some(body) => (body, true),
+        None => (after_open, false),
+    };
+    let body = body.strip_prefix('x')?;
+    let digit_length = body.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_length == 0 {
+        return None;
+    }
+    let digits = &body[..digit_length];
+    let tail = &body[digit_length..];
+    let (tail, self_closing) = match tail.strip_prefix('/') {
+        Some(tail) => (tail, true),
+        None => (tail, false),
+    };
+    let tail = tail.strip_prefix('>')?;
+    let end = text.len() - tail.len();
+    let number = digits.parse::<usize>().ok();
+    let role = match (closing_form, self_closing) {
+        (false, false) => Some(PairRole::Open),
+        (true, false) => Some(PairRole::Close),
+        (false, true) => Some(PairRole::Single),
+        // 開きと閉じを兼ねた表記は正規形ではない。
+        (true, true) => None,
+    };
+    // 番号と役割が揃い、かつ表記が正規形と完全に一致するときだけ受理する。
+    let canonical = match (number, role) {
+        (Some(number), Some(role)) => {
+            ProtectStrategy::PairedTag
+                .marker_text(number, role)
+                .as_deref()
+                == Some(&text[start..end])
+        }
+        _ => false,
+    };
+    Some((end, number, role.filter(|_| canonical)))
+}
+
 /// マーカー番号が保護区間をちょうど 1 回ずつ覆っているか。
 ///
 /// マスクしない [`ProtectStrategy::Verbatim`] にはマーカーが無いため、この検査は行わない
 /// （生テキストの多重集合比較だけで検証する）。
 fn markers_cover_every_span_once(
-    markers: &[(usize, usize, usize)],
+    markers: &[ScannedMarker],
     span_count: usize,
     strategy: ProtectStrategy,
 ) -> bool {
-    if strategy.delimiters().is_none() {
+    if !strategy.masks() {
         return true;
     }
     if markers.len() != span_count {
         return false;
     }
     let mut seen = vec![false; span_count];
-    for (_, _, index) in markers {
-        match seen.get_mut(*index) {
+    for marker in markers {
+        match seen.get_mut(marker.index) {
             Some(slot) if !*slot => *slot = true,
             // 範囲外、または同じ番号の 2 回目。
             _ => return false,
@@ -868,9 +1122,124 @@ mod tests {
             ProtectStrategy::Verbatim,
             ProtectStrategy::BracketedIndex,
             ProtectStrategy::AsciiMarker,
+            ProtectStrategy::PairedTag,
         ] {
             assert_ne!(strategy, strategy.alternative());
         }
+    }
+
+    #[test]
+    fn per_profile_defaults_follow_the_measured_winners() {
+        // 実測（2B GPU、書式コードに挟まれた本文 24 entry・38 区間）:
+        // Patchouli の `$(item)heat$()` は PairedTag で 0/7 件が未訳、
+        // BracketedIndex で 1/7 件。`§7(Hidden)` は逆に BracketedIndex が 0/17 件、
+        // PairedTag が 1/17 件。chrF は PairedTag が最も高い（0.4532 対 0.4426）。
+        assert_eq!(
+            ProtectStrategy::for_profile(PlaceholderProfile::Patchouli),
+            ProtectStrategy::PairedTag
+        );
+        assert_eq!(
+            ProtectStrategy::for_profile(PlaceholderProfile::Lang),
+            ProtectStrategy::BracketedIndex
+        );
+        assert_eq!(
+            ProtectStrategy::for_profile(PlaceholderProfile::FtbQuests),
+            ProtectStrategy::BracketedIndex
+        );
+    }
+
+    #[test]
+    fn paired_tags_use_open_and_close_forms_around_the_enclosed_text() {
+        // `$(item)heat$()` の内側は保護区間ではない。開き／閉じをタグで表すと、
+        // 挟まれた `heat` が訳す対象であることがモデルへ伝わる。
+        let protected = ProtectedSource::new(
+            "produces $(item)heat$(), used",
+            PlaceholderProfile::Patchouli,
+            ProtectStrategy::PairedTag,
+        );
+        assert_eq!(protected.masked_text(), "produces <x0>heat</x1>, used");
+        assert_eq!(
+            protected.restore("produces <x0>熱</x1>, used").unwrap(),
+            "produces $(item)熱$(), used"
+        );
+        // 開きと閉じを入れ替えた出力は受け付けない。番号だけを見ると「1 回ずつ揃って
+        // いる」ので通ってしまい、`$(item)` と `$()` が入れ替わったまま復元される。
+        assert_eq!(
+            protected.restore("produces <x1>熱</x0>, used").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+        assert_eq!(
+            protected.restore("produces </x0>熱</x1>, used").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+        // 開き側を単独の表記にしても、役割が違うので受け付けない。
+        assert_eq!(
+            protected.restore("produces <x0/>熱</x1>, used").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+    }
+
+    #[test]
+    fn paired_tags_keep_unpaired_codes_as_single_tags() {
+        // `$(br)` は閉じない。対にできないので単独のタグとして表す。
+        let protected = ProtectedSource::new(
+            "$(br)Stone",
+            PlaceholderProfile::Patchouli,
+            ProtectStrategy::PairedTag,
+        );
+        assert_eq!(protected.masked_text(), "<x0/>Stone");
+        assert_eq!(protected.restore("<x0/>石").unwrap(), "$(br)石");
+    }
+
+    #[test]
+    fn paired_tags_reject_missing_duplicated_or_malformed_tags() {
+        let protected = ProtectedSource::new(
+            "$(item)heat$()",
+            PlaceholderProfile::Patchouli,
+            ProtectStrategy::PairedTag,
+        );
+        assert_eq!(protected.masked_text(), "<x0>heat</x1>");
+        // 欠落
+        assert_eq!(
+            protected.restore("<x0>熱").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+        // 重複
+        assert_eq!(
+            protected.restore("<x0>熱</x0></x1>").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+        // 原文に無い番号
+        assert_eq!(
+            protected.restore("<x0>熱</x1><x7/>").err(),
+            Some(ProtectError::UnknownMarker)
+        );
+        // 正規形でない表記（`<x00>` は `<x0>` として受理しない）
+        assert_eq!(
+            protected.restore("<x00>熱</x1>").err(),
+            Some(ProtectError::UnknownMarker)
+        );
+        // 開き側を単独の表記に置き換えると、番号は揃っていても役割が違う。
+        assert_eq!(
+            protected.restore("<x0/>熱</x1>").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+    }
+
+    #[test]
+    fn paired_tags_do_not_treat_non_closing_macros_as_openers() {
+        // `$(br)` と `$(k:…)` は閉じない。これらを開き側として積むと、後続の `$()` が
+        // 別のマクロの閉じ側と組になり、挟まれた本文が誤って「対の中」と判定される。
+        let protected = ProtectedSource::new(
+            "$(br)$(item)heat$()",
+            PlaceholderProfile::Patchouli,
+            ProtectStrategy::PairedTag,
+        );
+        assert_eq!(protected.masked_text(), "<x0/><x1>heat</x2>");
+        assert_eq!(
+            protected.restore("<x0/><x1>熱</x2>").unwrap(),
+            "$(br)$(item)熱$()"
+        );
     }
 
     #[test]

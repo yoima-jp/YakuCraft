@@ -23,9 +23,13 @@ fn options() -> PlamoProviderOptions {
         // `/props` を毎回叩かないよう、テストでは明示する。取得経路は別のテストで見る。
         context_size: Some(4096),
         protect_strategy: ProtectStrategy::BracketedIndex,
+        // テストは従来の挙動（全 profile で同じ方式）を前提にする。
+        protect_strategy_by_profile: false,
         shader_option_detector: None,
         entry_observer: None,
         include_context: true,
+        glossary_history: false,
+        include_glossary: true,
         timeout: Duration::from_secs(5),
     }
 }

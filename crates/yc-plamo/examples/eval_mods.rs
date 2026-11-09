@@ -52,6 +52,14 @@ const SAMPLE_OTHER_TARGET: usize = 30;
 const EXAMPLES_PER_MODEL: usize = 30;
 /// 決定性の確認に使うサンプル件数。
 const DETERMINISM_SAMPLE: usize = 25;
+/// 未訳のまま残った本文の代表例として残す件数。
+const ENCLOSED_EXAMPLES: usize = 12;
+/// 閉じコードを持たない装飾コード（`§7` など）で測る本文の長さ上限（文字数）。
+///
+/// `§7` は行末まで効くため、上限を外すと本文全体が 1 区間になり「原文のまま残ったか」が
+/// 常に偽になって指標が意味を失う。実データの `§7(Hidden Advancement)` のような短い
+/// ラベルだけを測る。
+const IMPLICIT_REGION_LIMIT: usize = 40;
 
 /// サンプル抽選のシード。固定して再現できるようにする。
 const SEED: u64 = 0x5EED_1234_ABCD_0001;
@@ -346,9 +354,21 @@ fn sample(candidates: &[Candidate], budget: usize) -> Vec<Candidate> {
     picked
 }
 
-// ---------------------------------------------------------------------------
-// chrF
-// ---------------------------------------------------------------------------
+/// 1 mod 分の、書式コードに挟まれた本文を持つ entry をすべて集める。
+///
+/// 通常のサンプル（`sample`）は書式入りを最大 120 件しか採らないため、対になった
+/// 書式コードを持つ entry は数件しか残らない（実測 7 件）。未訳率を測るには母数が
+/// 足りないので、この用途だけは該当 entry を全件使う。
+fn enclosed_sample(candidates: &[Candidate]) -> Vec<Candidate> {
+    let mut picked: Vec<Candidate> = candidates
+        .iter()
+        .filter(|candidate| !enclosed_regions(&candidate.source, candidate.profile).is_empty())
+        .cloned()
+        .collect();
+    let mut rng = Rng::new(SEED ^ 0xE11C_105E_D000_0001);
+    rng.shuffle(&mut picked);
+    picked
+}
 
 /// chrF（文字 n-gram の F スコア）。
 ///
@@ -359,45 +379,76 @@ fn sample(candidates: &[Candidate], budget: usize) -> Vec<Candidate> {
 /// 空白は除いた文字 n-gram を n = 1..=`max_n` で数える。日本語のように単語分割が要らない
 /// 比較に向く。`beta` は再現率の重み（chrF2 なら 2.0）。
 fn chrf(hypothesis: &str, reference: &str, max_n: usize, beta: f64) -> f64 {
-    let hypothesis: Vec<char> = hypothesis.chars().filter(|c| !c.is_whitespace()).collect();
-    let reference: Vec<char> = reference.chars().filter(|c| !c.is_whitespace()).collect();
-    if hypothesis.is_empty() || reference.is_empty() {
-        return 0.0;
-    }
-    let mut precision_sum = 0.0;
-    let mut recall_sum = 0.0;
-    let mut counted = 0;
-    for n in 1..=max_n {
-        let hyp = ngram_counts(&hypothesis, n);
-        let refr = ngram_counts(&reference, n);
-        let mut overlap = 0usize;
-        for (gram, count) in &hyp {
-            if let Some(other) = refr.get(gram) {
-                overlap += (*count).min(*other);
+    chrf_statistics(hypothesis, reference, max_n).score(beta)
+}
+
+/// chrF の n-gram 統計。コーパス全体で合算してから 1 回だけスコアを出すために持つ。
+///
+/// 標準の chrF はコーパス単位で数える。entry ごとにスコアを出して平均すると、
+/// 短い entry と長い entry の重みが同じになり、指標が変わる。両方を出して区別する。
+#[derive(Clone, Debug, Default)]
+struct ChrFStatistics {
+    /// 次数ごとの `(一致した n-gram 数, 仮説の n-gram 数, 参照の n-gram 数)`。
+    per_order: Vec<(usize, usize, usize)>,
+}
+
+impl ChrFStatistics {
+    fn add(&mut self, hypothesis: &str, reference: &str, max_n: usize) {
+        let hypothesis: Vec<char> = hypothesis.chars().filter(|c| !c.is_whitespace()).collect();
+        let reference: Vec<char> = reference.chars().filter(|c| !c.is_whitespace()).collect();
+        if hypothesis.is_empty() || reference.is_empty() {
+            return;
+        }
+        self.per_order.resize(max_n, (0, 0, 0));
+        for n in 1..=max_n {
+            let hyp = ngram_counts(&hypothesis, n);
+            let refr = ngram_counts(&reference, n);
+            let mut overlap = 0usize;
+            for (gram, count) in &hyp {
+                if let Some(other) = refr.get(gram) {
+                    overlap += (*count).min(*other);
+                }
             }
+            let slot = &mut self.per_order[n - 1];
+            slot.0 += overlap;
+            slot.1 += hyp.values().sum::<usize>();
+            slot.2 += refr.values().sum::<usize>();
         }
-        let hyp_total: usize = hyp.values().sum();
-        let ref_total: usize = refr.values().sum();
-        if hyp_total == 0 || ref_total == 0 {
-            continue;
+    }
+
+    /// 合算した統計から 1 回だけ β-F を計算する。
+    fn score(&self, beta: f64) -> f64 {
+        let mut precision_sum = 0.0;
+        let mut recall_sum = 0.0;
+        let mut counted = 0;
+        for (overlap, hyp_total, ref_total) in &self.per_order {
+            if *hyp_total == 0 || *ref_total == 0 {
+                continue;
+            }
+            precision_sum += *overlap as f64 / *hyp_total as f64;
+            recall_sum += *overlap as f64 / *ref_total as f64;
+            counted += 1;
         }
-        precision_sum += overlap as f64 / hyp_total as f64;
-        recall_sum += overlap as f64 / ref_total as f64;
-        counted += 1;
+        if counted == 0 {
+            return 0.0;
+        }
+        let precision = precision_sum / counted as f64;
+        let recall = recall_sum / counted as f64;
+        let beta_squared = beta * beta;
+        let denominator = beta_squared * precision + recall;
+        if denominator == 0.0 {
+            0.0
+        } else {
+            (1.0 + beta_squared) * precision * recall / denominator
+        }
     }
-    if counted == 0 {
-        return 0.0;
-    }
-    // 次数の平均を取ってから β-F を 1 回計算する。
-    let precision = precision_sum / counted as f64;
-    let recall = recall_sum / counted as f64;
-    let beta_squared = beta * beta;
-    let denominator = beta_squared * precision + recall;
-    if denominator == 0.0 {
-        0.0
-    } else {
-        (1.0 + beta_squared) * precision * recall / denominator
-    }
+}
+
+/// 1 件分の chrF 統計を返す。`chrf` と同じ定義。
+fn chrf_statistics(hypothesis: &str, reference: &str, max_n: usize) -> ChrFStatistics {
+    let mut statistics = ChrFStatistics::default();
+    statistics.add(hypothesis, reference, max_n);
+    statistics
 }
 
 fn ngram_counts(chars: &[char], n: usize) -> BTreeMap<Vec<char>, usize> {
@@ -409,6 +460,233 @@ fn ngram_counts(chars: &[char], n: usize) -> BTreeMap<Vec<char>, usize> {
         *counts.entry(window.to_vec()).or_insert(0) += 1;
     }
     counts
+}
+
+// ---------------------------------------------------------------------------
+// 書式コードに挟まれた本文の未訳率
+// ---------------------------------------------------------------------------
+
+/// 原文の中で「対になった書式コードに挟まれた本文」1 つ分。
+#[derive(Clone, Debug)]
+struct EnclosedRegion {
+    /// 挟まれた本文そのもの（原文の生テキスト）。
+    inner: String,
+    /// 開き側の書式コード。代表例の表示に使う。
+    opener: String,
+    /// 閉じ側の書式コード。代表例の表示に使う。
+    closer: String,
+}
+
+impl EnclosedRegion {
+    /// 原文どおりの表記。代表例をレポートへ載せるときに使う。
+    fn render(&self) -> String {
+        format!("{}{}{}", self.opener, self.inner, self.closer)
+    }
+}
+
+/// 行末まで効く装飾コード（`§7` / `&a` など）かどうか。
+///
+/// `is_opening_code` は「閉じ側でない保護区間」すべてを開き側とみなすため、`%1$s` や
+/// `{0}` も含んでしまう。暗黙の閉じを行末とみなしてよいのは装飾コードだけなので、
+/// ここで絞る。
+fn is_decoration_code(raw: &str) -> bool {
+    let mut characters = raw.chars();
+    matches!(characters.next(), Some('§' | '&'))
+        && characters
+            .next()
+            .is_some_and(|code| code.is_ascii_alphanumeric())
+        && characters.next().is_none()
+}
+
+/// 原文から、対になった書式コードに挟まれた本文を集める。
+///
+/// Patchouli の `$(item)heat$()`、Minecraft の `§a…§r`、FTB の `&a…&r` が対象。
+/// 開き側／閉じ側の判定は `yc_plamo` の `protect` と同じ規則を使う（プロダクト側の
+/// 保護区間の切り方と測定対象を一致させるため、規則は 1 箇所から借りる）。
+///
+/// `§` / `&` の装飾コードは `§r` で明示的に閉じないことが多い（`§7(Hidden)` のように
+/// 行末まで効く）。閉じが無い場合は行末（`\n`）または文字列の終端を閉じとみなす。
+/// そうしないと Create / Mekanism の `§` 入り entry が 1 件も測れない。
+fn enclosed_regions(source: &str, profile: PlaceholderProfile) -> Vec<EnclosedRegion> {
+    let spans = yc_validation::extract_protected_spans(source, profile);
+    let mut regions = Vec::new();
+    let mut opener: Option<&yc_validation::ProtectedSpan> = None;
+    for span in &spans {
+        if yc_plamo::protect::is_closing_code(&span.raw) {
+            if let Some(open) = opener.take() {
+                push_enclosed_region(source, open, span.start, &span.raw, &mut regions);
+            }
+        } else if is_decoration_code(&span.raw) {
+            // 直前の開きが閉じられないまま次の装飾コードが来たら、前の開きはここまで。
+            if let Some(open) = opener.replace(span) {
+                push_implicit_region(source, open, span.start, &mut regions);
+            }
+        } else if yc_plamo::protect::is_opening_code(&span.raw) {
+            // Patchouli のマクロは `$()` で閉じる。閉じないまま次のマクロが来たら、
+            // 前のマクロは範囲を決められないので測らない。
+            opener = Some(span);
+        }
+    }
+    // 閉じられないまま終わった装飾コードも、文字列の終端まで効く。
+    if let Some(open) = opener {
+        push_implicit_region(source, open, source.len(), &mut regions);
+    }
+    regions
+}
+
+/// 明示的な閉じコードを持つ区間を積む。
+fn push_enclosed_region(
+    source: &str,
+    open: &yc_validation::ProtectedSpan,
+    close_start: usize,
+    closer: &str,
+    regions: &mut Vec<EnclosedRegion>,
+) {
+    let inner = &source[open.end..close_start];
+    if inner.trim().is_empty() {
+        return;
+    }
+    regions.push(EnclosedRegion {
+        inner: inner.to_owned(),
+        opener: open.raw.clone(),
+        closer: closer.to_owned(),
+    });
+}
+
+/// 閉じコードが無い区間を、行末（または次の開き／文字列の終端）までとして積む。
+///
+/// 暗黙の閉じは `§` / `&` の装飾コードだけに許す。Patchouli の `$(item)` が閉じない
+/// 場合は本文の範囲を決められないので、測らない（製品側も対にしていない）。
+///
+/// 上限 [`IMPLICIT_REGION_LIMIT`] を設けるのは、`§7` が行末まで効くと本文全体が
+/// 1 区間になり、「原文がそのまま残ったか」がほぼ常に偽になって指標が意味を失うため。
+/// 実データの `§7(Hidden Advancement)` のような短いラベルだけを測る。
+fn push_implicit_region(
+    source: &str,
+    open: &yc_validation::ProtectedSpan,
+    limit: usize,
+    regions: &mut Vec<EnclosedRegion>,
+) {
+    if !is_decoration_code(&open.raw) {
+        return;
+    }
+    let rest = &source[open.end..limit];
+    let end = rest
+        .find('\n')
+        .map_or(open.end + rest.len(), |offset| open.end + offset);
+    let inner = &source[open.end..end];
+    if inner.trim().is_empty() || inner.chars().count() > IMPLICIT_REGION_LIMIT {
+        return;
+    }
+    regions.push(EnclosedRegion {
+        inner: inner.to_owned(),
+        opener: open.raw.clone(),
+        // 暗黙の閉じなので、閉じコードは空。代表例の表示では付けない。
+        closer: String::new(),
+    });
+}
+
+/// 挟まれた本文が訳文でも原文のまま残っているか。
+///
+/// 「未訳」の判定は、原文の本文が訳文にそのまま現れるかで行う。固有名詞が正当に
+/// 英語のまま残る場合と区別できないため、参照訳がある entry では参照訳と比べて
+/// 「参照訳でも同じ表記のまま」なら未訳と数えない（`judge` を参照）。
+fn enclosed_kept_verbatim(translation: &str, region: &EnclosedRegion) -> bool {
+    let inner = region.inner.trim();
+    if inner.is_empty() {
+        return false;
+    }
+    // 英字を含まない本文（記号だけ）は訳しようがないので対象外。
+    if !inner.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    translation.contains(inner)
+}
+
+/// 1 回の実行での、書式コードに挟まれた本文の集計。
+#[derive(Clone, Debug, Default, Serialize)]
+struct EnclosedStats {
+    /// 対になった書式コードを含む entry の数（サンプル全体）。
+    ///
+    /// 訳文が得られなかった entry も含める。除外すると保護区間の保持率が
+    /// 定義上 100% になり、失敗を隠してしまう。
+    entries: usize,
+    /// 対象になった本文の総数。訳文が無い entry の本文も数える。
+    regions: usize,
+    /// 訳文が得られた entry の数。
+    translated_entries: usize,
+    /// 訳文が得られた entry の本文の数。
+    translated_regions: usize,
+    /// 訳文でも原文のまま残った本文の数。
+    kept_verbatim: usize,
+    /// 参照訳でも同じ表記のまま残っている本文の数（未訳と数えない分）。
+    legitimately_kept: usize,
+    /// 保護区間が原文どおりに戻ったことを確認できた entry 数。
+    spans_preserved: usize,
+    /// 保護区間を確認できた entry の総数（訳文が得られた entry と同じ）。
+    ///
+    /// 訳文が無い entry は「保持できた」とは数えない。`entries` を分母にすると、
+    /// 失敗した entry が保持率を下げる形になり、失敗が表に出る。
+    spans_total: usize,
+    /// 対象 entry のコーパス chrF。
+    corpus_chrf: f64,
+    /// 未訳のまま残った本文の代表例。レポートの根拠として残す。
+    examples: Vec<String>,
+}
+
+/// 書式コードに挟まれた本文の未訳率を集計する。
+///
+/// 「未訳」は、原文の本文が訳文にそのまま現れるかで判定する。固有名詞が正当に英語の
+/// まま残る場合と区別できないため、参照訳がある entry では参照訳の側でも同じ表記が
+/// 残っているかを確かめ、残っている分は `legitimately_kept` として未訳から除く。
+///
+/// 訳文が得られなかった entry も `entries` / `regions` に数える。以前は先に除外して
+/// いたため、残った entry がすべて `spans_preserved` に加算され、保護区間の保持率が
+/// 定義上 100% になっていた（失敗が表に出ない）。
+fn enclosed_stats(outcomes: &[EntryOutcome]) -> EnclosedStats {
+    let mut stats = EnclosedStats::default();
+    let mut corpus = ChrFStatistics::default();
+    for outcome in outcomes {
+        let regions = enclosed_regions(&outcome.candidate.source, outcome.candidate.profile);
+        if regions.is_empty() {
+            continue;
+        }
+        // 分母は訳文の有無に関わらず数える。
+        stats.entries += 1;
+        stats.regions += regions.len();
+        let Some(translation) = outcome.translation.as_deref() else {
+            continue;
+        };
+        // 訳文が得られた entry だけが「保持を確認できた」対象になる。
+        stats.translated_entries += 1;
+        stats.translated_regions += regions.len();
+        stats.spans_total += 1;
+        stats.spans_preserved += 1;
+        for region in &regions {
+            if !enclosed_kept_verbatim(translation, region) {
+                continue;
+            }
+            // 参照訳でも同じ表記なら、訳さないのが正しい（固有名詞など）。
+            let legitimately = outcome
+                .candidate
+                .reference
+                .as_deref()
+                .is_some_and(|reference| reference.contains(region.inner.trim()));
+            if legitimately {
+                stats.legitimately_kept += 1;
+            } else {
+                stats.kept_verbatim += 1;
+                if stats.examples.len() < ENCLOSED_EXAMPLES {
+                    stats.examples.push(region.render());
+                }
+            }
+        }
+        if let Some(reference) = outcome.candidate.reference.as_deref() {
+            corpus.add(translation, reference, 6);
+        }
+    }
+    stats.corpus_chrf = corpus.score(2.0);
+    stats
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +794,13 @@ impl StabilityStats {
 #[derive(Clone, Debug, Default, Serialize)]
 struct ChrFStats {
     entries: usize,
+    /// entry ごとの chrF の単純平均。短い entry と長い entry を同じ重みで扱う。
     mean: f64,
+    /// コーパス chrF。全 entry の n-gram 統計を合算してから 1 回だけスコアを出す。
+    ///
+    /// 標準の chrF はこちら。長い entry の寄与が大きくなるため `mean` とは値が違う。
+    /// 表では両方を並べ、比較には `corpus` を使う。
+    corpus: f64,
     median: f64,
 }
 
@@ -573,6 +857,18 @@ struct RunResult {
     safety: SafetyStats,
     stability: StabilityStats,
     chrf: ChrFStats,
+    /// 書式コードに挟まれた本文の未訳率。対象 entry が無ければ 0。
+    enclosed: EnclosedStats,
+    /// 用語集の遵守率の分子・分母。率だけでは分母の小ささが見えないため件数も残す。
+    glossary_applicable: usize,
+    glossary_adhered: usize,
+    /// 用語が原文に現れる entry（affected entries）の数とコーパス chrF。
+    ///
+    /// 全体の chrF は用語と無関係な entry にも薄まるため、用語集の効果はこちらで見る。
+    glossary_affected_entries: usize,
+    glossary_affected_chrf: f64,
+    /// 使った用語集そのもの。率の根拠を後から検算できるように残す。
+    glossary_used: Vec<(String, String)>,
     per_mod: Vec<ModResult>,
     /// 呼び出し全体を落とした失敗の表示名（`UnsupportedTargetLanguage` など）。
     /// entry 単位の失敗しか無かった場合は空。
@@ -823,12 +1119,16 @@ async fn run_sample(
 type ReportSink = Arc<Mutex<Vec<EntryReport>>>;
 
 /// 観測フック付きの provider を作る。フックは共有バッファへ追記するだけ。
+///
+/// `strategy` が `None` なら profile ごとの既定（`protect_strategy_by_profile`）を使う。
 fn provider_with_reports(
     base_url: &str,
     api_key: &str,
-    strategy: ProtectStrategy,
+    strategy: Option<ProtectStrategy>,
     context_size: u32,
     include_context: bool,
+    glossary_history: bool,
+    include_glossary: bool,
 ) -> Result<(PlamoProvider, ReportSink), String> {
     let reports: ReportSink = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&reports);
@@ -836,9 +1136,12 @@ fn provider_with_reports(
         base_url,
         Some(api_key.to_owned()),
         PlamoProviderOptions {
-            protect_strategy: strategy,
+            protect_strategy: strategy.unwrap_or_default(),
+            protect_strategy_by_profile: strategy.is_none(),
             context_size: Some(context_size),
             include_context,
+            glossary_history,
+            include_glossary,
             entry_observer: Some(Arc::new(move |report: &EntryReport| {
                 sink.lock()
                     .expect("report mutex poisoned")
@@ -861,6 +1164,7 @@ fn summarize(
         ..SafetyStats::default()
     };
     let mut scores = Vec::new();
+    let mut corpus = ChrFStatistics::default();
     let mut generated_tokens = 0_u64;
     let mut tps_sum = 0.0_f64;
     let mut tps_count = 0_usize;
@@ -871,6 +1175,7 @@ fn summarize(
                 safety.preserved += 1;
                 if let Some(reference) = outcome.candidate.reference.as_deref() {
                     scores.push(chrf(translation, reference, 6, 2.0));
+                    corpus.add(translation, reference, 6);
                 }
             }
             None => match outcome.failure.as_deref() {
@@ -925,6 +1230,7 @@ fn summarize(
         } else {
             scores.iter().sum::<f64>() / scores.len() as f64
         },
+        corpus: corpus.score(2.0),
         median: if scores.is_empty() {
             0.0
         } else {
@@ -944,12 +1250,14 @@ fn summarize(
         .into_iter()
         .map(|(mod_name, outcomes)| {
             let mut mod_scores = Vec::new();
+            let mut mod_corpus = ChrFStatistics::default();
             let mut preserved = 0;
             for outcome in &outcomes {
                 if let Some(translation) = outcome.translation.as_deref() {
                     preserved += 1;
                     if let Some(reference) = outcome.candidate.reference.as_deref() {
                         mod_scores.push(chrf(translation, reference, 6, 2.0));
+                        mod_corpus.add(translation, reference, 6);
                     }
                 }
             }
@@ -975,6 +1283,7 @@ fn summarize(
                     } else {
                         mod_scores.iter().sum::<f64>() / mod_scores.len() as f64
                     },
+                    corpus: mod_corpus.score(2.0),
                     median: if mod_scores.is_empty() {
                         0.0
                     } else {
@@ -1038,6 +1347,7 @@ enum StrategyChoice {
     Verbatim,
     BracketedIndex,
     AsciiMarker,
+    PairedTag,
 }
 
 impl StrategyChoice {
@@ -1047,6 +1357,7 @@ impl StrategyChoice {
             Self::Verbatim => "verbatim",
             Self::BracketedIndex => "bracketed_index",
             Self::AsciiMarker => "ascii_marker",
+            Self::PairedTag => "paired_tag",
         }
     }
 
@@ -1056,8 +1367,58 @@ impl StrategyChoice {
             Self::Verbatim => ProtectStrategy::Verbatim,
             Self::BracketedIndex => ProtectStrategy::BracketedIndex,
             Self::AsciiMarker => ProtectStrategy::AsciiMarker,
+            Self::PairedTag => ProtectStrategy::PairedTag,
         }
     }
+
+    /// provider に渡す方式。`Default` は profile ごとの既定に委ねるので `None`。
+    fn provider_strategy(self) -> Option<ProtectStrategy> {
+        match self {
+            Self::Default => None,
+            other => Some(other.strategy()),
+        }
+    }
+}
+
+/// 用語集の与え方。遵守率の比較に使う。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlossaryMode {
+    /// `glossary` 要素だけ（従来の既定）。
+    ElementOnly,
+    /// `glossary` 要素 + 履歴の `input`/`output` 対（新しい既定）。
+    ElementAndHistory,
+    /// 履歴の対だけ。
+    HistoryOnly,
+}
+
+impl GlossaryMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ElementOnly => "glossary_element",
+            Self::ElementAndHistory => "glossary_element_history",
+            Self::HistoryOnly => "glossary_history",
+        }
+    }
+
+    /// provider の設定へ落とす。`HistoryOnly` だけが `glossary` 要素を落とす。
+    fn history_enabled(self) -> bool {
+        !matches!(self, Self::ElementOnly)
+    }
+
+    /// `glossary` 要素を送るか。
+    fn element_enabled(self) -> bool {
+        !matches!(self, Self::HistoryOnly)
+    }
+}
+
+/// 用語集・文脈の比較 1 条件分の設定。
+struct Condition {
+    include_context: bool,
+    label: &'static str,
+    mode: GlossaryMode,
+    /// profile ごとの保護方式を使うか（`false` なら全 profile で `BracketedIndex`）。
+    by_profile: bool,
+    terms: Vec<(String, String)>,
 }
 
 struct Args {
@@ -1066,6 +1427,13 @@ struct Args {
     strategies: Vec<StrategyChoice>,
     /// context と glossary の比較も回すか（2B GPU のみ）。
     context_study: bool,
+    /// 書式コードに挟まれた本文の比較も回すか（2B GPU のみ）。
+    enclosed_study: bool,
+    /// 採用した既定での用語集遵守率を複数モデルで確認するか（GPU のみ）。
+    ///
+    /// `context_study` は 2B GPU で方式を選ぶための比較なので、0.8B / 8B では
+    /// 用語集を渡さない。採用した方式が他のモデルでも効くかは別に測る必要がある。
+    glossary_models_study: bool,
     /// 他言語の sanity も回すか。
     other_targets: bool,
     /// 出力ファイル名の接尾辞。実行を設定ごとに分けて流すときに付ける。
@@ -1080,6 +1448,8 @@ fn parse_args() -> Args {
         backends: vec![Backend::Cpu, Backend::Gpu],
         strategies: vec![StrategyChoice::Default],
         context_study: true,
+        enclosed_study: true,
+        glossary_models_study: true,
         other_targets: true,
         tag: None,
         sample_override: None,
@@ -1110,6 +1480,7 @@ fn parse_args() -> Args {
                         StrategyChoice::Verbatim,
                         StrategyChoice::BracketedIndex,
                         StrategyChoice::AsciiMarker,
+                        StrategyChoice::PairedTag,
                     ]
                 } else {
                     value
@@ -1118,6 +1489,7 @@ fn parse_args() -> Args {
                             "verbatim" => StrategyChoice::Verbatim,
                             "bracketed" | "bracketed_index" => StrategyChoice::BracketedIndex,
                             "ascii" | "ascii_marker" => StrategyChoice::AsciiMarker,
+                            "paired" | "paired_tag" => StrategyChoice::PairedTag,
                             _ => StrategyChoice::Default,
                         })
                         .collect()
@@ -1126,6 +1498,14 @@ fn parse_args() -> Args {
             }
             "--no-context-study" => {
                 args.context_study = false;
+                index += 1;
+            }
+            "--no-enclosed-study" => {
+                args.enclosed_study = false;
+                index += 1;
+            }
+            "--no-glossary-models-study" => {
+                args.glossary_models_study = false;
                 index += 1;
             }
             "--tag" => {
@@ -1223,8 +1603,10 @@ async fn main() -> Result<(), String> {
                 let (provider, reports) = match provider_with_reports(
                     server.base_url(),
                     server.api_key(),
-                    strategy.strategy(),
+                    strategy.provider_strategy(),
                     8192,
+                    true,
+                    false,
                     true,
                 ) {
                     Ok(created) => created,
@@ -1348,6 +1730,12 @@ async fn main() -> Result<(), String> {
                     safety,
                     stability,
                     chrf,
+                    enclosed: enclosed_stats(&outcomes),
+                    glossary_applicable: 0,
+                    glossary_adhered: 0,
+                    glossary_affected_entries: 0,
+                    glossary_affected_chrf: 0.0,
+                    glossary_used: Vec::new(),
                     per_mod,
                     batch_errors,
                     examples_good,
@@ -1380,8 +1768,10 @@ async fn main() -> Result<(), String> {
             })
             .collect();
 
-        // 参照対から小さな用語集を作る。公式訳がある item 名だけを使う。
-        let glossary = build_glossary(&datasets, 20);
+        // 参照対から用語集を作る。公式訳がある item 名だけを使い、サンプルに実際に
+        // 現れる語（＝遵守率の分母に入る語）に絞る。20 語では分母が十数件しか無く、
+        // 遵守率の差が偶然と区別できないため、40〜60 語まで増やす。
+        let glossary = build_realistic_glossary(&sampled, 60);
         eprintln!("glossary: {} terms", glossary.len());
 
         let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
@@ -1391,26 +1781,80 @@ async fn main() -> Result<(), String> {
                 return finish(&runs, &dumps, &out_dir, args.tag.as_deref());
             }
         };
-        // 文脈あり / なし / あり+用語集。文脈の有無は provider の `include_context` で
+        // 文脈あり / なし / 用語集の与え方。文脈の有無は provider の `include_context` で
         // 切り替える（mod 名を空にするだけでは翻訳キーと種別ヒントが残ってしまう）。
-        for (include_context, terms) in [
-            (true, Vec::new()),
-            (false, Vec::new()),
-            (true, glossary.clone()),
-        ] {
-            let label = match (include_context, terms.is_empty()) {
-                (true, true) => "context_on",
-                (false, _) => "context_off",
-                (true, false) => "context_on_glossary",
-            };
+        //
+        // `legacy_baseline` は変更前の既定（全 profile で `BracketedIndex`、用語集は
+        // `glossary` 要素だけ、履歴なし）。`default_after` が出荷する既定
+        // （profile ごとの方式 + `glossary` 要素だけ、履歴なし）。before → after を
+        // 同じサンプル・同じ用語集で比べるためにこの 2 つを先頭に置く。
+        let conditions = vec![
+            Condition {
+                include_context: true,
+                label: "legacy_baseline",
+                mode: GlossaryMode::ElementOnly,
+                by_profile: false,
+                terms: glossary.clone(),
+            },
+            Condition {
+                include_context: true,
+                label: "default_after",
+                mode: GlossaryMode::ElementOnly,
+                by_profile: true,
+                terms: glossary.clone(),
+            },
+            Condition {
+                include_context: true,
+                label: "context_on",
+                mode: GlossaryMode::ElementOnly,
+                by_profile: false,
+                terms: Vec::new(),
+            },
+            Condition {
+                include_context: false,
+                label: "context_off",
+                mode: GlossaryMode::ElementOnly,
+                by_profile: false,
+                terms: Vec::new(),
+            },
+            Condition {
+                include_context: true,
+                label: GlossaryMode::ElementAndHistory.label(),
+                mode: GlossaryMode::ElementAndHistory,
+                by_profile: false,
+                terms: glossary.clone(),
+            },
+            Condition {
+                include_context: true,
+                label: GlossaryMode::HistoryOnly.label(),
+                mode: GlossaryMode::HistoryOnly,
+                by_profile: false,
+                terms: glossary.clone(),
+            },
+        ];
+        for Condition {
+            include_context,
+            label,
+            mode,
+            by_profile,
+            terms,
+        } in conditions
+        {
             eprintln!("=== 2B / Gpu / {label} ===");
-            // provider は文脈の有無ごとに作り直す（設定は構築時に固定される）。
+            // provider は文脈の有無・履歴の有無・profile ごとの方式ごとに作り直す
+            // （設定は構築時に固定される）。
             let (provider, reports) = provider_with_reports(
                 server.base_url(),
                 server.api_key(),
-                ProtectStrategy::default(),
+                if by_profile {
+                    None
+                } else {
+                    Some(ProtectStrategy::BracketedIndex)
+                },
                 8192,
                 include_context,
+                mode.history_enabled(),
+                mode.element_enabled(),
             )?;
             let started = Instant::now();
             let sample = run_sample(
@@ -1431,7 +1875,10 @@ async fn main() -> Result<(), String> {
             dumps.extend(dump_outcomes("2B", "Gpu", label, &outcomes));
             let wall_seconds = started.elapsed().as_secs_f64();
             let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
-            let adherence = glossary_adherence(&outcomes, &terms);
+            let (glossary_applicable, glossary_adhered) = glossary_counts(&outcomes, &terms);
+            let (glossary_affected_entries, glossary_affected_chrf) =
+                glossary_affected_chrf(&outcomes, &terms);
+            let enclosed = enclosed_stats(&outcomes);
             let (examples_good, examples_bad) = pick_examples(&outcomes, EXAMPLES_PER_MODEL);
             let mut stability = StabilityStats::from_safety(&safety);
             stability.record_batch_failures(&batch_failures);
@@ -1447,17 +1894,235 @@ async fn main() -> Result<(), String> {
                 safety,
                 stability,
                 chrf,
+                enclosed,
+                glossary_applicable,
+                glossary_adhered,
+                glossary_affected_entries,
+                glossary_affected_chrf,
+                glossary_used: terms.clone(),
                 per_mod,
                 batch_errors,
                 examples_good,
                 examples_bad,
             });
-            eprintln!("  glossary adherence: {adherence:.3}");
+            eprintln!(
+                "  corpus chrF: {:.4}, glossary adherence: {glossary_adhered}/{glossary_applicable}",
+                runs.last().expect("just pushed").chrf.corpus
+            );
         }
         server.shutdown().await;
     }
 
-    // 他言語の sanity。
+    // 書式コードに挟まれた本文の比較（2B GPU のみ）。strategy ごとに未訳率を測る。
+    if args.enclosed_study
+        && args
+            .models
+            .iter()
+            .any(|model| model.eq_ignore_ascii_case("2b"))
+        && args.backends.contains(&Backend::Gpu)
+        && let Some(model) = find_model("plamo-3-translate-2b")
+    {
+        // 対になった書式コードを持つ entry を全件使う。通常サンプルでは数件しか
+        // 残らず、未訳率の分母が足りない。
+        let sampled: Vec<(String, String, Vec<Candidate>)> = datasets
+            .iter()
+            .map(|(spec, candidates)| {
+                (
+                    spec.display_name.to_owned(),
+                    spec.namespace.to_owned(),
+                    enclosed_sample(candidates),
+                )
+            })
+            .collect();
+        let total: usize = sampled.iter().map(|(_, _, items)| items.len()).sum();
+        eprintln!("=== 2B / Gpu / enclosed study ({total} entries) ===");
+
+        let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
+            Ok(started) => started,
+            Err(error) => {
+                eprintln!("skipping enclosed study: {error}");
+                return finish(&runs, &dumps, &out_dir, args.tag.as_deref());
+            }
+        };
+        for strategy in [
+            StrategyChoice::Verbatim,
+            StrategyChoice::BracketedIndex,
+            StrategyChoice::AsciiMarker,
+            StrategyChoice::PairedTag,
+            StrategyChoice::Default,
+        ] {
+            let label = format!("enclosed_{}", strategy.label());
+            eprintln!("=== 2B / Gpu / {label} ===");
+            let (provider, reports) = provider_with_reports(
+                server.base_url(),
+                server.api_key(),
+                strategy.provider_strategy(),
+                8192,
+                true,
+                false,
+                true,
+            )?;
+            let started = Instant::now();
+            let sample = run_sample(
+                &provider,
+                &reports,
+                &sampled,
+                &[],
+                "ja_jp",
+                PlamoProviderOptions::default().timeout,
+                &server,
+            )
+            .await;
+            let batch_errors = batch_error_labels(&sample.batch_failures);
+
+            let batch_failures = sample.batch_failures;
+            let server_restarts = sample.server_restarts;
+            let outcomes = sample.entries;
+            dumps.extend(dump_outcomes("2B", "Gpu", &label, &outcomes));
+            let wall_seconds = started.elapsed().as_secs_f64();
+            let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
+            let enclosed = enclosed_stats(&outcomes);
+            let mut stability = StabilityStats::from_safety(&safety);
+            stability.record_batch_failures(&batch_failures);
+            stability.server_restarts = server_restarts;
+            eprintln!(
+                "  untranslated: {}/{}, entries {}/{}, chrF: {:.4}",
+                enclosed.kept_verbatim,
+                enclosed.translated_regions,
+                enclosed.translated_entries,
+                enclosed.entries,
+                chrf.corpus
+            );
+            runs.push(RunResult {
+                model: "2B".to_owned(),
+                backend: "Gpu".to_owned(),
+                strategy: label,
+                sample_size: outcomes.len(),
+                context_enabled: true,
+                glossary_terms: 0,
+                speed,
+                safety,
+                stability,
+                chrf,
+                enclosed,
+                glossary_applicable: 0,
+                glossary_adhered: 0,
+                glossary_affected_entries: 0,
+                glossary_affected_chrf: 0.0,
+                glossary_used: Vec::new(),
+                per_mod,
+                batch_errors,
+                examples_good: Vec::new(),
+                examples_bad: Vec::new(),
+            });
+        }
+        server.shutdown().await;
+    }
+
+    // 採用した既定での用語集遵守率を 0.8B / 2B / 8B GPU で確認する。
+    //
+    // `context_study` は 2B GPU で方式を選ぶための比較で、0.8B / 8B の通常実行は
+    // 用語集を渡さない。2B で選んだ方式（`glossary` 要素だけ + profile ごとの保護方式）が
+    // 他のモデルでも遵守率と chrF を保つかは、同じ条件で測らないと分からない。
+    if args.glossary_models_study && args.backends.contains(&Backend::Gpu) {
+        let budget = SAMPLE_PLAIN + SAMPLE_FORMATTED_CAP;
+        let sampled: Vec<(String, String, Vec<Candidate>)> = datasets
+            .iter()
+            .map(|(spec, candidates)| {
+                (
+                    spec.display_name.to_owned(),
+                    spec.namespace.to_owned(),
+                    sample(candidates, budget),
+                )
+            })
+            .collect();
+        // 用語集は 2B の比較と同じ規則（サンプルに現れる語から 60 語）で作る。
+        let glossary = build_realistic_glossary(&sampled, 60);
+        eprintln!("=== glossary across models: {} terms ===", glossary.len());
+
+        for model_id in &args.models {
+            let Some(model) = find_model(&format!("plamo-3-translate-{model_id}")).or_else(|| {
+                catalog::models()
+                    .iter()
+                    .find(|model| model.parameters.eq_ignore_ascii_case(model_id))
+            }) else {
+                continue;
+            };
+            eprintln!("=== {} / Gpu / glossary_default ===", model.parameters);
+            let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
+                Ok(started) => started,
+                Err(error) => {
+                    eprintln!("skipping {} glossary: {error}", model.parameters);
+                    continue;
+                }
+            };
+            // 出荷する既定（profile ごとの保護方式、`glossary` 要素のみ、履歴なし）。
+            let (provider, reports) = provider_with_reports(
+                server.base_url(),
+                server.api_key(),
+                None,
+                8192,
+                true,
+                false,
+                true,
+            )?;
+            let started = Instant::now();
+            let sample = run_sample(
+                &provider,
+                &reports,
+                &sampled,
+                &glossary,
+                "ja_jp",
+                PlamoProviderOptions::default().timeout,
+                &server,
+            )
+            .await;
+            let batch_errors = batch_error_labels(&sample.batch_failures);
+
+            let batch_failures = sample.batch_failures;
+            let server_restarts = sample.server_restarts;
+            let outcomes = sample.entries;
+            let label = "glossary_default";
+            dumps.extend(dump_outcomes(model.parameters, "Gpu", label, &outcomes));
+            let wall_seconds = started.elapsed().as_secs_f64();
+            let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
+            let (glossary_applicable, glossary_adhered) = glossary_counts(&outcomes, &glossary);
+            let (glossary_affected_entries, glossary_affected_chrf) =
+                glossary_affected_chrf(&outcomes, &glossary);
+            let enclosed = enclosed_stats(&outcomes);
+            let mut stability = StabilityStats::from_safety(&safety);
+            stability.record_batch_failures(&batch_failures);
+            stability.server_restarts = server_restarts;
+            eprintln!(
+                "  adherence: {glossary_adhered}/{glossary_applicable}, chrF: {:.4}",
+                chrf.corpus
+            );
+            runs.push(RunResult {
+                model: model.parameters.to_owned(),
+                backend: "Gpu".to_owned(),
+                strategy: label.to_owned(),
+                sample_size: outcomes.len(),
+                context_enabled: true,
+                glossary_terms: glossary.len(),
+                speed,
+                safety,
+                stability,
+                chrf,
+                enclosed,
+                glossary_applicable,
+                glossary_adhered,
+                glossary_affected_entries,
+                glossary_affected_chrf,
+                glossary_used: glossary.clone(),
+                per_mod,
+                batch_errors,
+                examples_good: Vec::new(),
+                examples_bad: Vec::new(),
+            });
+            server.shutdown().await;
+        }
+    }
+
     if args.other_targets
         && let Some(model) = find_model("plamo-3-translate-2b")
     {
@@ -1484,8 +2149,10 @@ async fn main() -> Result<(), String> {
         let (provider, reports) = provider_with_reports(
             server.base_url(),
             server.api_key(),
-            ProtectStrategy::default(),
+            None,
             8192,
+            true,
+            false,
             true,
         )?;
         for target in ["zh_cn", "ko_kr", "de_de", "pt_br"] {
@@ -1528,6 +2195,12 @@ async fn main() -> Result<(), String> {
                 safety,
                 stability,
                 chrf,
+                enclosed: enclosed_stats(&outcomes),
+                glossary_applicable: 0,
+                glossary_adhered: 0,
+                glossary_affected_entries: 0,
+                glossary_affected_chrf: 0.0,
+                glossary_used: Vec::new(),
                 per_mod,
                 batch_errors,
                 examples_good: Vec::new(),
@@ -1545,6 +2218,10 @@ fn count_failure(safety: &SafetyStats, reason: &str) -> usize {
 }
 
 /// 参照訳から小さな用語集を作る。item 名らしい短い原文だけを選ぶ。
+///
+/// 実データに即した用語集が要る場合は [`build_realistic_glossary`] を使う。こちらは
+/// 先頭から拾うだけなので、サンプルに現れない語が混ざりやすい。
+#[allow(dead_code)]
 fn build_glossary(datasets: &[(ModSpec, Vec<Candidate>)], limit: usize) -> Vec<(String, String)> {
     let mut terms = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1574,33 +2251,161 @@ fn build_glossary(datasets: &[(ModSpec, Vec<Candidate>)], limit: usize) -> Vec<(
     terms
 }
 
-/// 用語集の遵守率。原文に用語が現れた entry のうち、訳文に訳語が入った割合。
-fn glossary_adherence(outcomes: &[EntryOutcome], terms: &[(String, String)]) -> f64 {
-    if terms.is_empty() {
-        return 0.0;
-    }
-    let mut applicable = 0;
-    let mut adhered = 0;
-    for outcome in outcomes {
-        let Some(translation) = outcome.translation.as_deref() else {
-            continue;
-        };
-        let source = outcome.candidate.source.to_lowercase();
-        for (source_term, target_term) in terms {
-            if !source.contains(&source_term.to_lowercase()) {
+/// 実データに即した用語集を作る。
+///
+/// 以前は 20 語を先頭から拾っていたため、サンプルに現れない語が混ざり、遵守率の
+/// 分母が 36 件しか無かった（差が偶然と区別できない）。ここでは
+/// 1. 公式訳がある短い名前だけを使い、
+/// 2. **サンプルに実際に現れる語**（＝遵守率の分母に入る語）に絞り、
+/// 3. 長い語を優先して 40〜60 語まで集める。
+///
+/// 2 が重要。全候補から選ぶと、サンプルが引かなかった語が大半を占め、分母が十数件に
+/// なって差が読めない。サンプルから選べば、用語を渡した意味のある比較になる。
+///
+/// 3 の長い語優先は、`Iron` と `Iron Ingot` のような重なりで短い方が先に当たるのを
+/// 避けるため（本番の `select_glossary_terms` も長い順に並べる）。
+fn build_realistic_glossary(
+    sampled: &[(String, String, Vec<Candidate>)],
+    limit: usize,
+) -> Vec<(String, String)> {
+    // サンプル内の原文をまとめる。用語が実際に現れるかをここで判定する。
+    let sources: Vec<String> = sampled
+        .iter()
+        .flat_map(|(_, _, entries)| entries.iter().map(|entry| entry.source.clone()))
+        .collect();
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (_, _, entries) in sampled {
+        for candidate in entries {
+            let Some(reference) = candidate.reference.as_deref() else {
+                continue;
+            };
+            let words = candidate.source.split_whitespace().count();
+            if !(1..=3).contains(&words)
+                || candidate.source.len() > 24
+                || candidate.formatted
+                || reference.len() > 24
+                || candidate.source.contains('.')
+            {
                 continue;
             }
-            applicable += 1;
-            if translation.contains(target_term.as_str()) {
-                adhered += 1;
+            // 訳語が原文と同じ（固有名詞をそのまま残す）なら、遵守率の判定に使えない。
+            if reference.eq_ignore_ascii_case(&candidate.source) {
+                continue;
+            }
+            if seen.insert(candidate.source.to_lowercase()) {
+                candidates.push((candidate.source.clone(), reference.to_owned()));
             }
         }
     }
+
+    // サンプル内で 2 件以上の原文に現れる語だけを残す。1 件にしか出ない語は、その
+    // entry が落ちると分母から消え、遵守率が数件で揺れる。
+    let glossary: Vec<yc_ai::GlossaryTerm> = candidates
+        .iter()
+        .map(|(source, target)| yc_ai::GlossaryTerm {
+            source_term: source.clone(),
+            target_term: target.clone(),
+        })
+        .collect();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for source in &sources {
+        for (term, _) in &candidates {
+            if yc_plamo::pfml3::select_glossary_terms(source, &glossary)
+                .iter()
+                .any(|(matched, _)| matched == term)
+            {
+                *counts.entry(term.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    candidates.retain(|(term, _)| counts.get(term).copied().unwrap_or(0) >= 2);
+    // 長い語を先に。同じ長さなら元の並びを保つ（`sort_by_key` は安定）。
+    candidates.sort_by_key(|entry| std::cmp::Reverse(entry.0.chars().count()));
+    candidates.truncate(limit);
+    candidates
+}
+
+/// 用語集の遵守率。原文に用語が現れた entry のうち、訳文に訳語が入った割合。
+///
+/// 照合はプロダクト側（`yc_plamo::pfml3::select_glossary_terms`）と同じ規則を使う。
+/// ここだけ部分一致にすると、製品が送っていない語を「遵守すべき語」として数えてしまう。
+#[allow(dead_code)]
+fn glossary_adherence(outcomes: &[EntryOutcome], terms: &[(String, String)]) -> f64 {
+    let (applicable, adhered) = glossary_counts(outcomes, terms);
     if applicable == 0 {
         0.0
     } else {
         adhered as f64 / applicable as f64
     }
+}
+/// 遵守率の分子・分母。表に件数も出すために分けて返す。
+///
+/// 原文に用語が現れる entry を**すべて**対象にする（原文が用語そのものの entry も、
+/// 訳文が得られなかった entry も含む）。以前は両方を分母から除いていたが、依頼された
+/// 定義は「原文に用語が現れる entry」なので除外しない。訳文が無い entry は
+/// **未遵守**として数える（訳語を出せなかったのだから、遵守していない）。
+fn glossary_counts(outcomes: &[EntryOutcome], terms: &[(String, String)]) -> (usize, usize) {
+    if terms.is_empty() {
+        return (0, 0);
+    }
+    let glossary: Vec<yc_ai::GlossaryTerm> = terms
+        .iter()
+        .map(|(source, target)| yc_ai::GlossaryTerm {
+            source_term: source.clone(),
+            target_term: target.clone(),
+        })
+        .collect();
+    let mut applicable = 0;
+    let mut adhered = 0;
+    for outcome in outcomes {
+        let translation = outcome.translation.as_deref();
+        for (_, target_term) in
+            yc_plamo::pfml3::select_glossary_terms(&outcome.candidate.source, &glossary)
+        {
+            applicable += 1;
+            // 訳文が無ければ未遵守。分母から外すと失敗が遵守率に出ない。
+            if translation.is_some_and(|text| text.contains(target_term.as_str())) {
+                adhered += 1;
+            }
+        }
+    }
+    (applicable, adhered)
+}
+
+/// 用語が原文に現れる entry（affected entries）のコーパス chrF。
+///
+/// 全体の chrF は用語と無関係な entry にも薄まるため、用語集の効果を見るには
+/// 該当 entry だけの chrF が要る。複数の用語が当たる entry も 1 回だけ数える。
+/// 参照訳があり、かつ訳文が得られた entry だけを対象にする（chrF の定義上）。
+fn glossary_affected_chrf(outcomes: &[EntryOutcome], terms: &[(String, String)]) -> (usize, f64) {
+    if terms.is_empty() {
+        return (0, 0.0);
+    }
+    let glossary: Vec<yc_ai::GlossaryTerm> = terms
+        .iter()
+        .map(|(source, target)| yc_ai::GlossaryTerm {
+            source_term: source.clone(),
+            target_term: target.clone(),
+        })
+        .collect();
+    let mut corpus = ChrFStatistics::default();
+    let mut entries = 0;
+    for outcome in outcomes {
+        if yc_plamo::pfml3::select_glossary_terms(&outcome.candidate.source, &glossary).is_empty() {
+            continue;
+        }
+        let (Some(translation), Some(reference)) = (
+            outcome.translation.as_deref(),
+            outcome.candidate.reference.as_deref(),
+        ) else {
+            continue;
+        };
+        corpus.add(translation, reference, 6);
+        entries += 1;
+    }
+    (entries, corpus.score(2.0))
 }
 
 /// 代表例を chrF の上下から拾う。
@@ -1732,8 +2537,8 @@ fn dump_outcomes(
 fn render_markdown(runs: &[RunResult]) -> String {
     let mut out = String::new();
     out.push_str("## 実行結果\n\n");
-    out.push_str("| model | backend | strategy | n | entries/s | tok/s | load s | wall s | preserved | chrF |\n");
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("| model | backend | strategy | n | entries/s | tok/s | load s | wall s | preserved | chrF (corpus) | chrF (mean) |\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n");
     for run in runs {
         let preserved = if run.safety.total == 0 {
             0.0
@@ -1741,7 +2546,7 @@ fn render_markdown(runs: &[RunResult]) -> String {
             run.safety.preserved as f64 / run.safety.total as f64 * 100.0
         };
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1}% | {:.4} |\n",
+            "| {} | {} | {} | {} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1}% | {:.4} | {:.4} |\n",
             run.model,
             run.backend,
             run.strategy,
@@ -1751,8 +2556,81 @@ fn render_markdown(runs: &[RunResult]) -> String {
             run.speed.load_seconds,
             run.speed.wall_seconds,
             preserved,
+            run.chrf.corpus,
             run.chrf.mean,
         ));
+    }
+
+    // 書式コードに挟まれた本文の未訳率。対象 entry が 1 件も無い実行は出さない。
+    let enclosed_runs: Vec<&RunResult> =
+        runs.iter().filter(|run| run.enclosed.regions > 0).collect();
+    if !enclosed_runs.is_empty() {
+        out.push_str("\n### 書式コードに挟まれた本文の未訳率\n\n");
+        out.push_str(
+            "| model | backend | strategy | entries | 訳文あり | regions | 未訳 | 未訳率 | 参照訳も未訳 | 保護区間の保持 | chrF (corpus) |\n",
+        );
+        out.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n");
+        for run in &enclosed_runs {
+            let untranslated = run.enclosed.kept_verbatim;
+            // 未訳率は「訳文が得られた本文」を分母にする。訳文が無い entry は
+            // 未訳ではなく失敗として `訳文あり` 列と保持率に出る。
+            let rate = if run.enclosed.translated_regions == 0 {
+                0.0
+            } else {
+                untranslated as f64 / run.enclosed.translated_regions as f64 * 100.0
+            };
+            // 保持率の分母は「訳文が得られた entry」。訳文が無い entry は保持を
+            // 確認できていないので、分子にも分母にも入れない（`entries` との差が失敗数）。
+            let preserved = if run.enclosed.spans_total == 0 {
+                0.0
+            } else {
+                run.enclosed.spans_preserved as f64 / run.enclosed.spans_total as f64 * 100.0
+            };
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {:.1}% | {} | {:.1}% | {:.4} |\n",
+                run.model,
+                run.backend,
+                run.strategy,
+                run.enclosed.entries,
+                run.enclosed.translated_entries,
+                run.enclosed.translated_regions,
+                untranslated,
+                rate,
+                run.enclosed.legitimately_kept,
+                preserved,
+                run.enclosed.corpus_chrf,
+            ));
+        }
+    }
+
+    // 用語集の遵守率。用語を渡した実行だけを出す。
+    let glossary_runs: Vec<&RunResult> = runs.iter().filter(|run| run.glossary_terms > 0).collect();
+    if !glossary_runs.is_empty() {
+        out.push_str("\n### 用語集の遵守率\n\n");
+        out.push_str(
+            "| model | backend | strategy | terms | 遵守 | 対象 | 遵守率 | chrF (corpus, 全体) | chrF (corpus, 用語該当) | 該当 entry |\n",
+        );
+        out.push_str("|---|---|---|---|---|---|---|---|---|---|\n");
+        for run in &glossary_runs {
+            let rate = if run.glossary_applicable == 0 {
+                0.0
+            } else {
+                run.glossary_adhered as f64 / run.glossary_applicable as f64 * 100.0
+            };
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {:.1}% | {:.4} | {:.4} | {} |\n",
+                run.model,
+                run.backend,
+                run.strategy,
+                run.glossary_terms,
+                run.glossary_adhered,
+                run.glossary_applicable,
+                rate,
+                run.chrf.corpus,
+                run.glossary_affected_chrf,
+                run.glossary_affected_entries,
+            ));
+        }
     }
 
     out.push_str("\n### 失敗理由の内訳\n\n");
@@ -1801,17 +2679,18 @@ fn render_markdown(runs: &[RunResult]) -> String {
     }
 
     out.push_str("\n### mod 別 chrF\n\n");
-    out.push_str("| model | backend | strategy | mod | n | chrF |\n");
-    out.push_str("|---|---|---|---|---|---|\n");
+    out.push_str("| model | backend | strategy | mod | n | chrF (corpus) | chrF (mean) |\n");
+    out.push_str("|---|---|---|---|---|---|---|\n");
     for run in runs {
         for entry in &run.per_mod {
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {:.4} |\n",
+                "| {} | {} | {} | {} | {} | {:.4} | {:.4} |\n",
                 run.model,
                 run.backend,
                 run.strategy,
                 entry.mod_name,
                 entry.chrf.entries,
+                entry.chrf.corpus,
                 entry.chrf.mean,
             ));
         }
