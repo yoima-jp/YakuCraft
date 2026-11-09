@@ -403,11 +403,11 @@ fn is_word_char(character: char) -> bool {
 /// 用語集の語を履歴の `input`/`output` 対へ変換する。
 ///
 /// モデルカードの「以前の `input`/`output` 対を文書順に並べる」を使い、用語を
-/// 「以前この語をこう訳した」という履歴として与える。実測では `glossary` 要素だけでは
-/// 遵守率 38.9% だったのが、履歴を併用すると改善した（レポート参照）。
+/// 「以前この語をこう訳した」という履歴として与える。
 ///
-/// 用語集と同じ語を二重に送ることになるが、`glossary` は「参考情報」、履歴は
-/// 「実際にそう訳した前例」として読まれるらしく、両方ある方が遵守率が高い。
+/// 実測では `glossary` 要素だけの方が遵守率が高く（93.2% 対 履歴併用 89.4%）、
+/// 履歴はプロンプト長を増やすだけだったため、Provider の既定では使わない
+/// （`PlamoProviderOptions::glossary_history`）。評価で条件を比べるために残している。
 pub fn glossary_history(terms: &[(String, String)]) -> Vec<(String, String)> {
     terms
         .iter()

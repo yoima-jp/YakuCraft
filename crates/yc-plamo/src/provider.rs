@@ -101,9 +101,10 @@ pub struct PlamoProviderOptions {
     pub max_output_tokens: u32,
     /// スロットあたりのコンテキスト長。`None` なら `/props` から取得してキャッシュする。
     pub context_size: Option<u32>,
-    /// 保護区間のマスク方式。既定は [`ProtectStrategy::BracketedIndex`]。
+    /// 全 profile に共通で使うマスク方式。既定は [`ProtectStrategy::BracketedIndex`]。
     ///
-    /// profile ごとに変えたい場合は [`Self::protect_strategy_by_profile`] を使う。
+    /// [`Self::protect_strategy_by_profile`] が `true`（既定）の間は使われない。
+    /// この値を効かせるには、そちらを `false` にする。
     pub protect_strategy: ProtectStrategy,
     /// profile ごとのマスク方式を選ぶか。既定は `true`。
     ///
@@ -129,8 +130,8 @@ pub struct PlamoProviderOptions {
     pub include_context: bool,
     /// 用語集の語を履歴の `input`/`output` 対としても与えるか。既定は `false`。
     ///
-    /// 実測（2B GPU、1,200 entry、用語集 60 語、対象 188 件）で、`glossary` 要素だけの
-    /// 遵守率は 90.4%、履歴を併用すると 85.1%、履歴だけなら 72.3% だった。
+    /// 実測（2B GPU、1,200 entry、用語集 60 語、対象 264 件）で、`glossary` 要素だけの
+    /// 遵守率は 93.2%、履歴を併用すると 89.4%、履歴だけなら 79.2% だった。
     /// chrF も 0.4245 対 0.4242 対 0.4220 で履歴側が低い。履歴はプロンプト長を
     /// 消費するだけで改善しないため既定では切る。評価で条件を変えるときのために口だけ残す。
     pub glossary_history: bool,
