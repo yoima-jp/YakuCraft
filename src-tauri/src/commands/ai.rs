@@ -1467,6 +1467,27 @@ fn ai_settings_from(
     configured: bool,
     account_label: Option<String>,
 ) -> AiSettings {
+    ai_settings_with_device_default(
+        settings,
+        provider,
+        configured,
+        account_label,
+        plamo::default_device_str,
+    )
+}
+
+/// デバイスの既定値を注入して設定表示を組み立てる。
+///
+/// 既定デバイスは実機の GPU 検出（`nvidia-smi` と Vulkan ローダー）に依存する。既定値を
+/// 遅延評価にし、注入できるようにしてあるのは、保存済みのデバイスがあるときや単体テストが
+/// 実機を見ずに済むようにするため。既定値は PLaMo かつデバイス未保存のときだけ引く。
+fn ai_settings_with_device_default(
+    settings: &AppSettings,
+    provider: ProviderId,
+    configured: bool,
+    account_label: Option<String>,
+    device_default: impl FnOnce() -> &'static str,
+) -> AiSettings {
     let model_default = match provider {
         ProviderId::OpenAi => DEFAULT_OPENAI_MODEL,
         ProviderId::ChatGpt => DEFAULT_CHATGPT_MODEL,
@@ -1488,7 +1509,7 @@ fn ai_settings_from(
         custom_prompt: setting_string(settings, provider, "customPrompt", ""),
         // PLaMo だけがデバイスを持つ。他のプロバイダーへ出すと画面側の契約が増えるため省く。
         device: (provider == ProviderId::Plamo)
-            .then(|| setting_string(settings, provider, "device", plamo::default_device_str())),
+            .then(|| setting_string_or_else(settings, provider, "device", device_default)),
     }
 }
 
@@ -1605,6 +1626,21 @@ fn setting_string(
         .and_then(Value::as_str)
         .unwrap_or(default)
         .to_owned()
+}
+
+/// 既定値を遅延評価する `setting_string`。既定値の計算が高価なとき（実機の GPU 検出など）や、
+/// 保存値があるときに評価したくないときに使う。
+fn setting_string_or_else(
+    settings: &AppSettings,
+    provider: ProviderId,
+    field: &str,
+    default: impl FnOnce() -> &'static str,
+) -> String {
+    settings
+        .values
+        .get(&setting_key(provider, field))
+        .and_then(Value::as_str)
+        .map_or_else(|| default().to_owned(), str::to_owned)
 }
 
 fn setting_usize(
@@ -2074,10 +2110,10 @@ mod tests {
 
     use super::{
         AiEntryBaseline, AiJobEntry, AiSettings, AiTargetSupportLevel, SaveAiProviderInput,
-        ai_error_for_provider, ai_settings_from, apply_outcome_to_project,
-        migrate_default_ai_provider_at, parse_provider, prepare_ai_job_entries, provider_base_url,
-        provider_from_settings, provider_is_configured, split_job_batches, target_support_level,
-        validate_ai_config,
+        ai_error_for_provider, ai_settings_from, ai_settings_with_device_default,
+        apply_outcome_to_project, migrate_default_ai_provider_at, parse_provider,
+        prepare_ai_job_entries, provider_base_url, provider_from_settings, provider_is_configured,
+        split_job_batches, target_support_level, validate_ai_config,
     };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -2155,7 +2191,9 @@ mod tests {
             serde_json::Value::String(yc_plamo::DEFAULT_MODEL_ID.into()),
         );
         assert!(!ProviderId::Plamo.uses_credential_store());
-        let config = ai_settings_from(&settings, ProviderId::Plamo, false, None);
+        // 既定デバイスを注入し、実機の GPU 検出を呼ばない。
+        let config =
+            ai_settings_with_device_default(&settings, ProviderId::Plamo, false, None, || "cpu");
         assert_eq!(config.provider, "plamo");
         assert_eq!(config.model, yc_plamo::DEFAULT_MODEL_ID);
     }
@@ -2678,12 +2716,19 @@ mod tests {
             "ai.plamo.device".into(),
             serde_json::Value::String("cpu".into()),
         );
+        // 保存済みのデバイスがあるので、既定値（実機の検出）は評価されない。
         let config = ai_settings_from(&settings, ProviderId::Plamo, false, None);
         assert_eq!(config.provider, "plamo");
         assert_eq!(config.model, yc_plamo::DEFAULT_MODEL_ID);
         assert_eq!(config.device.as_deref(), Some("cpu"));
         assert_eq!(config.base_url, "");
         assert_eq!(config.custom_prompt, "");
+
+        // デバイス未保存なら既定値を使う。ここでは注入して実機の検出を避ける。
+        let unsaved = yc_project::AppSettings::new();
+        let config =
+            ai_settings_with_device_default(&unsaved, ProviderId::Plamo, false, None, || "vulkan");
+        assert_eq!(config.device.as_deref(), Some("vulkan"));
 
         // 他のプロバイダーにはデバイスを出さない（画面側の契約を増やさない）。
         let openai = ai_settings_from(&settings, ProviderId::OpenAi, false, None);

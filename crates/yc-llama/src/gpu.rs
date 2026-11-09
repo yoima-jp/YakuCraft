@@ -9,6 +9,17 @@
 //! どちらも外部プロセス 1 回とファイル存在確認だけで済むため、追加の依存は要らない。
 //! 結果はプロセス内で 1 度だけ取り、アプリの寿命いずれも同じ値を使う（ドライバーの
 //! 入れ替えはアプリの再起動を伴う）。
+//!
+//! ドライバーは `nvidia-smi --query-gpu=driver_version` が返す**完全な版**で比べる
+//! （Windows は `591.74`、Linux は `570.26` や `550.54.14`）。メジャー番号だけで比べると、
+//! Windows の `551.23` が CUDA 12.4 の Toolkit 下限 `551.61` を満たすと誤判定し、PTX の
+//! JIT に失敗する構成を「提供する」ことになる。下限そのものは OS ごとに違うため、
+//! [`crate::builds::CudaToolchain`] が OS 別の値を持ち、比較は
+//! [`crate::builds::DriverVersion`] の成分ごとの数値で行う。
+//!
+//! 判定は検出結果（[`GpuInfo`]）だけを見る関数に分けてある（[`cuda_backend_for`] /
+//! [`vulkan_backend_for`]）。単体テストが実機の `nvidia-smi` や Vulkan ローダーへ
+//! 依存しないようにするため。実機を見るのは [`detect_gpu_info`] と [`gpu_info`] だけ。
 
 use std::{
     path::PathBuf,
@@ -17,7 +28,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::builds::{Backend, CudaVariant, current_target_build};
+use crate::builds::{
+    Backend, CudaToolchain, CudaVariant, DriverVersion, TargetOs, current_target_build,
+};
 
 /// `nvidia-smi` の待ち時間。ドライバーが応答しない環境で UI を止めないための上限。
 const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(3);
@@ -27,8 +40,11 @@ const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct NvidiaGpu {
     /// 表示名（例: `NVIDIA GeForce RTX 3060`）。
     pub name: String,
-    /// ドライバーのメジャーバージョン（例: `591.74` なら 591）。
-    pub driver_major: u32,
+    /// ドライバーの完全な版（例: `591.74` なら `591.74`、`550.54.14` ならそのまま）。
+    ///
+    /// 下限との比較はこの値で行う（[`crate::builds::DriverVersion`]）。メジャー番号だけを
+    /// 持つと、`551.23` が `551.61` を満たすと誤判定してしまう。
+    pub driver: DriverVersion,
     /// compute capability（例: `8.6` なら `(8, 6)`）。
     ///
     /// `nvidia-smi` の `compute_cap` 列は比較的新しいドライバーにしか無い。古いドライバーでは
@@ -68,7 +84,15 @@ pub fn gpu_info() -> &'static GpuInfo {
 /// 見えているすべての GPU とドライバーから系統を選び、その系統のビルドがこのプラットフォームに
 /// 存在するときだけ返す。CUDA が使えない環境では `None`。
 pub fn cuda_backend() -> Option<Backend> {
-    let variant = cuda_variant_for(&gpu_info().nvidia)?;
+    cuda_backend_for(gpu_info())
+}
+
+/// 検出結果を渡して CUDA バックエンドを選ぶ。[`cuda_backend`] の中身。
+///
+/// 検出を注入できるように分けてある。単体テストが実機の `nvidia-smi` を呼ばずに、
+/// 系統の選択とビルドの有無の関係を確かめられる。
+pub fn cuda_backend_for(info: &GpuInfo) -> Option<Backend> {
+    let variant = cuda_variant_for(&info.nvidia)?;
     current_target_build(Backend::Cuda(variant))?;
     Some(Backend::Cuda(variant))
 }
@@ -78,7 +102,12 @@ pub fn cuda_backend() -> Option<Backend> {
 /// ダウンロード可否とは別物。ビルド自体はプラットフォームに存在するので、ローダーが無い
 /// 環境でも取得はできる（起動前のデバイス確認で失敗を伝える）。
 pub fn vulkan_backend() -> Option<Backend> {
-    if !gpu_info().vulkan {
+    vulkan_backend_for(gpu_info())
+}
+
+/// 検出結果を渡して Vulkan バックエンドを選ぶ。[`vulkan_backend`] の中身。
+pub fn vulkan_backend_for(info: &GpuInfo) -> Option<Backend> {
+    if !info.vulkan {
         return None;
     }
     current_target_build(Backend::Vulkan)?;
@@ -99,12 +128,12 @@ pub fn vulkan_backend() -> Option<Backend> {
 /// ドライバーの下限は GPU ごとに違う。実コードを持つ GPU はマイナーバージョン互換の下限で
 /// 動くが、PTX に頼る GPU は「PTX を JIT できるドライバー」が要る。NVIDIA の CUDA
 /// Compatibility Guide は「PTX をコンパイルしたアプリは古いドライバーでは動かない」と
-/// 明記しており、実コードが無い GPU でマイナーバージョン互換の下限（525 など）まで許すと、
-/// 起動はするがカーネルが動かない構成を「提供する」と誤判定してしまう。
+/// 明記しており、実コードが無い GPU でマイナーバージョン互換の下限（Linux 525.60.13 /
+/// Windows 527.41）まで許すと、起動はするがカーネルが動かない構成を「提供する」と誤判定する。
 ///
 /// 下限はプラットフォームごとの実際のアーカイブ（[`CudaToolchain`]）から取る。12 系は
 /// Windows が 12.4、Linux が 12.8 で Toolkit のドライバー下限が違うため、系統だけで
-/// 決めてはいけない。
+/// 決めてはいけない。比較は完全な版で行い、成分ごとの数値で見る。
 pub fn cuda_variant_for(gpus: &[NvidiaGpu]) -> Option<CudaVariant> {
     if gpus.is_empty() {
         return None;
@@ -121,18 +150,31 @@ fn build_supports_all(variant: CudaVariant, gpus: &[NvidiaGpu]) -> bool {
     let Some(toolchain) = current_target_build(Backend::Cuda(variant)).and_then(|b| b.cuda) else {
         return false;
     };
+    toolchain_supports_all(&toolchain, gpus, TargetOs::current())
+}
+
+/// 1 つのツールチェーンが、対象 OS で、すべての GPU を載せられるか。
+///
+/// 対象 OS を引数にしているのは、下限が OS ごとに違うため。単体テストが Windows と Linux の
+/// 両方の下限を、実行中のプラットフォームに依存せず確かめられるようにしてある。
+pub(crate) fn toolchain_supports_all(
+    toolchain: &CudaToolchain,
+    gpus: &[NvidiaGpu],
+    os: TargetOs,
+) -> bool {
     gpus.iter().all(|gpu| {
         let required = match gpu.compute_capability {
-            Some(capability) => toolchain.minimum_driver_for(capability),
+            Some(capability) => toolchain.minimum_driver_for_os(capability, os),
             // compute capability が取れない古いドライバーでは、実コードを持つかどうかを
             // 判定できない。PTX に頼るものとして扱い、PTX を JIT できるドライバーを要求する
             // （安全側）。PTX を積まないビルドでは動かせないので `false`。
             None => match toolchain.ptx_floor {
-                Some(floor) => toolchain.minimum_driver_for(floor),
+                Some(floor) => toolchain.minimum_driver_for_os(floor, os),
                 None => return false,
             },
         };
-        gpu.driver_major >= required
+        // 完全な版で比べる。メジャー番号だけだと 551.23 が 551.61 を満たしてしまう。
+        gpu.driver >= required
     })
 }
 
@@ -184,6 +226,9 @@ fn query_nvidia_smi(fields: &str) -> Option<String> {
 /// 出力は `NVIDIA GeForce RTX 3060, 591.74, 8.6` の形。`compute_cap` 列を持たない古い
 /// ドライバーでは列が 2 つになり、値が `[N/A]` になることもある。どちらも GPU 自体は
 /// 検出できているので、compute capability を `None` として受け入れる。
+///
+/// ドライバーの版が読めない行は捨てる。版を「古いドライバー」と読み替えると、その GPU を
+/// 無視して別の系統を選んでしまう（実機に無い GPU を勝手に足すのと同じ誤り）。
 pub fn parse_nvidia_smi_output(output: &str) -> Vec<NvidiaGpu> {
     let mut gpus = Vec::new();
     for line in output.lines() {
@@ -191,17 +236,13 @@ pub fn parse_nvidia_smi_output(output: &str) -> Vec<NvidiaGpu> {
         let Some(name) = fields.next().filter(|name| !name.is_empty()) else {
             continue;
         };
-        let Some(driver_major) = fields
-            .next()
-            .and_then(|version| version.split('.').next())
-            .and_then(|major| major.parse::<u32>().ok())
-        else {
+        let Some(driver) = fields.next().and_then(DriverVersion::parse) else {
             continue;
         };
         let compute_capability = fields.next().and_then(parse_compute_capability);
         gpus.push(NvidiaGpu {
             name: name.to_owned(),
-            driver_major,
+            driver,
             compute_capability,
         });
     }
