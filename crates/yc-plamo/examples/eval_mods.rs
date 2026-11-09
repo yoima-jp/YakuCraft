@@ -7,12 +7,14 @@
 //! 実行例:
 //!
 //! ```text
-//! # 全部（0.8B/2B/8B × CPU/GPU）
+//! # 全部（0.8B/2B/8B × このマシンで使えるバックエンド）
 //! cargo run --release -p yc-plamo --example eval_mods
 //! # 一部だけ
-//! cargo run --release -p yc-plamo --example eval_mods -- --models 2b --backends gpu
+//! cargo run --release -p yc-plamo --example eval_mods -- --models 2b --backends vulkan
+//! # CUDA で測る（このマシンで CUDA が使えるときだけ）
+//! cargo run --release -p yc-plamo --example eval_mods -- --models 2b --backends cuda
 //! # strategy の比較
-//! cargo run --release -p yc-plamo --example eval_mods -- --models 2b --backends gpu --strategies all
+//! cargo run --release -p yc-plamo --example eval_mods -- --models 2b --backends vulkan --strategies all
 //! ```
 //!
 //! 結果は JSON と Markdown 断片で `<cache>/eval` へ書き出す。モデル・JAR は
@@ -1301,6 +1303,45 @@ fn summarize(
 // サーバ起動
 // ---------------------------------------------------------------------------
 
+/// バックエンドの表示名。`Debug` だと `Cuda(Cuda13)` になり表が読みにくい。
+fn backend_label(backend: Backend) -> String {
+    match backend {
+        Backend::Cpu => "CPU".to_owned(),
+        Backend::Vulkan => "Vulkan".to_owned(),
+        // 実際の Toolkit の版はビルドが持つ（12 系は Windows 12.4 / Linux 12.8 と違う）。
+        Backend::Cuda(variant) => {
+            match current_target_build(backend).and_then(|build| build.cuda) {
+                Some(toolchain) => format!("CUDA {}", toolchain.toolkit_version),
+                None => format!("CUDA {}", variant.as_str()),
+            }
+        }
+    }
+}
+
+/// このマシンで使えるバックエンド。既定は CPU と Vulkan で、CUDA は検出できたときだけ足す。
+fn available_backends() -> Vec<Backend> {
+    let mut backends = vec![Backend::Cpu];
+    if let Some(vulkan) = yc_llama::vulkan_backend() {
+        backends.push(vulkan);
+    }
+    if let Some(cuda) = yc_llama::cuda_backend() {
+        backends.push(cuda);
+    }
+    backends
+}
+
+/// 追加の比較（context / enclosed / glossary / 他言語）で使う GPU バックエンド。
+///
+/// これらは「GPU で 1 つ」を前提にした比較なので、指定された中で最初の GPU を使う。
+/// CUDA を指定すれば CUDA で回る。
+fn gpu_backend(args: &Args) -> Backend {
+    args.backends
+        .iter()
+        .copied()
+        .find(|backend| backend.is_gpu())
+        .unwrap_or(Backend::Cpu)
+}
+
 /// ランタイムとモデルを用意し、`llama-server` を起動する。
 async fn start_server(
     model: &PlamoModel,
@@ -1445,7 +1486,7 @@ struct Args {
 fn parse_args() -> Args {
     let mut args = Args {
         models: vec!["0.8b".to_owned(), "2b".to_owned(), "8b".to_owned()],
-        backends: vec![Backend::Cpu, Backend::Gpu],
+        backends: available_backends(),
         strategies: vec![StrategyChoice::Default],
         context_study: true,
         enclosed_study: true,
@@ -1468,7 +1509,10 @@ fn parse_args() -> Args {
                 args.backends = value
                     .split(',')
                     .map(|name| match name.trim() {
-                        "gpu" | "vulkan" => Backend::Gpu,
+                        // `gpu` は旧表記で Vulkan を指す。
+                        "gpu" | "vulkan" => Backend::Vulkan,
+                        "cuda" => yc_llama::cuda_backend()
+                            .unwrap_or_else(|| panic!("CUDA is not available on this machine")),
                         _ => Backend::Cpu,
                     })
                     .collect();
@@ -1587,16 +1631,20 @@ async fn main() -> Result<(), String> {
 
             for strategy in &args.strategies {
                 eprintln!(
-                    "=== {} / {:?} / {} ({} entries) ===",
+                    "=== {} / {} / {} ({} entries) ===",
                     model.parameters,
-                    backend,
+                    backend_label(*backend),
                     strategy.label(),
                     total
                 );
                 let (server, load_seconds) = match start_server(model, *backend, 1, 8192).await {
                     Ok(started) => started,
                     Err(error) => {
-                        eprintln!("skipping {} {:?}: {error}", model.parameters, backend);
+                        eprintln!(
+                            "skipping {} {}: {error}",
+                            model.parameters,
+                            backend_label(*backend)
+                        );
                         continue;
                     }
                 };
@@ -1611,7 +1659,11 @@ async fn main() -> Result<(), String> {
                 ) {
                     Ok(created) => created,
                     Err(error) => {
-                        eprintln!("skipping {} {:?}: {error}", model.parameters, backend);
+                        eprintln!(
+                            "skipping {} {}: {error}",
+                            model.parameters,
+                            backend_label(*backend)
+                        );
                         server.shutdown().await;
                         continue;
                     }
@@ -1635,7 +1687,7 @@ async fn main() -> Result<(), String> {
                 let outcomes = sample.entries;
                 dumps.extend(dump_outcomes(
                     model.parameters,
-                    &format!("{backend:?}"),
+                    &backend_label(*backend),
                     strategy.label(),
                     &outcomes,
                 ));
@@ -1721,7 +1773,7 @@ async fn main() -> Result<(), String> {
 
                 runs.push(RunResult {
                     model: model.parameters.to_owned(),
-                    backend: format!("{backend:?}"),
+                    backend: backend_label(*backend),
                     strategy: strategy.label().to_owned(),
                     sample_size: outcomes.len(),
                     context_enabled: true,
@@ -1753,7 +1805,7 @@ async fn main() -> Result<(), String> {
             .models
             .iter()
             .any(|model| model.eq_ignore_ascii_case("2b"))
-        && args.backends.contains(&Backend::Gpu)
+        && args.backends.iter().any(|backend| backend.is_gpu())
         && let Some(model) = find_model("plamo-3-translate-2b")
     {
         let budget = SAMPLE_PLAIN + SAMPLE_FORMATTED_CAP;
@@ -1774,7 +1826,7 @@ async fn main() -> Result<(), String> {
         let glossary = build_realistic_glossary(&sampled, 60);
         eprintln!("glossary: {} terms", glossary.len());
 
-        let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
+        let (server, load_seconds) = match start_server(model, gpu_backend(&args), 1, 8192).await {
             Ok(started) => started,
             Err(error) => {
                 eprintln!("skipping context study: {error}");
@@ -1840,7 +1892,10 @@ async fn main() -> Result<(), String> {
             terms,
         } in conditions
         {
-            eprintln!("=== 2B / Gpu / {label} ===");
+            eprintln!(
+                "=== 2B / {} / {label} ===",
+                backend_label(gpu_backend(&args))
+            );
             // provider は文脈の有無・履歴の有無・profile ごとの方式ごとに作り直す
             // （設定は構築時に固定される）。
             let (provider, reports) = provider_with_reports(
@@ -1872,7 +1927,12 @@ async fn main() -> Result<(), String> {
             let batch_failures = sample.batch_failures;
             let server_restarts = sample.server_restarts;
             let outcomes = sample.entries;
-            dumps.extend(dump_outcomes("2B", "Gpu", label, &outcomes));
+            dumps.extend(dump_outcomes(
+                "2B",
+                &backend_label(gpu_backend(&args)),
+                label,
+                &outcomes,
+            ));
             let wall_seconds = started.elapsed().as_secs_f64();
             let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
             let (glossary_applicable, glossary_adhered) = glossary_counts(&outcomes, &terms);
@@ -1885,7 +1945,7 @@ async fn main() -> Result<(), String> {
             stability.server_restarts = server_restarts;
             runs.push(RunResult {
                 model: "2B".to_owned(),
-                backend: "Gpu".to_owned(),
+                backend: backend_label(gpu_backend(&args)),
                 strategy: label.to_owned(),
                 sample_size: outcomes.len(),
                 context_enabled: include_context,
@@ -1919,7 +1979,7 @@ async fn main() -> Result<(), String> {
             .models
             .iter()
             .any(|model| model.eq_ignore_ascii_case("2b"))
-        && args.backends.contains(&Backend::Gpu)
+        && args.backends.iter().any(|backend| backend.is_gpu())
         && let Some(model) = find_model("plamo-3-translate-2b")
     {
         // 対になった書式コードを持つ entry を全件使う。通常サンプルでは数件しか
@@ -1935,9 +1995,12 @@ async fn main() -> Result<(), String> {
             })
             .collect();
         let total: usize = sampled.iter().map(|(_, _, items)| items.len()).sum();
-        eprintln!("=== 2B / Gpu / enclosed study ({total} entries) ===");
+        eprintln!(
+            "=== 2B / {} / enclosed study ({total} entries) ===",
+            backend_label(gpu_backend(&args))
+        );
 
-        let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
+        let (server, load_seconds) = match start_server(model, gpu_backend(&args), 1, 8192).await {
             Ok(started) => started,
             Err(error) => {
                 eprintln!("skipping enclosed study: {error}");
@@ -1952,7 +2015,10 @@ async fn main() -> Result<(), String> {
             StrategyChoice::Default,
         ] {
             let label = format!("enclosed_{}", strategy.label());
-            eprintln!("=== 2B / Gpu / {label} ===");
+            eprintln!(
+                "=== 2B / {} / {label} ===",
+                backend_label(gpu_backend(&args))
+            );
             let (provider, reports) = provider_with_reports(
                 server.base_url(),
                 server.api_key(),
@@ -1978,7 +2044,12 @@ async fn main() -> Result<(), String> {
             let batch_failures = sample.batch_failures;
             let server_restarts = sample.server_restarts;
             let outcomes = sample.entries;
-            dumps.extend(dump_outcomes("2B", "Gpu", &label, &outcomes));
+            dumps.extend(dump_outcomes(
+                "2B",
+                &backend_label(gpu_backend(&args)),
+                &label,
+                &outcomes,
+            ));
             let wall_seconds = started.elapsed().as_secs_f64();
             let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
             let enclosed = enclosed_stats(&outcomes);
@@ -1995,7 +2066,7 @@ async fn main() -> Result<(), String> {
             );
             runs.push(RunResult {
                 model: "2B".to_owned(),
-                backend: "Gpu".to_owned(),
+                backend: backend_label(gpu_backend(&args)),
                 strategy: label,
                 sample_size: outcomes.len(),
                 context_enabled: true,
@@ -2024,7 +2095,7 @@ async fn main() -> Result<(), String> {
     // `context_study` は 2B GPU で方式を選ぶための比較で、0.8B / 8B の通常実行は
     // 用語集を渡さない。2B で選んだ方式（`glossary` 要素だけ + profile ごとの保護方式）が
     // 他のモデルでも遵守率と chrF を保つかは、同じ条件で測らないと分からない。
-    if args.glossary_models_study && args.backends.contains(&Backend::Gpu) {
+    if args.glossary_models_study && args.backends.iter().any(|backend| backend.is_gpu()) {
         let budget = SAMPLE_PLAIN + SAMPLE_FORMATTED_CAP;
         let sampled: Vec<(String, String, Vec<Candidate>)> = datasets
             .iter()
@@ -2048,14 +2119,19 @@ async fn main() -> Result<(), String> {
             }) else {
                 continue;
             };
-            eprintln!("=== {} / Gpu / glossary_default ===", model.parameters);
-            let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
-                Ok(started) => started,
-                Err(error) => {
-                    eprintln!("skipping {} glossary: {error}", model.parameters);
-                    continue;
-                }
-            };
+            eprintln!(
+                "=== {} / {} / glossary_default ===",
+                model.parameters,
+                backend_label(gpu_backend(&args))
+            );
+            let (server, load_seconds) =
+                match start_server(model, gpu_backend(&args), 1, 8192).await {
+                    Ok(started) => started,
+                    Err(error) => {
+                        eprintln!("skipping {} glossary: {error}", model.parameters);
+                        continue;
+                    }
+                };
             // 出荷する既定（profile ごとの保護方式、`glossary` 要素のみ、履歴なし）。
             let (provider, reports) = provider_with_reports(
                 server.base_url(),
@@ -2083,7 +2159,12 @@ async fn main() -> Result<(), String> {
             let server_restarts = sample.server_restarts;
             let outcomes = sample.entries;
             let label = "glossary_default";
-            dumps.extend(dump_outcomes(model.parameters, "Gpu", label, &outcomes));
+            dumps.extend(dump_outcomes(
+                model.parameters,
+                &backend_label(gpu_backend(&args)),
+                label,
+                &outcomes,
+            ));
             let wall_seconds = started.elapsed().as_secs_f64();
             let (speed, safety, chrf, per_mod) = summarize(&outcomes, load_seconds, wall_seconds);
             let (glossary_applicable, glossary_adhered) = glossary_counts(&outcomes, &glossary);
@@ -2099,7 +2180,7 @@ async fn main() -> Result<(), String> {
             );
             runs.push(RunResult {
                 model: model.parameters.to_owned(),
-                backend: "Gpu".to_owned(),
+                backend: backend_label(gpu_backend(&args)),
                 strategy: label.to_owned(),
                 sample_size: outcomes.len(),
                 context_enabled: true,
@@ -2139,7 +2220,7 @@ async fn main() -> Result<(), String> {
                 )
             })
             .collect();
-        let (server, load_seconds) = match start_server(model, Backend::Gpu, 1, 8192).await {
+        let (server, load_seconds) = match start_server(model, gpu_backend(&args), 1, 8192).await {
             Ok(started) => started,
             Err(error) => {
                 eprintln!("skipping other targets: {error}");
@@ -2156,7 +2237,10 @@ async fn main() -> Result<(), String> {
             true,
         )?;
         for target in ["zh_cn", "ko_kr", "de_de", "pt_br"] {
-            eprintln!("=== 2B / Gpu / target {target} ===");
+            eprintln!(
+                "=== 2B / {} / target {target} ===",
+                backend_label(gpu_backend(&args))
+            );
             let started = Instant::now();
             let sample = run_sample(
                 &provider,
@@ -2175,7 +2259,7 @@ async fn main() -> Result<(), String> {
             let outcomes = sample.entries;
             dumps.extend(dump_outcomes(
                 "2B",
-                "Gpu",
+                &backend_label(gpu_backend(&args)),
                 &format!("target_{target}"),
                 &outcomes,
             ));
@@ -2186,7 +2270,7 @@ async fn main() -> Result<(), String> {
             stability.server_restarts = server_restarts;
             runs.push(RunResult {
                 model: "2B".to_owned(),
-                backend: "Gpu".to_owned(),
+                backend: backend_label(gpu_backend(&args)),
                 strategy: format!("target_{target}"),
                 sample_size: outcomes.len(),
                 context_enabled: true,

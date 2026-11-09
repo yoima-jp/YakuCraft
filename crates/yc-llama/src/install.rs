@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     LlamaError, Result,
-    builds::{ArchiveKind, RuntimeBuild},
+    builds::{ArchiveKind, RuntimeArchive, RuntimeBuild},
     download::download_verified,
 };
 
@@ -31,8 +31,8 @@ fn install_dir(build: &RuntimeBuild, runtime_root: &Path) -> PathBuf {
 /// アーカイブの一時ファイルのパス。
 ///
 /// ビルドごとに固定名にして、キャンセルや通信断のあと `.part` からレジュームできるようにする。
-fn archive_path_for(build: &RuntimeBuild, runtime_root: &Path) -> PathBuf {
-    runtime_root.join(format!("{ARCHIVE_FILE_PREFIX}{}", build.asset))
+fn archive_path_for(archive: &RuntimeArchive, runtime_root: &Path) -> PathBuf {
+    runtime_root.join(format!("{ARCHIVE_FILE_PREFIX}{}", archive.asset))
 }
 
 /// インストール済みなら `llama-server` のパスを返す。ネットワークアクセスはしない。
@@ -47,6 +47,10 @@ pub fn installed_runtime(build: &RuntimeBuild, runtime_root: &Path) -> Option<Pa
 /// 検証付きで取得し、一時ディレクトリへ展開してから本来の名前へ rename する。
 /// インストール先ディレクトリが半端な状態で存在することはない（rename が原子的なため）。
 /// キャンセル時はアーカイブの `.part` を残すので、次回の呼び出しでレジュームできる。
+///
+/// CUDA のように複数のアーカイブからなるビルドでは、すべてを同じ一時ディレクトリへ
+/// 展開してから 1 回だけ rename する。途中で失敗してもインストール先には何も残らない。
+/// 進捗の分母は全アーカイブの合計バイト数。
 pub async fn ensure_runtime<F>(
     build: &RuntimeBuild,
     runtime_root: &Path,
@@ -62,15 +66,15 @@ where
 
     tokio::fs::create_dir_all(runtime_root).await?;
 
-    let archive_path = archive_path_for(build, runtime_root);
     let staging_dir = runtime_root.join(format!("{STAGING_DIR_PREFIX}{}", unique_suffix()));
+    let total_size = build.total_size();
 
     let result = install_inner(
         build,
         runtime_root,
-        &archive_path,
         &staging_dir,
-        progress,
+        total_size,
+        &progress,
         cancel,
     )
     .await;
@@ -79,7 +83,9 @@ where
     let _ = tokio::fs::remove_dir_all(&staging_dir).await;
     // アーカイブは成功時だけ消す。失敗時は `.part` を残してレジュームに使う。
     if result.is_ok() {
-        let _ = tokio::fs::remove_file(&archive_path).await;
+        for archive in build.archives {
+            let _ = tokio::fs::remove_file(archive_path_for(archive, runtime_root)).await;
+        }
     }
     result
 }
@@ -87,39 +93,57 @@ where
 async fn install_inner<F>(
     build: &RuntimeBuild,
     runtime_root: &Path,
-    archive_path: &Path,
     staging_dir: &Path,
-    progress: F,
+    total_size: u64,
+    progress: &F,
     cancel: CancellationToken,
 ) -> Result<PathBuf>
 where
     F: Fn(u64, u64),
 {
-    download_verified(
-        &build.download_url(),
-        archive_path,
-        build.size,
-        build.sha256,
-        progress,
-        cancel.clone(),
-    )
-    .await?;
-
-    if cancel.is_cancelled() {
-        return Err(LlamaError::Cancelled);
-    }
-
     tokio::fs::create_dir_all(staging_dir).await?;
-    let archive = archive_path.to_path_buf();
-    let staging = staging_dir.to_path_buf();
-    let kind = build.archive;
-    // zip / tar の展開は同期 I/O なので、非同期ランタイムのワーカースレッドを塞がないよう
-    // ブロッキングプールへ逃がす。
-    tokio::task::spawn_blocking(move || extract_archive(&archive, &staging, kind))
+
+    // アーカイブごとの進捗を、全アーカイブの合計に対する値へ読み替えて通知する。
+    // 呼び出し側は 1 本のバーしか持たないため、途中で 0 に戻してはいけない。
+    let mut completed = 0_u64;
+    for archive in build.archives {
+        let archive_path = archive_path_for(archive, runtime_root);
+        let base = completed;
+        let relay = |received: u64, _total: u64| progress(base + received, total_size);
+        download_verified(
+            &archive.download_url(build.tag),
+            &archive_path,
+            archive.size,
+            archive.sha256,
+            relay,
+            cancel.clone(),
+        )
+        .await?;
+        completed += archive.size;
+
+        if cancel.is_cancelled() {
+            return Err(LlamaError::Cancelled);
+        }
+
+        let source = archive_path.clone();
+        let staging = staging_dir.to_path_buf();
+        let kind = archive.archive;
+        let strip = archive.strip_prefix;
+        let destination = archive.destination;
+        // zip / tar の展開は同期 I/O なので、非同期ランタイムのワーカースレッドを塞がないよう
+        // ブロッキングプールへ逃がす。
+        tokio::task::spawn_blocking(move || {
+            extract_archive(&source, &staging, kind, strip, destination)
+        })
         .await
         .map_err(|error| LlamaError::Io {
             message: error.to_string(),
         })??;
+
+        // 次のアーカイブへ進む前に消す。数 GB のアーカイブを 2 つ重ねるとディスクを
+        // 二重に使う。
+        let _ = tokio::fs::remove_file(&archive_path).await;
+    }
 
     let server_in_staging = staging_dir.join(build.server_relative_path());
     if !server_in_staging.is_file() {
@@ -210,14 +234,63 @@ fn resolve_within(root: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(joined)
 }
 
-fn extract_archive(archive_path: &Path, dest: &Path, kind: ArchiveKind) -> Result<()> {
+/// アーカイブ内のエントリを、展開先からの相対パスへ写す。
+///
+/// `strip_prefix` は tar.gz が 1 段挟むディレクトリを取り除くために使う。`destination` は
+/// 複数アーカイブを同じツリーへ重ねるために使う（CUDA の cudart は `llama-server` と同じ
+/// ディレクトリに無いと動的リンカが見つけられない）。想定と違うレイアウトのアーカイブは
+/// 黙って捨てずにエラーにする。捨てると「起動はするが GPU を使わない」状態になり得る。
+fn map_entry(
+    relative: PathBuf,
+    strip_prefix: Option<&str>,
+    destination: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let mut relative = relative;
+    if let Some(prefix) = strip_prefix {
+        let mut components = relative.components();
+        let matches_prefix = matches!(
+            components.next(),
+            Some(Component::Normal(first)) if first == std::ffi::OsStr::new(prefix)
+        );
+        if !matches_prefix {
+            return Err(LlamaError::InvalidArchive {
+                kind: "archive",
+                message: format!(
+                    "entry {} is outside the expected directory {prefix}",
+                    relative.display()
+                ),
+            });
+        }
+        relative = components.as_path().to_path_buf();
+    }
+    if let Some(destination) = destination {
+        relative = Path::new(destination).join(relative);
+    }
+    if relative.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(relative))
+}
+
+fn extract_archive(
+    archive_path: &Path,
+    dest: &Path,
+    kind: ArchiveKind,
+    strip_prefix: Option<&str>,
+    destination: Option<&str>,
+) -> Result<()> {
     match kind {
-        ArchiveKind::Zip => extract_zip(archive_path, dest),
-        ArchiveKind::TarGz => extract_tar_gz(archive_path, dest),
+        ArchiveKind::Zip => extract_zip(archive_path, dest, strip_prefix, destination),
+        ArchiveKind::TarGz => extract_tar_gz(archive_path, dest, strip_prefix, destination),
     }
 }
 
-fn extract_zip(archive_path: &Path, dest: &Path) -> Result<()> {
+fn extract_zip(
+    archive_path: &Path,
+    dest: &Path,
+    strip_prefix: Option<&str>,
+    destination: Option<&str>,
+) -> Result<()> {
     use std::io;
 
     let file = std::fs::File::open(archive_path)?;
@@ -235,6 +308,9 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<()> {
             })?;
         let raw_name = entry.name().unwrap_or_default().to_string();
         let Some(relative) = safe_relative_path(&raw_name)? else {
+            continue;
+        };
+        let Some(relative) = map_entry(relative, strip_prefix, destination)? else {
             continue;
         };
         let target = resolve_within(dest, &relative)?;
@@ -257,7 +333,12 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_tar_gz(archive_path: &Path, dest: &Path) -> Result<()> {
+fn extract_tar_gz(
+    archive_path: &Path,
+    dest: &Path,
+    strip_prefix: Option<&str>,
+    destination: Option<&str>,
+) -> Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
@@ -276,6 +357,9 @@ fn extract_tar_gz(archive_path: &Path, dest: &Path) -> Result<()> {
         let entry_type = entry.header().entry_type();
         let raw_name = String::from_utf8_lossy(&entry.path_bytes()).to_string();
         let Some(relative) = safe_relative_path(&raw_name)? else {
+            continue;
+        };
+        let Some(relative) = map_entry(relative, strip_prefix, destination)? else {
             continue;
         };
         let target = resolve_within(dest, &relative)?;
@@ -439,7 +523,19 @@ pub(crate) fn extract_archive_for_test(
     dest: &Path,
     kind: ArchiveKind,
 ) -> Result<()> {
-    extract_archive(archive_path, dest, kind)
+    extract_archive(archive_path, dest, kind, None, None)
+}
+
+/// テスト専用の入口。CUDA の cudart のように 1 段ディレクトリを挟むアーカイブ用。
+#[cfg(test)]
+pub(crate) fn extract_archive_with_layout_for_test(
+    archive_path: &Path,
+    dest: &Path,
+    kind: ArchiveKind,
+    strip_prefix: Option<&str>,
+    destination: Option<&str>,
+) -> Result<()> {
+    extract_archive(archive_path, dest, kind, strip_prefix, destination)
 }
 
 /// テスト専用の入口。

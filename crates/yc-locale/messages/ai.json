@@ -286,6 +286,13 @@
     "zh-Hant": "無法在 GPU 上啟動 PLaMo。請在設定中將裝置切換為 CPU。",
     "ko": "GPU에서 PLaMo를 시작할 수 없습니다. 설정에서 장치를 CPU로 전환하세요."
   },
+  "ai.plamoGpuDeviceUnavailable": {
+    "ja": "GPUが見つかりませんでした。ドライバーを更新するか、設定でデバイスをCPUに切り替えてください。",
+    "en": "No GPU was found. Update the driver, or switch the device to CPU in Settings.",
+    "zh-Hans": "未找到 GPU。请更新驱动程序，或在设置中将设备切换为 CPU。",
+    "zh-Hant": "找不到 GPU。請更新驅動程式，或在設定中將裝置切換為 CPU。",
+    "ko": "GPU를 찾지 못했습니다. 드라이버를 업데이트하거나 설정에서 장치를 CPU로 전환하세요."
+  },
   "ai.progressUnavailable": {
     "ja": "AI翻訳の進捗を受け取れませんでした。",
     "en": "Could not receive AI translation progress.",

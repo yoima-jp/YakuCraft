@@ -3,9 +3,9 @@
 //! `cargo run -p yc-llama --example verify_runtime -- <cache_dir> [--skip-download]`
 //!
 //! ネットワークと実時間を使うため、通常のテストスイートからは外している。実行内容:
-//! 1. CPU / Vulkan の b12110 をダウンロード・検証・展開する
+//! 1. CPU / Vulkan / CUDA（この機体で使える系統）の b12110 をダウンロード・検証・展開する
 //! 2. PLaMo 3 Translate 0.8B の GGUF をダウンロード・検証する
-//! 3. CPU と GPU でサーバーを起動し、`POST /completion` を 1 回投げる
+//! 3. 各バックエンドでサーバーを起動し、`POST /completion` を 1 回投げる
 //! 4. GPU 実行でレイヤーが実際にオフロードされたことをログで確認する
 //! 5. 親プロセスを強制終了して子プロセスが道連れになることを確認する
 
@@ -16,8 +16,8 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 use yc_llama::{
-    Backend, DEFAULT_CTX_PER_SLOT, LlamaServer, ServerConfig, current_target_build,
-    download_verified, ensure_runtime, installed_runtime,
+    Backend, DEFAULT_CTX_PER_SLOT, LlamaServer, ServerConfig, cuda_backend, current_target_build,
+    download_verified, ensure_runtime, installed_runtime, vulkan_backend,
 };
 
 const MODEL_URL: &str = "https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF/resolve/e10c327b7a7ce84ffc427cb4b09360b781429fda/plamo-3-translate-0.8b-Q4_K_M.gguf";
@@ -41,11 +41,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cache dir: {}", cache_dir.display());
 
     // --- 1. ランタイムの取得 ------------------------------------------------
+    // CUDA はこのマシンで使える系統だけを対象にする（無ければ Vulkan / CPU だけ）。
+    let mut backends = vec![Backend::Cpu];
+    if let Some(vulkan) = vulkan_backend() {
+        backends.push(vulkan);
+    }
+    if let Some(cuda) = cuda_backend() {
+        backends.push(cuda);
+    }
+    println!("backends: {backends:?}");
+
     let mut servers = Vec::new();
-    for backend in [Backend::Cpu, Backend::Gpu] {
+    for backend in backends {
         let build =
             current_target_build(backend).unwrap_or_else(|| panic!("no build for {backend:?}"));
-        println!("\n=== {} ({}) ===", build.asset, build.install_dir_name());
+        println!(
+            "\n=== {} ({}) ===",
+            build.archives[0].asset,
+            build.install_dir_name()
+        );
         let started = Instant::now();
         let server_path = if skip_download {
             installed_runtime(build, &runtime_root)
@@ -131,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(Duration::from_millis(150)).await;
             log = server.startup_log();
         }
-        if *backend == Backend::Gpu {
+        if backend.is_gpu() {
             let evidence = log
                 .lines()
                 .find(|line| line.contains("offloaded") && line.contains("layers to GPU"))

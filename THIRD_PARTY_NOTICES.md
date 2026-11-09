@@ -109,6 +109,20 @@ The llama.cpp server binaries are not bundled with YakuCraft. They are downloade
 from the official ggml-org/llama.cpp GitHub Releases when local translation is enabled, and
 are verified against a pinned SHA-256 checksum before they are extracted and started.
 
+## NVIDIA CUDA runtime
+
+The CUDA build of llama.cpp is not bundled with YakuCraft either. When the CUDA backend is
+used, YakuCraft downloads two archives from the same ggml-org/llama.cpp GitHub Release: the
+llama.cpp CUDA build, and the matching `cudart` archive. The latter contains NVIDIA CUDA
+runtime and cuBLAS redistributables (`cudart64_*.dll`, `cublas64_*.dll`, `cublasLt64_*.dll`,
+and the equivalent `libcudart.so.*` / `libcublas*.so.*`). They are placed next to
+`llama-server` and are not modified. Both archives are verified against a pinned SHA-256
+checksum before extraction.
+
+These files are redistributed under the CUDA Toolkit End User License Agreement, whose
+Attachment A lists the CUDA runtime and cuBLAS libraries as distributable with applications:
+<https://docs.nvidia.com/cuda/eula/index.html>
+
 ## MIT License (llama.cpp)
 ```text
 MIT License

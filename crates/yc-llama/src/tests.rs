@@ -16,12 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     builds::{
-        ArchiveKind, Backend, PINNED_TAG, RUNTIME_BUILDS, RuntimeBuild, current_target_build,
+        ArchiveKind, Backend, CudaVariant, PINNED_TAG, RUNTIME_BUILDS, RuntimeArchive,
+        RuntimeBuild, current_target_build,
     },
     download::{download_verified_for_test, validate_download_url},
+    gpu::{NvidiaGpu, cuda_variant_for, parse_nvidia_smi_output},
     install::{ensure_runtime, installed_runtime, remove_runtime},
     manager::RuntimeManager,
-    server::{ServerConfig, ServerHandle, ServerLauncher},
+    server::{ServerConfig, ServerHandle, ServerLauncher, parse_list_devices},
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -59,19 +61,26 @@ impl TempDir {
 fn every_build_targets_the_pinned_tag() {
     assert!(!RUNTIME_BUILDS.is_empty());
     for build in RUNTIME_BUILDS {
-        assert_eq!(build.tag, PINNED_TAG, "{}", build.asset);
+        assert_eq!(build.tag, PINNED_TAG, "{}", build.install_dir_name());
         assert!(
-            build.sha256.len() == 64 && build.sha256.chars().all(|c| c.is_ascii_hexdigit()),
-            "{} has a malformed sha256",
-            build.asset
+            !build.archives.is_empty(),
+            "{} has no archive",
+            build.install_dir_name()
         );
-        assert_eq!(
-            build.sha256,
-            build.sha256.to_ascii_lowercase(),
-            "{} sha256 must be lowercase hex",
-            build.asset
-        );
-        assert!(build.size > 0, "{} has no size", build.asset);
+        for archive in build.archives {
+            assert!(
+                archive.sha256.len() == 64 && archive.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                "{} has a malformed sha256",
+                archive.asset
+            );
+            assert_eq!(
+                archive.sha256,
+                archive.sha256.to_ascii_lowercase(),
+                "{} sha256 must be lowercase hex",
+                archive.asset
+            );
+            assert!(archive.size > 0, "{} has no size", archive.asset);
+        }
     }
 }
 
@@ -87,9 +96,9 @@ fn build_table_has_one_entry_per_supported_target_and_backend() {
         );
         targets.push((build.target, build.backend));
     }
-    assert_eq!(targets.len(), 6);
+    assert_eq!(targets.len(), 10);
     for target in ["windows-x86_64", "windows-aarch64", "linux-x86_64"] {
-        for backend in [Backend::Cpu, Backend::Gpu] {
+        for backend in [Backend::Cpu, Backend::Vulkan] {
             assert!(
                 RUNTIME_BUILDS
                     .iter()
@@ -98,42 +107,114 @@ fn build_table_has_one_entry_per_supported_target_and_backend() {
             );
         }
     }
+    // CUDA は x64 の 2 ターゲットにだけある。Windows ARM64 は CPU / Vulkan のみ。
+    for target in ["windows-x86_64", "linux-x86_64"] {
+        for variant in [CudaVariant::Cuda12, CudaVariant::Cuda13] {
+            assert!(
+                RUNTIME_BUILDS
+                    .iter()
+                    .any(|build| build.target == target && build.backend == Backend::Cuda(variant)),
+                "missing {target} {variant:?}"
+            );
+        }
+    }
+    assert!(
+        !RUNTIME_BUILDS
+            .iter()
+            .any(|build| build.target == "windows-aarch64"
+                && build.backend.is_gpu()
+                && matches!(build.backend, Backend::Cuda(_))),
+        "CUDA must not be offered on Windows ARM64"
+    );
+}
+
+#[test]
+fn cuda_builds_consist_of_the_llama_and_cudart_archives() {
+    for build in RUNTIME_BUILDS
+        .iter()
+        .filter(|build| matches!(build.backend, Backend::Cuda(_)))
+    {
+        assert_eq!(
+            build.archives.len(),
+            2,
+            "{} needs the llama build and the cudart archive",
+            build.install_dir_name()
+        );
+        // 1 つは ggml-cuda を含むビルド本体、もう 1 つは cudart。
+        assert!(build.archives[0].asset.contains("llama-"));
+        assert!(build.archives[1].asset.starts_with("cudart-"));
+        // 合計サイズは両方の和。UI のダウンロード量表示がこれを使う。
+        assert_eq!(
+            build.total_size(),
+            build
+                .archives
+                .iter()
+                .map(|archive| archive.size)
+                .sum::<u64>()
+        );
+        // cudart は llama-server と同じディレクトリに置かないと動的リンカが見つけられない。
+        let cudart = build.archives[1];
+        if build.target == "linux-x86_64" {
+            assert_eq!(cudart.destination, Some("llama-b12110"));
+            assert!(cudart.strip_prefix.is_some());
+        } else {
+            assert_eq!(cudart.destination, None);
+            assert_eq!(cudart.strip_prefix, None);
+        }
+    }
 }
 
 #[test]
 fn build_urls_and_install_dirs_are_derived_from_the_tag() {
     let build = RUNTIME_BUILDS
         .iter()
-        .find(|build| build.asset == "llama-b12110-bin-win-cpu-x64.zip")
+        .find(|build| build.archives[0].asset == "llama-b12110-bin-win-cpu-x64.zip")
         .expect("windows cpu build");
     assert_eq!(
-        build.download_url(),
+        build.archives[0].download_url(build.tag),
         "https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-x64.zip"
     );
     assert_eq!(build.install_dir_name(), "b12110-cpu");
     assert_eq!(build.server_relative_path(), "llama-server.exe");
-    assert_eq!(build.archive_kind_name(), "zip");
+    assert_eq!(build.archives[0].archive_kind_name(), "zip");
 
     let vulkan = RUNTIME_BUILDS
         .iter()
-        .find(|build| build.asset == "llama-b12110-bin-win-vulkan-x64.zip")
+        .find(|build| build.archives[0].asset == "llama-b12110-bin-win-vulkan-x64.zip")
         .expect("windows vulkan build");
     assert_eq!(vulkan.install_dir_name(), "b12110-vulkan");
-    assert_eq!(vulkan.backend, Backend::Gpu);
+    assert_eq!(vulkan.backend, Backend::Vulkan);
+
+    // CUDA は系統ごとに別のディレクトリへ入る。同じディレクトリに混ぜると、
+    // 12.x と 13.x の cudart が上書きし合って壊れる。
+    let cuda12 = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.backend == Backend::Cuda(CudaVariant::Cuda12) && build.target == "windows-x86_64"
+        })
+        .expect("windows cuda 12 build");
+    assert_eq!(cuda12.install_dir_name(), "b12110-cuda-12.4");
+    let cuda13 = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.backend == Backend::Cuda(CudaVariant::Cuda13) && build.target == "windows-x86_64"
+        })
+        .expect("windows cuda 13 build");
+    assert_eq!(cuda13.install_dir_name(), "b12110-cuda-13.4");
 
     let linux = RUNTIME_BUILDS
         .iter()
         .find(|build| build.target == "linux-x86_64" && build.backend == Backend::Cpu)
         .expect("linux cpu build");
     assert_eq!(linux.install_dir_name(), "b12110-cpu");
-    assert_eq!(linux.archive, ArchiveKind::TarGz);
+    assert_eq!(linux.archives[0].archive, ArchiveKind::TarGz);
     // Linux の tar.gz は 1 段ディレクトリを挟む。Windows の zip は挟まない。
     assert_eq!(linux.server_relative_path(), "llama-b12110/llama-server");
 }
 
 #[test]
 fn current_target_build_matches_the_running_platform() {
-    for backend in [Backend::Cpu, Backend::Gpu] {
+    for backend in [Backend::Cpu, Backend::Vulkan] {
         let build = current_target_build(backend);
         if cfg!(any(
             all(target_os = "windows", target_arch = "x86_64"),
@@ -143,15 +224,290 @@ fn current_target_build_matches_the_running_platform() {
             let build = build.expect("supported target must resolve a build");
             assert_eq!(build.backend, backend);
             if cfg!(windows) {
-                assert_eq!(build.archive, ArchiveKind::Zip);
+                assert_eq!(build.archives[0].archive, ArchiveKind::Zip);
                 assert_eq!(build.server_relative_path(), "llama-server.exe");
             } else {
-                assert_eq!(build.archive, ArchiveKind::TarGz);
+                assert_eq!(build.archives[0].archive, ArchiveKind::TarGz);
             }
         } else {
             assert!(build.is_none());
         }
     }
+    // CUDA は Windows ARM64 では解決しない。
+    if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        for variant in [CudaVariant::Cuda12, CudaVariant::Cuda13] {
+            assert!(current_target_build(Backend::Cuda(variant)).is_none());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GPU 検出
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nvidia_smi_output_is_parsed_into_every_gpu() {
+    let gpus = parse_nvidia_smi_output("NVIDIA GeForce RTX 3060, 591.74, 8.6\n");
+    assert_eq!(gpus.len(), 1);
+    assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 3060");
+    assert_eq!(gpus[0].driver_major, 591);
+    assert_eq!(gpus[0].compute_capability, Some((8, 6)));
+
+    // 複数 GPU はすべて保持する。llama.cpp は `--device` を指定しない限り全部を使うため、
+    // 先頭だけ見ると遅い 1 台の存在を見落とす。
+    let gpus = parse_nvidia_smi_output(
+        "NVIDIA GeForce RTX 4090, 570.86, 8.9\nNVIDIA GeForce GTX 1050, 570.86, 6.1\n",
+    );
+    assert_eq!(gpus.len(), 2);
+    assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+    assert_eq!(gpus[1].name, "NVIDIA GeForce GTX 1050");
+    assert_eq!(gpus[1].compute_capability, Some((6, 1)));
+}
+
+#[test]
+fn nvidia_smi_output_without_compute_capability_still_detects_the_gpu() {
+    // `compute_cap` 列を持たない古いドライバーは 2 列だけを返す。
+    let gpus = parse_nvidia_smi_output("NVIDIA GeForce GTX 980, 470.256.02\n");
+    assert_eq!(gpus.len(), 1);
+    assert_eq!(gpus[0].driver_major, 470);
+    assert_eq!(gpus[0].compute_capability, None);
+
+    // 列はあるが値が `[N/A]` のドライバーもある。
+    let gpus = parse_nvidia_smi_output("NVIDIA GeForce RTX 3060, 591.74, [N/A]\n");
+    assert_eq!(gpus.len(), 1);
+    assert_eq!(gpus[0].compute_capability, None);
+
+    // GPU が無ければ空文字が返る。
+    assert!(parse_nvidia_smi_output("").is_empty());
+    assert!(parse_nvidia_smi_output("No devices were found\n").is_empty());
+}
+
+#[test]
+fn cuda_variant_follows_the_driver_and_compute_capability() {
+    let gpu = |driver_major, capability| NvidiaGpu {
+        name: "test".to_string(),
+        driver_major,
+        compute_capability: capability,
+    };
+    let single = |driver_major, capability| cuda_variant_for(&[gpu(driver_major, capability)]);
+
+    // 実コード（86 / 89）を持つ GPU は、新しいドライバーで CUDA 13。
+    assert_eq!(single(591, Some((8, 6))), Some(CudaVariant::Cuda13));
+    assert_eq!(single(580, Some((8, 9))), Some(CudaVariant::Cuda13));
+    // 13.x の下限を割るドライバーは 12.x。
+    assert_eq!(single(579, Some((8, 6))), Some(CudaVariant::Cuda12));
+    // 13.x が対象外にした古い GPU も 12.x（PTX を JIT できるドライバーが要る）。
+    assert_eq!(single(591, Some((6, 1))), Some(CudaVariant::Cuda12));
+    // 7.5 は CTK 13 の既定集合では virtual（PTX）だけ。実コードが無いので、PTX を JIT
+    // できるドライバー（615 系）が要る。580 では CUDA 13 を提供しない。
+    assert_eq!(single(580, Some((7, 5))), Some(CudaVariant::Cuda12));
+    assert_eq!(single(615, Some((7, 5))), Some(CudaVariant::Cuda13));
+    // compute capability が取れないと実コードの有無を判定できないので、PTX 前提で 12.x。
+    assert_eq!(single(591, None), Some(CudaVariant::Cuda12));
+    // 12.x の下限も割れば CUDA は提供しない。
+    assert_eq!(single(524, Some((8, 6))), None);
+    assert_eq!(single(470, None), None);
+    // Kepler（3.x）は CUDA 12 の対象外。
+    assert_eq!(single(591, Some((3, 5))), None);
+    // GPU が 1 台も無ければ CUDA は提供しない。
+    assert_eq!(cuda_variant_for(&[]), None);
+}
+
+/// 実コードを持たない GPU は PTX の JIT に頼る。NVIDIA の CUDA Compatibility Guide のとおり
+/// PTX は古いドライバーでは動かないため、マイナーバージョン互換の下限（525）では提供しない。
+///
+/// 下限はプラットフォームの実際のアーカイブで違う（12 系は Windows 12.4 = 551、
+/// Linux 12.8 = 570）。ここではビルドから下限を引いて、両方の OS で正しく判定されることを見る。
+#[test]
+fn a_ptx_only_gpu_requires_a_driver_that_can_jit_its_ptx() {
+    let Some(toolchain) =
+        current_target_build(Backend::Cuda(CudaVariant::Cuda12)).and_then(|build| build.cuda)
+    else {
+        return;
+    };
+    let floor = toolchain.minimum_driver_for((6, 1));
+    assert_eq!(
+        floor, toolchain.toolkit_driver,
+        "cc 6.1 has no native code, so it must need the toolkit driver"
+    );
+    assert!(
+        floor > toolchain.minor_compatibility_driver,
+        "PTX must require more than minor-version compatibility"
+    );
+
+    let gpu = |driver_major| NvidiaGpu {
+        name: "GTX 1080".to_string(),
+        driver_major,
+        compute_capability: Some((6, 1)),
+    };
+
+    // 下限の 1 つ手前までは提供しない。
+    for driver in [toolchain.minor_compatibility_driver, floor - 2, floor - 1] {
+        assert_eq!(cuda_variant_for(&[gpu(driver)]), None, "driver {driver}");
+    }
+    // 下限ちょうどから動く。
+    for driver in [floor, floor + 1, 580] {
+        assert_eq!(
+            cuda_variant_for(&[gpu(driver)]),
+            Some(CudaVariant::Cuda12),
+            "driver {driver}"
+        );
+    }
+}
+
+/// CUDA 12 系は Windows が 12.4、Linux が 12.8 で、Toolkit のドライバー下限が違う。
+/// 片方の値を他方へ流用すると、Linux の 551〜569 で「提供する」と誤判定してしまう。
+#[test]
+fn the_cuda_12_toolchain_matches_the_archive_that_is_actually_shipped() {
+    let windows = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.target == "windows-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
+        })
+        .and_then(|build| build.cuda)
+        .expect("windows cuda 12 build");
+    let linux = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.target == "linux-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
+        })
+        .and_then(|build| build.cuda)
+        .expect("linux cuda 12 build");
+
+    // 実際のアセット名と Toolkit の版が一致していること。
+    assert_eq!(windows.toolkit_version, "12.4");
+    assert_eq!(linux.toolkit_version, "12.8");
+    assert_eq!(
+        windows.toolkit_driver, 551,
+        "CUDA 12.4 GA Windows is >= 551.61"
+    );
+    assert_eq!(linux.toolkit_driver, 570, "CUDA 12.8 GA Linux is >= 570.26");
+    assert!(
+        linux.toolkit_driver > windows.toolkit_driver,
+        "the Linux 12.8 archive must not reuse the Windows 12.4 floor"
+    );
+
+    // 12.8 は 120a の実コードを持つ（12.4 は持たない）。sm_120 は 12.8 なら実コードで動く。
+    assert!(linux.native_architectures.contains(&(12, 0)));
+    assert!(!windows.native_architectures.contains(&(12, 0)));
+    assert_eq!(linux.minimum_driver_for((12, 0)), 525);
+    assert_eq!(windows.minimum_driver_for((12, 0)), windows.toolkit_driver);
+
+    // インストール先は実際の Toolkit の版で分かれる（同じディレクトリを共有しない）。
+    let windows_build = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.target == "windows-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
+        })
+        .expect("windows cuda 12 build");
+    let linux_build = RUNTIME_BUILDS
+        .iter()
+        .find(|build| {
+            build.target == "linux-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
+        })
+        .expect("linux cuda 12 build");
+    assert_eq!(windows_build.install_dir_name(), "b12110-cuda-12.4");
+    assert_eq!(linux_build.install_dir_name(), "b12110-cuda-12.8");
+}
+
+#[test]
+fn cuda_variant_covers_every_exposed_gpu() {
+    let gpu = |name: &str, capability| NvidiaGpu {
+        name: name.to_string(),
+        driver_major: 591,
+        compute_capability: Some(capability),
+    };
+
+    // 1 台目が新しくても、2 台目が 7.5 未満なら 13.x は選べない。llama.cpp は `--device` を
+    // 指定しない限り見えている GPU をすべて使うため、13.x の実コードが無い GPU が混ざる。
+    assert_eq!(
+        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("GTX 1050", (6, 1))]),
+        Some(CudaVariant::Cuda12)
+    );
+    // 13.x が対象外にした GPU が混ざれば、CUDA 12 の下限すら割るなら提供しない。
+    assert_eq!(
+        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("GTX 780", (3, 5))]),
+        None
+    );
+    // 両方とも実コードを持つなら 13.x。
+    assert_eq!(
+        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("RTX 3060", (8, 6))]),
+        Some(CudaVariant::Cuda13)
+    );
+    // 1 台でも compute capability が取れないと実コードの有無を判定できないので 12.x。
+    assert_eq!(
+        cuda_variant_for(&[
+            gpu("RTX 4090", (8, 9)),
+            NvidiaGpu {
+                name: "unknown".to_string(),
+                driver_major: 591,
+                compute_capability: None,
+            },
+        ]),
+        Some(CudaVariant::Cuda12)
+    );
+}
+
+#[test]
+fn detected_gpu_info_has_consistent_backend_selection() {
+    // 実機の検出結果そのものは環境依存なので、整合性だけを見る。
+    let info = crate::gpu::detect_gpu_info();
+    let cuda = crate::gpu::cuda_backend();
+    if let Some(backend) = cuda {
+        let variant = match backend {
+            Backend::Cuda(variant) => variant,
+            other => panic!("cuda_backend returned {other:?}"),
+        };
+        assert_eq!(
+            Some(variant),
+            cuda_variant_for(&info.nvidia),
+            "the selected variant must match the detected GPUs"
+        );
+    }
+    if crate::gpu::vulkan_backend().is_some() {
+        assert!(info.vulkan, "Vulkan must only be offered with a loader");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `--list-devices` の解析
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_devices_output_is_parsed_into_named_devices() {
+    // b12110 の Vulkan ビルドが実際に返す出力。
+    let devices = parse_list_devices(
+        "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 3060 (12108 MiB, 11340 MiB free)\n",
+    );
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].name, "Vulkan0");
+    assert_eq!(
+        devices[0].description,
+        "NVIDIA GeForce RTX 3060 (12108 MiB, 11340 MiB free)"
+    );
+
+    // CUDA ビルドの出力。
+    let devices = parse_list_devices(
+        "Available devices:\n  CUDA0: NVIDIA GeForce RTX 3060 (12287 MiB, 11238 MiB free)\n",
+    );
+    assert_eq!(devices[0].name, "CUDA0");
+
+    // デバイスが無いときは `(none)` だけが返る。見出し行をデバイスと誤認しないこと。
+    assert!(parse_list_devices("Available devices:\n  (none)\n").is_empty());
+    assert!(parse_list_devices("").is_empty());
+}
+
+#[test]
+fn backend_device_prefixes_match_the_build_kind() {
+    assert_eq!(Backend::Cpu.device_prefix(), None);
+    assert_eq!(Backend::Vulkan.device_prefix(), Some("Vulkan"));
+    assert_eq!(
+        Backend::Cuda(CudaVariant::Cuda13).device_prefix(),
+        Some("CUDA")
+    );
+    assert!(!Backend::Cpu.is_gpu());
+    assert!(Backend::Vulkan.is_gpu());
+    assert!(Backend::Cuda(CudaVariant::Cuda12).is_gpu());
 }
 
 // ---------------------------------------------------------------------------
@@ -186,11 +542,13 @@ fn download_urls_must_use_https() {
 #[test]
 fn every_pinned_build_url_passes_the_policy() {
     for build in RUNTIME_BUILDS {
-        assert!(
-            validate_download_url(&build.download_url()).is_ok(),
-            "{} is not an acceptable download URL",
-            build.asset
-        );
+        for archive in build.archives {
+            assert!(
+                validate_download_url(&archive.download_url(build.tag)).is_ok(),
+                "{} is not an acceptable download URL",
+                archive.asset
+            );
+        }
     }
 }
 
@@ -694,6 +1052,78 @@ fn extraction_accepts_a_realistic_linux_layout() {
     assert!(staging.join("llama-b12110/libllama.so.0.9.0").is_file());
 }
 
+/// CUDA の cudart は 1 段ディレクトリを挟み、`llama-server` と同じ場所へ置く必要がある。
+/// その組み合わせを実際のアーカイブと同じ形で再現する。
+#[test]
+fn extraction_places_the_cudart_archive_next_to_the_server() {
+    let dir = TempDir::new("cudart-layout");
+    let build = dir.path().join("llama.tar.gz");
+    write_tar_gz(&build, &[("llama-b12110/llama-server", b"binary")]);
+    let cudart = dir.path().join("cudart.tar.gz");
+    write_tar_gz(
+        &cudart,
+        &[
+            (
+                "cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64/libcudart.so.13",
+                b"rt",
+            ),
+            (
+                "cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64/libcublas.so.13",
+                b"blas",
+            ),
+        ],
+    );
+
+    let staging = dir.path().join("staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    crate::install::extract_archive_for_test(&build, &staging, ArchiveKind::TarGz)
+        .expect("the llama build must extract");
+    crate::install::extract_archive_with_layout_for_test(
+        &cudart,
+        &staging,
+        ArchiveKind::TarGz,
+        Some("cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64"),
+        Some("llama-b12110"),
+    )
+    .expect("the cudart archive must extract into the same directory");
+
+    assert!(staging.join("llama-b12110/llama-server").is_file());
+    assert_eq!(
+        std::fs::read(staging.join("llama-b12110/libcudart.so.13")).unwrap(),
+        b"rt"
+    );
+    assert!(staging.join("llama-b12110/libcublas.so.13").is_file());
+    // 1 段ディレクトリが残っていないこと。
+    assert!(
+        !staging
+            .join("cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64")
+            .exists()
+    );
+}
+
+#[test]
+fn extraction_rejects_an_archive_that_does_not_match_the_expected_prefix() {
+    // 想定と違うレイアウトを黙って捨てると、cudart が入らないまま「起動はするが GPU を
+    // 使わない」状態になる。展開時点で失敗させる。
+    let dir = TempDir::new("cudart-wrong-prefix");
+    let archive = dir.path().join("cudart.tar.gz");
+    write_tar_gz(&archive, &[("unexpected/libcudart.so.13", b"rt")]);
+
+    let staging = dir.path().join("staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    let result = crate::install::extract_archive_with_layout_for_test(
+        &archive,
+        &staging,
+        ArchiveKind::TarGz,
+        Some("cudart-llama-b12110-bin-ubuntu-cuda-13.4-x64"),
+        Some("llama-b12110"),
+    );
+    assert!(matches!(
+        result,
+        Err(crate::LlamaError::InvalidArchive { .. })
+    ));
+}
+
 /// b12110 の Linux 版は `libllama.so.0 -> libllama.so.0.9.0` のような相対リンクを含み、
 /// 動的リンカはこれを辿って実体を解決する。リンクを捨てると起動できない。
 #[cfg(unix)]
@@ -835,10 +1265,15 @@ async fn ensure_runtime_returns_the_existing_binary_without_network() {
         tag: PINNED_TAG,
         target: "windows-x86_64",
         backend: Backend::Cpu,
-        asset: "does-not-exist.zip",
-        size: 1,
-        sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-        archive: ArchiveKind::Zip,
+        cuda: None,
+        archives: &[RuntimeArchive {
+            asset: "does-not-exist.zip",
+            size: 1,
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            archive: ArchiveKind::Zip,
+            strip_prefix: None,
+            destination: None,
+        }],
         server_relative_path: "llama-server.exe",
     };
     let server = dir
@@ -890,11 +1325,17 @@ fn arguments_use_the_flags_verified_against_b12110() {
 
 #[test]
 fn gpu_arguments_offload_every_layer() {
-    let config = config_for(Backend::Gpu, 1, 4_096);
-    let joined = config.arguments(12345, "secret").join(" ");
-    assert!(joined.contains("-ngl all"));
-    assert!(!joined.contains("--device none"));
-    assert!(joined.contains("-c 4096"));
+    for backend in [
+        Backend::Vulkan,
+        Backend::Cuda(CudaVariant::Cuda12),
+        Backend::Cuda(CudaVariant::Cuda13),
+    ] {
+        let config = config_for(backend, 1, 4_096);
+        let joined = config.arguments(12345, "secret").join(" ");
+        assert!(joined.contains("-ngl all"), "{backend:?}");
+        assert!(!joined.contains("--device none"), "{backend:?}");
+        assert!(joined.contains("-c 4096"), "{backend:?}");
+    }
 }
 
 #[test]
@@ -1028,7 +1469,7 @@ async fn manager_restarts_when_the_config_changes() {
     let manager = RuntimeManager::with_launcher(launcher.clone(), Duration::from_secs(600));
 
     let cpu = config_for(Backend::Cpu, 1, 8_192);
-    let gpu = config_for(Backend::Gpu, 1, 8_192);
+    let gpu = config_for(Backend::Vulkan, 1, 8_192);
 
     drop(manager.ensure_server(&cpu).await.expect("cpu start"));
     drop(manager.ensure_server(&gpu).await.expect("gpu start"));
@@ -1037,6 +1478,25 @@ async fn manager_restarts_when_the_config_changes() {
     let handles = launcher.live_handles();
     assert_eq!(handles[0].shutdowns.load(Ordering::Acquire), 1);
     assert_eq!(handles[1].shutdowns.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn manager_restarts_when_only_the_cuda_variant_changes() {
+    // CUDA 12 と 13 は別のバイナリ・別のディレクトリなので、同じ GPU でも別サーバーになる。
+    let launcher = FakeLauncher::new();
+    let manager = RuntimeManager::with_launcher(launcher.clone(), Duration::from_secs(600));
+
+    let cuda12 = config_for(Backend::Cuda(CudaVariant::Cuda12), 1, 8_192);
+    let cuda13 = config_for(Backend::Cuda(CudaVariant::Cuda13), 1, 8_192);
+
+    drop(manager.ensure_server(&cuda12).await.expect("cuda 12 start"));
+    drop(manager.ensure_server(&cuda13).await.expect("cuda 13 start"));
+
+    assert_eq!(launcher.spawned_count(), 2);
+    assert_eq!(
+        launcher.live_handles()[0].shutdowns.load(Ordering::Acquire),
+        1
+    );
 }
 
 #[tokio::test]

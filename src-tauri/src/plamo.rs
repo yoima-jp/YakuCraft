@@ -15,7 +15,8 @@ use std::{
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use yc_llama::{
-    Backend, LlamaError, RuntimeManager, ServerConfig, current_target_build, installed_runtime,
+    Backend, LlamaError, RuntimeManager, ServerConfig, cuda_backend, current_target_build,
+    installed_runtime, vulkan_backend,
 };
 use yc_plamo::{DEFAULT_MODEL_ID, PlamoModel, find_model};
 use yc_project::AppSettings;
@@ -25,25 +26,26 @@ use crate::error::AppError;
 /// 設定キーの接頭辞。既存の `ai.<provider>.<field>` 規則に合わせる。
 const SETTING_PREFIX: &str = "ai.plamo";
 
-/// 既定のデバイス。Vulkan が使える環境では GPU の方が速い。
-const DEFAULT_DEVICE: PlamoDevice = PlamoDevice::Gpu;
-
-/// 既定デバイスの保存値。設定画面が未保存時に使う。
-pub fn default_device_str() -> &'static str {
-    DEFAULT_DEVICE.as_str()
-}
-
-/// 推論に使うデバイス。`Gpu` は Vulkan ビルドを指す。
+/// 推論に使うデバイス。
+///
+/// 旧バージョンは `gpu` / `cpu` の 2 値だけで、`gpu` は Vulkan ビルドを指していた。
+/// 保存済みの設定をそのまま読めるよう、`gpu` は [`PlamoDevice::Vulkan`] として受け付ける。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlamoDevice {
-    Gpu,
     Cpu,
+    Vulkan,
+    Cuda,
 }
 
 impl PlamoDevice {
+    /// 画面と保存値のすべての並び。設定画面の選択肢と同じ順にする。
+    pub const ALL: [Self; 3] = [Self::Cuda, Self::Vulkan, Self::Cpu];
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "gpu" => Some(Self::Gpu),
+            "cuda" => Some(Self::Cuda),
+            // 旧値。`gpu` は Vulkan ビルドを指していた。
+            "vulkan" | "gpu" => Some(Self::Vulkan),
             "cpu" => Some(Self::Cpu),
             _ => None,
         }
@@ -51,17 +53,77 @@ impl PlamoDevice {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Gpu => "gpu",
+            Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
             Self::Cpu => "cpu",
         }
     }
 
-    pub fn backend(self) -> Backend {
-        match self {
-            Self::Gpu => Backend::Gpu,
+    /// このデバイス用のランタイムの種類。プラットフォームに固定ビルドがあるときだけ `Some`。
+    ///
+    /// ダウンロードとサイズ表示に使う。デバイスが実際に使えるか（Vulkan ローダーの有無など）は
+    /// 見ない。見てしまうと、ローダーが無い環境で Vulkan のランタイムを取得できなくなり、
+    /// 「サイズ 0 のまま取得もできない」状態になる。使えないことは起動前のデバイス確認で伝える。
+    pub fn runtime_backend(self) -> Option<Backend> {
+        let backend = match self {
+            // CUDA は検出できたときだけ固定ビルドを選ぶ（系統が GPU とドライバーで決まる）。
+            Self::Cuda => cuda_backend()?,
+            Self::Vulkan => Backend::Vulkan,
             Self::Cpu => Backend::Cpu,
+        };
+        current_target_build(backend)?;
+        Some(backend)
+    }
+
+    /// このマシンで今すぐ使えるなら、そのランタイムの種類。
+    ///
+    /// 既定の選択に使う。Vulkan ローダーが無ければ Vulkan は返らないので、既定が CPU になる。
+    pub fn backend(self) -> Option<Backend> {
+        match self {
+            Self::Cuda => cuda_backend(),
+            Self::Vulkan => vulkan_backend(),
+            Self::Cpu => current_target_build(Backend::Cpu).map(|_| Backend::Cpu),
         }
     }
+
+    /// 設定画面に選択肢として出すか。
+    ///
+    /// CUDA だけは検出できたときだけ出す。選んでも準備できない値を並べても意味が無いため。
+    /// Vulkan はローダーが無くても出す（取得はでき、起動時に理由が分かる形で失敗する）。
+    pub fn is_offered(self) -> bool {
+        self.runtime_backend().is_some()
+    }
+}
+
+/// 保存済みのデバイス設定。未設定ならこのマシンで最速のものを選ぶ。
+///
+/// CUDA が使えるなら CUDA、次に Vulkan、どちらも無ければ CPU。未設定のまま CPU に固定すると、
+/// GPU があるマシンでも既定が遅い方になってしまう。
+pub fn saved_device(settings: &AppSettings) -> PlamoDevice {
+    settings
+        .values
+        .get(&device_key())
+        .and_then(Value::as_str)
+        .and_then(PlamoDevice::parse)
+        .unwrap_or_else(default_device)
+}
+
+/// 未設定時のデバイス。このマシンで今すぐ使えるもののうち最速を選ぶ。
+///
+/// ローダーが無い Vulkan は選ばない（選ぶと起動時に必ず失敗する）。取得可否とは別。
+pub fn default_device() -> PlamoDevice {
+    if PlamoDevice::Cuda.backend().is_some() {
+        PlamoDevice::Cuda
+    } else if PlamoDevice::Vulkan.backend().is_some() {
+        PlamoDevice::Vulkan
+    } else {
+        PlamoDevice::Cpu
+    }
+}
+
+/// 既定デバイスの保存値。設定画面が未保存時に使う。
+pub fn default_device_str() -> &'static str {
+    default_device().as_str()
 }
 
 /// サーバ起動までに揃っているべき情報。
@@ -69,6 +131,8 @@ impl PlamoDevice {
 pub struct PlamoRunConfig {
     pub model_id: String,
     pub device: PlamoDevice,
+    /// デバイスに対応するランタイムの種類。CUDA の系統まで確定させた値を運ぶ。
+    pub backend: Backend,
     pub model_path: PathBuf,
     pub server_path: PathBuf,
 }
@@ -370,15 +434,6 @@ pub fn saved_model(settings: &AppSettings) -> Option<&'static PlamoModel> {
     find_model(&saved_model_id(settings))
 }
 
-pub fn saved_device(settings: &AppSettings) -> PlamoDevice {
-    settings
-        .values
-        .get(&device_key())
-        .and_then(Value::as_str)
-        .and_then(PlamoDevice::parse)
-        .unwrap_or(DEFAULT_DEVICE)
-}
-
 pub fn license_accepted(settings: &AppSettings) -> bool {
     settings
         .values
@@ -412,13 +467,19 @@ pub fn runtime_ready(runtime_dir: &Path, device: PlamoDevice) -> bool {
 }
 
 pub fn server_path(runtime_dir: &Path, device: PlamoDevice) -> Option<PathBuf> {
-    let build = current_target_build(device.backend())?;
+    let build = current_target_build(device.runtime_backend()?)?;
     installed_runtime(build, runtime_dir)
 }
 
-/// ダウンロードが必要なバイト数。未対応プラットフォームでは 0。
+/// ダウンロードが必要なバイト数。未対応プラットフォーム、または CUDA が使えない環境では 0。
+///
+/// CUDA はビルド本体と cudart の 2 アーカイブを落とすため、合計を返す。Vulkan はローダーが
+/// 無くてもビルドは取得できるのでサイズを返す（使えないことは起動時に伝える）。
 pub fn runtime_size_bytes(device: PlamoDevice) -> u64 {
-    current_target_build(device.backend()).map_or(0, |build| build.size)
+    device
+        .runtime_backend()
+        .and_then(current_target_build)
+        .map_or(0, |build| build.total_size())
 }
 
 /// 設定画面とジョブ開始判定で共有する「実行できる状態か」。
@@ -454,10 +515,16 @@ fn run_config_for(
     if !model_downloaded(&plamo.models_dir, model) {
         return Err(not_ready_error());
     }
+    // ここではビルドの有無だけを見る。CUDA は検出できなければビルド自体が無いので
+    // 「準備できていない」になる。Vulkan はローダーが無くてもビルドは取得できるため、
+    // デバイスが無いことは起動前の確認（`LlamaServer::start`）で理由付きで失敗させる。
+    // ここで弾くと「ランタイムは入っているのに未準備」としか言えず、原因が分からない。
+    let backend = device.runtime_backend().ok_or_else(not_ready_error)?;
     let server_path = server_path(&plamo.runtime_dir, device).ok_or_else(not_ready_error)?;
     Ok(PlamoRunConfig {
         model_id: model.id.to_owned(),
         device,
+        backend,
         model_path: model_path(&plamo.models_dir, model),
         server_path,
     })
@@ -469,7 +536,7 @@ pub fn server_config(config: &PlamoRunConfig, slots: usize) -> Result<ServerConf
     ServerConfig::new(
         config.server_path.clone(),
         config.model_path.clone(),
-        config.device.backend(),
+        config.backend,
     )
     .with_slots(slots)
     .map_err(|error| {
@@ -523,10 +590,18 @@ pub fn download_error(error: LlamaError) -> AppError {
 }
 
 /// サーバ起動失敗。GPU はドライバ由来で失敗しやすいため、CPU への切り替えを案内する。
+///
+/// ただし GPU バックエンドでデバイスが見えていない場合は別の文言にする。llama.cpp の
+/// リリースビルドは GPU バックエンドを動的ライブラリとして読み込むため、ドライバーが
+/// 壊れていても起動自体は成功して CPU で走ってしまう。黙って CPU へ落とさず、
+/// 何が起きたかを伝える。
 pub fn runtime_start_error(device: PlamoDevice, error: LlamaError) -> AppError {
-    let message = match device {
-        PlamoDevice::Gpu => yc_locale::t!("ai.plamoRuntimeStartFailed"),
-        PlamoDevice::Cpu => yc_locale::t!("ai.providerFailed"),
+    let message = match &error {
+        LlamaError::GpuDeviceUnavailable { .. } => yc_locale::t!("ai.plamoGpuDeviceUnavailable"),
+        _ => match device {
+            PlamoDevice::Cuda | PlamoDevice::Vulkan => yc_locale::t!("ai.plamoRuntimeStartFailed"),
+            PlamoDevice::Cpu => yc_locale::t!("ai.providerFailed"),
+        },
     };
     AppError::new(
         "plamo_runtime_start_failed",
@@ -593,7 +668,10 @@ mod tests {
     }
 
     fn write_runtime(runtime_dir: &Path, device: PlamoDevice) {
-        let build = current_target_build(device.backend()).expect("current platform build");
+        let build = device
+            .backend()
+            .and_then(current_target_build)
+            .expect("current platform build");
         let server = runtime_dir
             .join(build.install_dir_name())
             .join(build.server_relative_path());
@@ -602,14 +680,33 @@ mod tests {
         fs::write(server, b"binary").expect("runtime fixture should be written");
     }
 
+    /// CPU を明示した設定。既定デバイスはマシン依存なので、テストは必ず明示する。
+    fn cpu_settings() -> AppSettings {
+        settings_with(&[
+            (&license_key(), Value::Bool(true)),
+            (&device_key(), Value::String("cpu".into())),
+        ])
+    }
+
     #[test]
-    fn device_parsing_rejects_unknown_values() {
-        assert_eq!(PlamoDevice::parse("gpu"), Some(PlamoDevice::Gpu));
+    fn device_parsing_accepts_the_three_values_and_the_legacy_gpu() {
+        assert_eq!(PlamoDevice::parse("cuda"), Some(PlamoDevice::Cuda));
+        assert_eq!(PlamoDevice::parse("vulkan"), Some(PlamoDevice::Vulkan));
         assert_eq!(PlamoDevice::parse("cpu"), Some(PlamoDevice::Cpu));
+        // 旧値。`gpu` は Vulkan ビルドを指していた。
+        assert_eq!(PlamoDevice::parse("gpu"), Some(PlamoDevice::Vulkan));
+
         assert_eq!(PlamoDevice::parse("GPU"), None);
         assert_eq!(PlamoDevice::parse(""), None);
-        assert_eq!(PlamoDevice::Gpu.as_str(), "gpu");
-        assert_eq!(PlamoDevice::Cpu.backend(), Backend::Cpu);
+        assert_eq!(PlamoDevice::parse("metal"), None);
+
+        assert_eq!(PlamoDevice::Cuda.as_str(), "cuda");
+        assert_eq!(PlamoDevice::Vulkan.as_str(), "vulkan");
+        assert_eq!(PlamoDevice::Cpu.as_str(), "cpu");
+        // 保存値は旧値へ戻さない。読み替えは parse のときだけ。
+        assert_eq!(PlamoDevice::Vulkan.as_str(), "vulkan");
+
+        assert_eq!(PlamoDevice::Cpu.backend(), Some(Backend::Cpu));
     }
 
     #[test]
@@ -620,7 +717,8 @@ mod tests {
             saved_model(&settings).map(|model| model.id),
             Some(DEFAULT_MODEL_ID)
         );
-        assert_eq!(saved_device(&settings), DEFAULT_DEVICE);
+        // 未設定ならこのマシンで使える最速のデバイス。
+        assert_eq!(saved_device(&settings), default_device());
         assert!(!license_accepted(&settings));
 
         // カタログに無い ID は既定へ読み替えず、未設定として扱う。
@@ -629,6 +727,74 @@ mod tests {
 
         let cpu = settings_with(&[(&device_key(), Value::String("cpu".into()))]);
         assert_eq!(saved_device(&cpu), PlamoDevice::Cpu);
+
+        // 旧値 `gpu` は Vulkan として読む。
+        let legacy = settings_with(&[(&device_key(), Value::String("gpu".into()))]);
+        assert_eq!(saved_device(&legacy), PlamoDevice::Vulkan);
+
+        // 未知の値は未設定と同じ扱い（既定へ落とす）。
+        let unknown = settings_with(&[(&device_key(), Value::String("metal".into()))]);
+        assert_eq!(saved_device(&unknown), default_device());
+    }
+
+    #[test]
+    fn the_default_device_prefers_cuda_then_vulkan_then_cpu() {
+        // 既定は「今すぐ使える」ものから選ぶ。ローダーが無い Vulkan は選ばない。
+        let default = default_device();
+        if PlamoDevice::Cuda.backend().is_some() {
+            assert_eq!(default, PlamoDevice::Cuda);
+        } else if PlamoDevice::Vulkan.backend().is_some() {
+            assert_eq!(default, PlamoDevice::Vulkan);
+        } else {
+            assert_eq!(default, PlamoDevice::Cpu);
+        }
+        assert_eq!(default_device_str(), default.as_str());
+    }
+
+    #[test]
+    fn cuda_is_only_offered_when_the_runtime_exists_for_this_platform() {
+        // 検出結果そのものは環境依存なので、整合性だけを見る。
+        if PlamoDevice::Cuda.is_offered() {
+            assert!(matches!(
+                PlamoDevice::Cuda.runtime_backend(),
+                Some(Backend::Cuda(_))
+            ));
+            assert!(runtime_size_bytes(PlamoDevice::Cuda) > 0);
+        } else {
+            assert_eq!(PlamoDevice::Cuda.runtime_backend(), None);
+            // 提供しない環境ではサイズも 0。UI のダウンロード量に出さない。
+            assert_eq!(runtime_size_bytes(PlamoDevice::Cuda), 0);
+            // 既定にも選ばれない。
+            assert_eq!(PlamoDevice::Cuda.backend(), None);
+        }
+    }
+
+    #[test]
+    fn vulkan_can_be_downloaded_even_without_a_loader() {
+        // Vulkan のビルドはプラットフォームに存在するので、ローダーが無くても取得できる。
+        // ここを `backend()` で判定すると、サイズが 0 になり取得もできなくなる。
+        let build = current_target_build(Backend::Vulkan);
+        if let Some(build) = build {
+            assert_eq!(PlamoDevice::Vulkan.runtime_backend(), Some(Backend::Vulkan));
+            assert_eq!(runtime_size_bytes(PlamoDevice::Vulkan), build.total_size());
+            assert!(runtime_size_bytes(PlamoDevice::Vulkan) > 0);
+            // ローダーが無ければ「今すぐ使える」方には入らない（既定は CPU へ）。
+            if !yc_llama::gpu_info().vulkan {
+                assert_eq!(PlamoDevice::Vulkan.backend(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn cuda_runtime_size_covers_both_archives() {
+        // CUDA はビルド本体と cudart の 2 アーカイブ。片方だけ数えると UI の
+        // ダウンロード量が実際の半分以下になる。
+        let build = current_target_build(Backend::Cuda(yc_llama::CudaVariant::Cuda13));
+        if let Some(build) = build {
+            assert_eq!(build.archives.len(), 2);
+            assert_eq!(runtime_size_bytes(PlamoDevice::Cuda), build.total_size());
+            assert!(build.total_size() > build.archives[0].size);
+        }
     }
 
     #[test]
@@ -636,7 +802,7 @@ mod tests {
         let temporary = TemporaryDirectory::create();
         let plamo = PlamoState::new(&temporary.0);
         let model = tiny_model();
-        let accepted = settings_with(&[(&license_key(), Value::Bool(true))]);
+        let accepted = cpu_settings();
 
         assert!(
             !configured_for(&plamo, &accepted, &model),
@@ -649,7 +815,7 @@ mod tests {
             "runtime is still missing"
         );
 
-        write_runtime(&plamo.runtime_dir, PlamoDevice::Gpu);
+        write_runtime(&plamo.runtime_dir, PlamoDevice::Cpu);
         assert!(configured_for(&plamo, &accepted, &model));
 
         // ライセンス未同意なら、ファイルが揃っていても実行できない。
@@ -667,17 +833,34 @@ mod tests {
         let model = tiny_model();
         write_model(&plamo.models_dir, &model);
         write_runtime(&plamo.runtime_dir, PlamoDevice::Cpu);
-        let accepted = settings_with(&[(&license_key(), Value::Bool(true))]);
 
-        assert!(
-            !configured_for(&plamo, &accepted, &model),
-            "gpu runtime is missing"
-        );
-        let cpu = settings_with(&[
+        // CPU のランタイムしか無いので、Vulkan を選ぶと未準備。
+        let vulkan = settings_with(&[
             (&license_key(), Value::Bool(true)),
-            (&device_key(), Value::String("cpu".into())),
+            (&device_key(), Value::String("vulkan".into())),
         ]);
-        assert!(configured_for(&plamo, &cpu, &model));
+        assert!(!configured_for(&plamo, &vulkan, &model));
+        assert!(configured_for(&plamo, &cpu_settings(), &model));
+    }
+
+    #[test]
+    fn a_cuda_setting_is_not_configured_where_cuda_is_not_offered() {
+        let temporary = TemporaryDirectory::create();
+        let plamo = PlamoState::new(&temporary.0);
+        let model = tiny_model();
+        write_model(&plamo.models_dir, &model);
+        // CUDA のランタイムを置いても、このマシンで CUDA が提供されていなければ未準備。
+        let cuda = settings_with(&[
+            (&license_key(), Value::Bool(true)),
+            (&device_key(), Value::String("cuda".into())),
+        ]);
+
+        if !PlamoDevice::Cuda.is_offered() {
+            assert!(!configured_for(&plamo, &cuda, &model));
+            let error = run_config_for(&plamo, &model, PlamoDevice::Cuda)
+                .expect_err("CUDA is not offered here");
+            assert_eq!(error.code, "plamo_not_ready");
+        }
     }
 
     #[test]
@@ -701,20 +884,21 @@ mod tests {
         let error = run_config(&plamo, &settings_with(&[])).expect_err("license is missing");
         assert_eq!(error.code, "plamo_license_not_accepted");
 
-        let accepted = settings_with(&[(&license_key(), Value::Bool(true))]);
-        let error = run_config_for(&plamo, &model, PlamoDevice::Gpu)
+        let accepted = cpu_settings();
+        let error = run_config_for(&plamo, &model, PlamoDevice::Cpu)
             .expect_err("the model file is missing");
         assert_eq!(error.code, "plamo_not_ready");
 
         write_model(&plamo.models_dir, &model);
         let error =
-            run_config_for(&plamo, &model, PlamoDevice::Gpu).expect_err("runtime is missing");
+            run_config_for(&plamo, &model, PlamoDevice::Cpu).expect_err("runtime is missing");
         assert_eq!(error.code, "plamo_not_ready");
 
-        write_runtime(&plamo.runtime_dir, PlamoDevice::Gpu);
+        write_runtime(&plamo.runtime_dir, PlamoDevice::Cpu);
         let config =
-            run_config_for(&plamo, &model, PlamoDevice::Gpu).expect("everything is installed");
-        assert_eq!(config.device, PlamoDevice::Gpu);
+            run_config_for(&plamo, &model, PlamoDevice::Cpu).expect("everything is installed");
+        assert_eq!(config.device, PlamoDevice::Cpu);
+        assert_eq!(config.backend, Backend::Cpu);
         assert_eq!(config.model_id, "plamo-test");
         assert!(config.model_path.is_file());
         assert!(config.server_path.is_file());
@@ -734,6 +918,7 @@ mod tests {
         let config = PlamoRunConfig {
             model_id: default_model().id.to_owned(),
             device: PlamoDevice::Cpu,
+            backend: Backend::Cpu,
             model_path: temporary.0.join("model.gguf"),
             server_path: temporary.0.join("llama-server.exe"),
         };
@@ -820,13 +1005,42 @@ mod tests {
 
     #[test]
     fn runtime_start_errors_suggest_cpu_only_for_gpu() {
-        assert_eq!(
-            runtime_start_error(PlamoDevice::Gpu, LlamaError::NotInstalled).user_message,
-            yc_locale::t!("ai.plamoRuntimeStartFailed")
-        );
+        for device in [PlamoDevice::Cuda, PlamoDevice::Vulkan] {
+            assert_eq!(
+                runtime_start_error(device, LlamaError::NotInstalled).user_message,
+                yc_locale::t!("ai.plamoRuntimeStartFailed")
+            );
+        }
         assert_eq!(
             runtime_start_error(PlamoDevice::Cpu, LlamaError::NotInstalled).user_message,
             yc_locale::t!("ai.providerFailed")
+        );
+    }
+
+    #[test]
+    fn a_missing_gpu_device_has_its_own_message() {
+        // GPU バックエンドはドライバーが壊れていると黙って CPU で走る。その場合だけ
+        // 「GPU が見つからない」と伝える（CPU へ切り替えろという案内より具体的）。
+        let error = LlamaError::GpuDeviceUnavailable {
+            backend: "cuda-13.4",
+            devices: "(none)".to_string(),
+        };
+        for device in [PlamoDevice::Cuda, PlamoDevice::Vulkan] {
+            assert_eq!(
+                runtime_start_error(
+                    device,
+                    LlamaError::GpuDeviceUnavailable {
+                        backend: "cuda-13.4",
+                        devices: "(none)".to_string(),
+                    }
+                )
+                .user_message,
+                yc_locale::t!("ai.plamoGpuDeviceUnavailable")
+            );
+        }
+        assert_eq!(
+            error.to_string(),
+            "the cuda-13.4 backend reports no device (available: (none))"
         );
     }
 }
