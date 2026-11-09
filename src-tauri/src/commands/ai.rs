@@ -2327,6 +2327,10 @@ mod tests {
         assert_eq!(saved_provider(&missing_store_file), None);
     }
 
+    // Windows では並列に走るテストが同じ時刻を読むことがあり、時刻だけの名前だと別のテストと
+    // ディレクトリを共有して互いの settings.json を上書きする。連番で必ず別の場所にする。
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     struct TemporaryDirectory(PathBuf);
 
     impl TemporaryDirectory {
@@ -2335,8 +2339,9 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("yakucraft-ai-{}-{nonce}", std::process::id()));
+            let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("yakucraft-ai-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }

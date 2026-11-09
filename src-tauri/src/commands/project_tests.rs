@@ -39,6 +39,8 @@ use yc_project::{
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
+static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 struct TemporaryDirectory(PathBuf);
 
 impl TemporaryDirectory {
@@ -47,8 +49,9 @@ impl TemporaryDirectory {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after Unix epoch")
             .as_nanos();
+        let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yakucraft-core-flow-{}-{nonce}",
+            "yakucraft-core-flow-{}-{nonce}-{id}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temporary directory should be created");

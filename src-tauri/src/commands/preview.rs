@@ -1125,6 +1125,8 @@ mod tests {
     };
     use uuid::Uuid;
 
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     struct TemporaryDirectory(PathBuf);
 
     impl TemporaryDirectory {
@@ -1133,8 +1135,11 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after the epoch")
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("yakucraft-preview-{}-{nonce}", std::process::id()));
+            let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "yakucraft-preview-{}-{nonce}-{id}",
+                std::process::id()
+            ));
             fs::create_dir_all(&path).expect("temporary directory should be created");
             Self(path)
         }
