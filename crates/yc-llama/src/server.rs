@@ -449,7 +449,6 @@ impl LlamaServer {
         // Linux は親が死んだら子も死ぬようにする（YakuCraft がクラッシュしても孤児を残さない）。
         #[cfg(target_os = "linux")]
         {
-            use std::os::unix::process::CommandExt;
             // SAFETY: pre_exec は fork 後 exec 前に走る。prctl は async-signal-safe な
             // システムコールだけで、確保やロックを行わない。
             unsafe {
