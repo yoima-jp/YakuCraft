@@ -50,8 +50,9 @@ const CATEGORIES: Array<[SettingsCategory, SettingsCategoryKey]> = [
   ["logs", "settings.logsCategory"],
 ];
 
-// 既定の ChatGPT を先頭に置く（既定値は settingsStore と commands/ai.rs の provider_from_settings）。
+// 既定の PLaMo を先頭に置く（既定値は settingsStore と commands/ai.rs の provider_from_settings）。
 const PROVIDERS: Array<[AiProviderId, SettingsProviderKey]> = [
+  ["plamo", "settings.providerPlamo"],
   ["chatgpt", "settings.providerChatgpt"],
   ["openai", "settings.providerOpenai"],
   ["anthropic", "settings.providerClaude"],
@@ -63,7 +64,6 @@ const PROVIDERS: Array<[AiProviderId, SettingsProviderKey]> = [
   ["lm-studio", "settings.providerLmStudio"],
   ["openai-compatible", "settings.providerOpenaiCompatible"],
   ["deepl", "settings.providerDeepl"],
-  ["plamo", "settings.providerPlamo"],
 ];
 
 function aiSaveConfig(settings: AiSettingsDto) {
@@ -204,13 +204,19 @@ export function SettingsScreen() {
   const savedProvider = useSettingsStore((state) => state.settings["ai.provider"]);
   // 設定を読み込む前でも翻訳先の選択肢を絞れるよう、AI 欄の編集中の値を優先する。
   const effectiveProvider = (ai?.provider ?? savedProvider) as AiProviderId | undefined;
+  // 翻訳先の制限は、`ai.provider` が明示的に plamo として保存されているときだけ掛ける。
+  // 既定が PLaMo になったため、未保存の利用者まで PLaMo の対応言語に絞ると、Minecraft の
+  // 言語の半分近く（ポルトガル語・トルコ語・ウクライナ語など）が最初から選べなくなる。
+  // モデルのダウンロードはプロバイダーを保存するので、PLaMo を設定した利用者は制限を受ける。
+  const explicitlySavedProvider = useSettingsStore((state) => state.savedValues["ai.provider"]);
+  const restrictTargetLanguages = explicitlySavedProvider === "plamo";
   // 別プロバイダーへ切り替えたときに、PLaMo の対応言語で選択肢を絞り続けないようにする。
-  const plamoSupportedLocales = plamoStatus && effectiveProvider === "plamo"
+  const plamoSupportedLocales = plamoStatus && restrictTargetLanguages
     ? plamoStatus.supportedTargetLocales.map((code) => code.toLowerCase())
     : null;
   // 対応言語が未取得（取得中・失敗）のまま選ばせると、非対応の翻訳先を保存できてしまう。
   // 取得できるまでは変更を止め、選択済みの値は表示したままにする。
-  const targetPickerLocked = effectiveProvider === "plamo" && plamoSupportedLocales === null;
+  const targetPickerLocked = restrictTargetLanguages && plamoSupportedLocales === null;
   const targetLocale = stringSetting(settings, "language.targetLocale", String(SETTING_DEFAULTS["language.targetLocale"]));
 
   const refreshModels = useCallback(async (config: Pick<AiSettingsDto, "provider" | "baseUrl">, key?: string) => {
@@ -271,9 +277,10 @@ export function SettingsScreen() {
       .catch((cause: unknown) => setError(errorMessage(cause)));
   }, [refreshModels]);
 
-  // PLaMo の状態は、そのプロバイダーを表示しているときだけ取得する。
+  // PLaMo の状態は、そのプロバイダーを表示しているとき、または翻訳先の制限が掛かるときに
+  // 取得する。後者は AI 欄で別プロバイダーを選んでいる間も選択肢の制限に必要になる。
   useEffect(() => {
-    if (effectiveProvider !== "plamo") return;
+    if (effectiveProvider !== "plamo" && !restrictTargetLanguages) return;
     let active = true;
     void getPlamoStatus()
       .then((status) => {
@@ -287,7 +294,7 @@ export function SettingsScreen() {
         setPlamoStatusFailed(true);
       });
     return () => { active = false; };
-  }, [effectiveProvider, plamoRefreshKey]);
+  }, [effectiveProvider, plamoRefreshKey, restrictTargetLanguages]);
 
   const refreshPlamo = useCallback(async () => {
     try {
@@ -616,7 +623,7 @@ export function SettingsScreen() {
                 <span>{translate("settings.provider")}</span>
                 <Select
                   aria-label={translate("settings.provider")}
-                  value={ai?.provider ?? "chatgpt"}
+                  value={ai?.provider ?? "plamo"}
                   disabled={busy || loginPending || plamoDownloading || !ai}
                   onChange={(provider) => void selectProvider(provider as AiProviderId)}
                   options={PROVIDERS.map(([value, labelKey]) => ({ value, label: translate(labelKey) }))}

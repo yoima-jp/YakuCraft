@@ -25,6 +25,7 @@ function setOnboardingState(language: "en" | "ko", systemLocale: string) {
     loaded: true,
     error: null,
     systemLocale,
+    savedValues: {},
   });
 }
 
@@ -83,5 +84,24 @@ describe("OnboardingScreen", () => {
     expect(useSettingsStore.getState().settings["onboarding.completed"]).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Finish" }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+  });
+
+  it("PLaMoが既定値のままで未保存なら、翻訳先をすべて選べる", async () => {
+    // 既定を PLaMo にしたことで、AI を設定していない新規利用者の翻訳先まで
+    // PLaMo の対応言語に絞ってはいけない。
+    render(<OnboardingScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.focus(screen.getByRole("combobox", { name: "Translation language" }));
+
+    const portuguese = (await screen.findAllByRole("option"))
+      .find((option) => option.querySelector("code")?.textContent === "pt_br");
+    expect(portuguese).toBeTruthy();
+    expect(portuguese?.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(portuguese!);
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+      "language.targetLocale": "pt_br",
+    })));
   });
 });

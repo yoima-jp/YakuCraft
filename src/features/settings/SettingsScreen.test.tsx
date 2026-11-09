@@ -120,11 +120,14 @@ describe("SettingsScreen API Key field", () => {
     useAppStore.setState({ settingsCategory: "ai" });
     useSettingsStore.setState({
       settings: { schemaVersion: 1, ...SETTING_DEFAULTS },
+      savedValues: {},
       loaded: true,
       error: null,
     });
     vi.mocked(getSettings).mockResolvedValue({ schemaVersion: 1, ...SETTING_DEFAULTS });
     vi.mocked(saveSettings).mockResolvedValue(undefined);
+    // 既定が PLaMo なので、AI 設定の読み込み前は PLaMo のパネルとして状態を取りに行く。
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus());
     vi.mocked(getAiSettings).mockImplementation(async (provider) =>
       provider === "chatgpt"
         ? settings("chatgpt", chatgptConfigured, chatgptConfigured ? "user@example.com" : undefined)
@@ -391,6 +394,7 @@ describe("SettingsScreen PLaMo panel", () => {
     useAppStore.setState({ settingsCategory: "ai" });
     useSettingsStore.setState({
       settings: { schemaVersion: 1, ...SETTING_DEFAULTS, "ai.provider": "plamo" },
+      savedValues: { "ai.provider": "plamo" },
       loaded: true,
       error: null,
     });
@@ -660,5 +664,22 @@ describe("SettingsScreen PLaMo panel", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "デバイス" }));
     fireEvent.click(screen.getByRole("option", { name: "CPU" }));
     expect(screen.queryByText("GPU には Vulkan 対応のドライバーが必要です。")).toBeNull();
+  });
+
+  it("PLaMoが既定値のままで未保存なら翻訳先を制限しない", async () => {
+    // 既定が PLaMo でも、明示的に保存していない利用者の翻訳先を絞ると、Minecraft の
+    // 言語の半分近くが最初から選べなくなる。保存値が無い状態を作って確かめる。
+    useAppStore.setState({ settingsCategory: "language" });
+    useSettingsStore.setState({ savedValues: {} });
+    vi.mocked(getSettings).mockResolvedValue({ schemaVersion: 1, ...SETTING_DEFAULTS });
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings());
+    render(<SettingsScreen />);
+
+    fireEvent.focus(await screen.findByRole("combobox", { name: "翻訳先の言語" }));
+
+    const portuguese = (await screen.findAllByRole("option"))
+      .find((option) => option.querySelector("code")?.textContent === "pt_br");
+    expect(portuguese).toBeTruthy();
+    expect(portuguese?.getAttribute("aria-disabled")).toBeNull();
   });
 });

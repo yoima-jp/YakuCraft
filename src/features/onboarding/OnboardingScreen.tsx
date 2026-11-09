@@ -15,7 +15,9 @@ export function OnboardingScreen() {
   const translate = useT();
   const systemLocale = useSettingsStore((state) => state.systemLocale);
   const save = useSettingsStore((state) => state.save);
-  const savedProvider = useSettingsStore((state) => state.settings["ai.provider"]);
+  // 既定が PLaMo になったため、保存値だけを見る。未保存の新規利用者まで対応言語に絞ると、
+  // Minecraft の言語の半分近くが最初から選べなくなる（モデルのダウンロード時に保存される）。
+  const savedProvider = useSettingsStore((state) => state.savedValues["ai.provider"]);
   const osLocale = systemLocale ?? (typeof navigator === "undefined" ? null : navigator.languages[0] ?? null);
   const [targetLocale, setTargetLocale] = useState(() => detectTargetLocale(osLocale));
   const [targetStep, setTargetStep] = useState(false);

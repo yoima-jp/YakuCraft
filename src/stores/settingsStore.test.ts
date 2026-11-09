@@ -19,6 +19,7 @@ describe("editor mod tab settings", () => {
     vi.clearAllMocks();
     useSettingsStore.setState({
       settings: { schemaVersion: 1, ...SETTING_DEFAULTS },
+      savedValues: {},
       loaded: false,
       error: null,
     });
@@ -114,5 +115,35 @@ describe("editor mod tab settings", () => {
     await useSettingsStore.getState().load();
 
     expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("既定のAIプロバイダーはPLaMoで、保存値とは区別する", async () => {
+    vi.mocked(getSettings).mockResolvedValue({ schemaVersion: 1, "onboarding.completed": true });
+
+    await useSettingsStore.getState().load();
+
+    expect(SETTING_DEFAULTS["ai.provider"]).toBe("plamo");
+    expect(useSettingsStore.getState().settings["ai.provider"]).toBe("plamo");
+    // 既定値の混ざった settings ではなく、保存された値だけで「明示的な選択」を判定する。
+    expect(useSettingsStore.getState().savedValues["ai.provider"]).toBeUndefined();
+  });
+
+  it("保存済みのAIプロバイダーは保存値として保持する", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      schemaVersion: 1,
+      "onboarding.completed": true,
+      "ai.provider": "chatgpt",
+    });
+
+    await useSettingsStore.getState().load();
+
+    expect(useSettingsStore.getState().settings["ai.provider"]).toBe("chatgpt");
+    expect(useSettingsStore.getState().savedValues["ai.provider"]).toBe("chatgpt");
+  });
+
+  it("保存したAIプロバイダーは保存値にも反映する", async () => {
+    await useSettingsStore.getState().save({ "ai.provider": "plamo" });
+
+    expect(useSettingsStore.getState().savedValues["ai.provider"]).toBe("plamo");
   });
 });

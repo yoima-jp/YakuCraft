@@ -52,6 +52,15 @@ pub fn run() {
                 tracing::warn!(%error, "deferred Project deletion sweep could not inspect projects directory");
             }
             app.manage(state::AppState::new(paths, log_guard));
+            // 既定プロバイダーを PLaMo へ変えたことによる一度きりの移行。資格情報ストアは
+            // OS の API を待つため、起動は止めず、UI スレッドの外で走らせる。失敗しても
+            // 起動は続ける（その場合は新しい既定のまま）。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = handle.try_state::<state::AppState>() {
+                    commands::ai::migrate_default_ai_provider(&state).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

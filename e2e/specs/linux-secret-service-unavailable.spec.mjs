@@ -16,6 +16,13 @@ describe("Linux Secret Service unavailable", () => {
         break;
       }
     }
+    // 既定の PLaMo は資格情報ストアを使わないため、この画面はエラー無しで開く。
+    // 鍵管理サービスが要るプロバイダーを選んだときに初めて案内が出ることを確かめる。
+    await $('[role="combobox"][aria-label="プロバイダー"]').waitForDisplayed({ timeout: 10_000 });
+    assert.equal(await $("[role=alert]").isExisting(), false, "PLaMo の表示で資格情報エラーが出ています。");
+    await $('[role="combobox"][aria-label="プロバイダー"]').click();
+    await $('[role="option"][data-value="chatgpt"]').click();
+
     const error = await $("[role=alert]");
     await error.waitForDisplayed({ timeout: 10_000 });
     assert.match(await error.getText(), /GNOME Keyring/, "鍵管理サービスの起動を促すエラーが表示されていません。");
