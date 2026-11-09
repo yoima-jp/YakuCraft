@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,10 @@ const cargoBin = path.join(process.env.CARGO_HOME ?? path.join(os.homedir(), ".c
 const cargoCommand = process.platform === "win32" ? path.join(cargoBin, "cargo.exe") : "cargo";
 const tauriDriverPath = path.join(cargoBin, process.platform === "win32" ? "tauri-driver.exe" : "tauri-driver");
 const screenshotsOnly = process.argv.includes("--screenshots");
+// PLaMo の実機E2Eは実モデル（数百MB）とGPU/CPUのランタイムを使うため、明示したときだけ流す。
+// `--plamo` は spec の選択と、開発用キャッシュからのシード可否をまとめて切り替える。
+const plamoOnly = process.argv.includes("--plamo") || process.env.YAKUCRAFT_E2E_PLAMO === "1";
+const plamoSeed = plamoOnly && process.env.YAKUCRAFT_E2E_PLAMO_SEED === "1";
 let childProcess;
 
 function run(command, args, { cwd = projectRoot, env = process.env, shell = false } = {}) {
@@ -86,6 +90,59 @@ async function assertProductionBundleHasNoE2EHook() {
   console.log("通常ビルドにE2E用window参照がないことを確認しました。");
 }
 
+/**
+ * PLaMo の実機検証を繰り返すためのシード。開発用キャッシュのモデルとランタイムを、
+ * `src-tauri/src/plamo.rs` が期待するレイアウト（`<data>/plamo/models`・`<data>/plamo/runtime`）
+ * へコピーし、ライセンス同意も保存する。初回の実ダウンロードは UI から通す前提で、
+ * これは 2 回目以降の短縮用。
+ */
+async function seedPlamoFiles(dataDirectory, devCachePath, settingsFile) {
+  const modelsDir = path.join(dataDirectory, "plamo", "models");
+  const runtimeDir = path.join(dataDirectory, "plamo", "runtime");
+  await mkdir(modelsDir, { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+
+  const modelFile = "plamo-3-translate-0.8b-Q4_K_M.gguf";
+  const modelCandidates = [
+    path.join(devCachePath, "models", modelFile),
+    path.join(devCachePath, "yc-llama-verify", "models", modelFile),
+  ];
+  const modelSource = modelCandidates.find((candidate) => existsSync(candidate));
+  if (modelSource) {
+    await copyFile(modelSource, path.join(modelsDir, modelFile));
+    console.log(`PLaMo モデルをシードしました: ${modelSource}`);
+  } else {
+    console.warn(`PLaMo モデルが見つからないためシードを省略します: ${modelFile}`);
+  }
+
+  // ランタイムは展開済みディレクトリをそのまま持ってくる（`b12110-cpu` / `b12110-vulkan`）。
+  for (const installDirName of ["b12110-cpu", "b12110-vulkan"]) {
+    const candidates = [
+      path.join(devCachePath, "yc-llama-verify", "runtimes", installDirName),
+      path.join(devCachePath, "runtimes", installDirName),
+    ];
+    const source = candidates.find((candidate) => existsSync(candidate));
+    if (!source) {
+      console.warn(`PLaMo ランタイムが見つからないためシードを省略します: ${installDirName}`);
+      continue;
+    }
+    await cp(source, path.join(runtimeDir, installDirName), { recursive: true });
+    console.log(`PLaMo ランタイムをシードしました: ${source}`);
+  }
+
+  // ファイルを置いただけでは実行できない。ライセンス同意と選択も保存し、
+  // シード後に UI のダウンロードを経ずに翻訳を始められる状態にする。
+  const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+  Object.assign(settings, {
+    "ai.provider": "plamo",
+    "ai.plamo.model": "plamo-3-translate-0.8b",
+    "ai.plamo.device": "gpu",
+    "ai.plamo.licenseAccepted": true,
+  });
+  await writeFile(settingsFile, JSON.stringify(settings), "utf8");
+  console.log("PLaMo の設定（モデル・デバイス・ライセンス同意）をシードしました。");
+}
+
 async function terminateDriverFromPidFile(pidFile) {
   if (!existsSync(pidFile)) return;
   const processId = Number(readFileSync(pidFile, "utf8").trim());
@@ -109,6 +166,11 @@ async function main() {
   const exportPath = path.join(temporaryRoot, "ja_jp.json");
   const dataDirectory = path.join(temporaryRoot, "app-data");
   const driverPidFile = path.join(temporaryRoot, "tauri-driver.pid");
+  // PLaMo の spec は実 Mod（Farmer's Delight）と、任意で開発用キャッシュのモデル・ランタイムを使う。
+  const devCachePath = process.env.YAKUCRAFT_E2E_PLAMO_DEV_CACHE
+    ?? path.join(process.env.LOCALAPPDATA ?? os.homedir(), "YakuCraft-dev-cache");
+  const plamoModJarPath = process.env.YAKUCRAFT_E2E_PLAMO_MOD_JAR
+    ?? path.join(devCachePath, "mods", "FarmersDelight-1.20.1-1.3.4.jar");
   const baseEnvironment = { ...process.env };
   delete baseEnvironment.VITE_E2E;
   delete baseEnvironment.YAKUCRAFT_DATA_DIR;
@@ -123,12 +185,16 @@ async function main() {
     YAKUCRAFT_E2E_EXPORT: exportPath,
     YAKUCRAFT_E2E_DRIVER_PID_FILE: driverPidFile,
     YAKUCRAFT_E2E_SCREENSHOTS: screenshotsOnly ? "1" : "0",
+    YAKUCRAFT_E2E_PLAMO: plamoOnly ? "1" : "0",
+    YAKUCRAFT_E2E_PLAMO_SEED: plamoSeed ? "1" : "0",
+    ...(plamoOnly ? { YAKUCRAFT_E2E_PLAMO_MOD_JAR: plamoModJarPath, YAKUCRAFT_E2E_PLAMO_DEV_CACHE: devCachePath } : {}),
   };
 
   try {
     await mkdir(dataDirectory, { recursive: true });
+    const settingsFile = path.join(dataDirectory, "settings.json");
     await writeFile(
-      path.join(dataDirectory, "settings.json"),
+      settingsFile,
       JSON.stringify({
         schemaVersion: 1,
         "updates.checkOnStartup": false,
@@ -138,6 +204,7 @@ async function main() {
       }),
       "utf8",
     );
+    if (plamoSeed) await seedPlamoFiles(dataDirectory, devCachePath, settingsFile);
 
     await run(cargoCommand, ["run", "-p", "yc-analysis", "--example", "make_fixture", "--", fixturePath]);
     await run(cargoCommand, ["run", "-p", "yc-analysis", "--example", "make_fixture", "--", largeFixturePath, "--keys", "500"]);

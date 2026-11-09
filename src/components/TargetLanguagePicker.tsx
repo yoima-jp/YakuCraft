@@ -142,6 +142,14 @@ export function TargetLanguagePicker({
           setOpen(true);
           setActiveIndex(firstEnabledIndex());
         }}
+        onClick={() => {
+          // Escで閉じた後も入力欄はフォーカスを持ったままなので、focus だけでは開き直せない。
+          // 押したら必ず候補を出し、閉じた状態で固まらないようにする。
+          if (disabled || open) return;
+          setQuery("");
+          setOpen(true);
+          setActiveIndex(firstEnabledIndex());
+        }}
         onChange={(event) => {
           if (disabled) return;
           setQuery(event.currentTarget.value);
