@@ -102,7 +102,18 @@ pub struct PlamoProviderOptions {
     /// スロットあたりのコンテキスト長。`None` なら `/props` から取得してキャッシュする。
     pub context_size: Option<u32>,
     /// 保護区間のマスク方式。既定は [`ProtectStrategy::BracketedIndex`]。
+    ///
+    /// profile ごとに変えたい場合は [`Self::protect_strategy_by_profile`] を使う。
     pub protect_strategy: ProtectStrategy,
+    /// profile ごとのマスク方式を選ぶか。既定は `true`。
+    ///
+    /// `true` のとき [`ProtectStrategy::for_profile`] が entry の `format_profile` から
+    /// 方式を決める（Patchouli は `PairedTag`、それ以外は `BracketedIndex`）。
+    /// `false` にすると [`Self::protect_strategy`] を全 profile に使う（従来の挙動）。
+    ///
+    /// 実測: `$(item)heat$()` のような Patchouli マクロは `PairedTag` でないと内側の
+    /// `heat` が訳されず残る。`§7(Hidden)` は逆に `BracketedIndex` の方が訳される。
+    pub protect_strategy_by_profile: bool,
     /// entry ごとのシェーダー設定判定。`None` なら該当なしとして扱う。
     pub shader_option_detector: Option<ShaderOptionDetector>,
     /// entry ごとの結果を受け取る観測フック。`None` なら何もしない。
@@ -116,6 +127,18 @@ pub struct PlamoProviderOptions {
     /// entry 種別のヒントすべて）。`TranslationContext` の mod 名を空にしても翻訳キーと
     /// 種別ヒントは残るため、文脈の効果を測るにはこの設定が要る。
     pub include_context: bool,
+    /// 用語集の語を履歴の `input`/`output` 対としても与えるか。既定は `false`。
+    ///
+    /// 実測（2B GPU、1,200 entry、用語集 60 語、対象 188 件）で、`glossary` 要素だけの
+    /// 遵守率は 90.4%、履歴を併用すると 85.1%、履歴だけなら 72.3% だった。
+    /// chrF も 0.4245 対 0.4242 対 0.4220 で履歴側が低い。履歴はプロンプト長を
+    /// 消費するだけで改善しないため既定では切る。評価で条件を変えるときのために口だけ残す。
+    pub glossary_history: bool,
+    /// `glossary` 要素をプロンプトへ入れるか。既定は `true`。
+    ///
+    /// `false` にすると用語集の語を `glossary` 要素として送らない。履歴だけを与えた
+    /// 場合（`glossary_history = true` + これが `false`）との比較のために置く。
+    pub include_glossary: bool,
     pub timeout: Duration,
 }
 
@@ -128,11 +151,17 @@ impl fmt::Debug for PlamoProviderOptions {
             .field("context_size", &self.context_size)
             .field("protect_strategy", &self.protect_strategy)
             .field(
+                "protect_strategy_by_profile",
+                &self.protect_strategy_by_profile,
+            )
+            .field(
                 "shader_option_detector",
                 &self.shader_option_detector.is_some(),
             )
             .field("entry_observer", &self.entry_observer.is_some())
             .field("include_context", &self.include_context)
+            .field("glossary_history", &self.glossary_history)
+            .field("include_glossary", &self.include_glossary)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -144,9 +173,12 @@ impl Default for PlamoProviderOptions {
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             context_size: None,
             protect_strategy: ProtectStrategy::default(),
+            protect_strategy_by_profile: true,
             shader_option_detector: None,
             entry_observer: None,
             include_context: true,
+            glossary_history: false,
+            include_glossary: true,
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -346,9 +378,22 @@ impl PlamoProvider {
         } else {
             String::new()
         };
-        let glossary = pfml3::select_glossary_terms(&entry.source, &context.glossary_terms);
+        let matched = pfml3::select_glossary_terms(&entry.source, &context.glossary_terms);
+        // 用語を履歴の対としても与えるか。実測では `glossary` 要素だけの方が遵守率が
+        // 高いので既定では切る。履歴の本文はマスク前の原文と同じく信頼できない入力
+        // なので、`build_prompt` が特殊トークンを含む対を落とす（ここでは組み立てだけ）。
+        let history = if self.options.glossary_history {
+            pfml3::glossary_history(&matched)
+        } else {
+            Vec::new()
+        };
+        let glossary: &[(String, String)] = if self.options.include_glossary {
+            &matched
+        } else {
+            &[]
+        };
 
-        let mut strategy = self.options.protect_strategy;
+        let mut strategy = self.strategy_for(entry);
         for attempt in 0..2 {
             if attempt > 0 {
                 strategy = strategy.alternative();
@@ -360,7 +405,8 @@ impl PlamoProvider {
                     source_language,
                     target_language,
                     &prompt_context,
-                    &glossary,
+                    glossary,
+                    &history,
                     strategy,
                     cancellation,
                 )
@@ -419,6 +465,18 @@ impl PlamoProvider {
         }
     }
 
+    /// entry に使う最初の保護方式。
+    ///
+    /// `protect_strategy_by_profile` が真なら profile ごとの既定を使う。実測で
+    /// Patchouli のマクロは `PairedTag`、`§` コードは `BracketedIndex` が優れる。
+    fn strategy_for(&self, entry: &TranslationEntry) -> ProtectStrategy {
+        if self.options.protect_strategy_by_profile {
+            ProtectStrategy::for_profile(entry.format_profile)
+        } else {
+            self.options.protect_strategy
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn attempt(
         &self,
@@ -427,6 +485,7 @@ impl PlamoProvider {
         target_language: &str,
         prompt_context: &str,
         glossary: &[(String, String)],
+        history: &[(String, String)],
         strategy: ProtectStrategy,
         cancellation: &CancellationToken,
     ) -> Result<Attempt> {
@@ -437,6 +496,7 @@ impl PlamoProvider {
             target_language,
             context: Some(prompt_context),
             glossary,
+            history,
         }) {
             Ok(prompt) => prompt,
             Err(Pfml3Error::UnsafeSourceText) => {
@@ -678,6 +738,7 @@ impl TranslationProvider for PlamoProvider {
             target_language: "ja",
             context: None,
             glossary: &[],
+            history: &[],
         })
         .map_err(|_| AiError::InvalidConfiguration)?;
         let n_predict = self.output_budget(4);
