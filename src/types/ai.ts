@@ -17,7 +17,7 @@ export type AiProviderId =
 
 export type PlamoModelId = "plamo-3-translate-0.8b" | "plamo-3-translate-2b" | "plamo-3-translate-8b";
 
-export type PlamoDevice = "gpu" | "cpu";
+export type PlamoDevice = "cuda" | "vulkan" | "cpu";
 
 export interface AiSettingsDto {
   provider: AiProviderId;
@@ -28,7 +28,7 @@ export interface AiSettingsDto {
   batchSize: number;
   concurrency: number;
   customPrompt: string;
-  // PLaMo のみ。ローカル実行に使うデバイスで、未指定時はバックエンドが gpu として扱う。
+  // PLaMo のみ。ローカル実行に使うデバイスで、未指定時はバックエンドが既定を決める。
   device?: PlamoDevice;
 }
 
@@ -61,8 +61,15 @@ export interface PlamoModelDto {
 
 export interface PlamoStatusDto {
   models: PlamoModelDto[];
-  runtimeReady: { cpu: boolean; gpu: boolean };
-  runtimeSizeBytes: { cpu: number; gpu: number };
+  // CUDA を提供しない環境では cuda が null。UI はこれで選択肢を出すか決める。
+  runtimeReady: { cpu: boolean; vulkan: boolean; cuda: boolean | null };
+  runtimeSizeBytes: { cpu: number; vulkan: number; cuda: number | null };
+  devices: {
+    cudaOffered: boolean;
+    gpuName: string | null;
+    // 未設定時に選ばれるデバイス。
+    default: PlamoDevice;
+  };
   licenseAccepted: boolean;
   // PLaMo が翻訳先として扱える Minecraft ロケール（小文字）。
   supportedTargetLocales: string[];

@@ -80,7 +80,7 @@ function plamoSettings(overrides: Partial<AiSettingsDto> = {}): AiSettingsDto {
     batchSize: 50,
     concurrency: 2,
     customPrompt: "",
-    device: "gpu",
+    device: "vulkan",
     ...overrides,
   };
 }
@@ -88,8 +88,9 @@ function plamoSettings(overrides: Partial<AiSettingsDto> = {}): AiSettingsDto {
 function plamoStatus(overrides: Partial<PlamoStatusDto> = {}): PlamoStatusDto {
   return {
     models: PLAMO_MODELS,
-    runtimeReady: { cpu: false, gpu: false },
-    runtimeSizeBytes: { cpu: 120_000_000, gpu: 240_000_000 },
+    runtimeReady: { cpu: false, vulkan: false, cuda: null },
+    runtimeSizeBytes: { cpu: 120_000_000, vulkan: 240_000_000, cuda: null },
+    devices: { cudaOffered: false, gpuName: null, default: "vulkan" },
     licenseAccepted: false,
     supportedTargetLocales: ["ja_jp", "en_us", "de_de"],
     downloading: false,
@@ -454,7 +455,7 @@ describe("SettingsScreen PLaMo panel", () => {
     await waitFor(() => expect(acceptPlamoLicense).toHaveBeenCalledOnce());
     await waitFor(() => expect(downloadPlamoFiles).toHaveBeenCalledWith(
       "plamo-3-translate-2b",
-      "gpu",
+      "vulkan",
       expect.any(Function),
     ));
   });
@@ -523,7 +524,7 @@ describe("SettingsScreen PLaMo panel", () => {
     vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({
       licenseAccepted: true,
       models: PLAMO_MODELS.map((model) => ({ ...model, downloaded: true })),
-      runtimeReady: { cpu: true, gpu: true },
+      runtimeReady: { cpu: true, vulkan: true, cuda: null },
     }));
     render(<SettingsScreen />);
     await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
@@ -586,5 +587,78 @@ describe("SettingsScreen PLaMo panel", () => {
 
     const supported = screen.getByRole("option", { name: /Deutschland/ });
     expect(supported.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("CUDAが使える環境でだけGPU（CUDA）を選択肢に出し、既定はバックエンドに従う", async () => {
+    // CUDA を提供しない環境では選択肢を出さない。選んでも準備できないため。
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+    fireEvent.click(screen.getByRole("combobox", { name: "デバイス" }));
+    expect(screen.queryByRole("option", { name: "GPU（CUDA）" })).toBeNull();
+    expect(screen.getByRole("option", { name: "GPU（Vulkan）" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: "GPU（Vulkan）" }));
+  });
+
+  it("CUDAが使える環境ではGPU（CUDA）を出し、未保存ならそれを既定にする", async () => {
+    vi.mocked(getPlamoStatus).mockResolvedValue(plamoStatus({
+      runtimeReady: { cpu: false, vulkan: false, cuda: false },
+      runtimeSizeBytes: { cpu: 120_000_000, vulkan: 240_000_000, cuda: 592_000_000 },
+      devices: { cudaOffered: true, gpuName: "NVIDIA GeForce RTX 3060", default: "cuda" },
+    }));
+    // device 未指定（未保存）で開くと、バックエンドの既定に従う。
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings({ device: undefined }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    const select = screen.getByRole("combobox", { name: "デバイス" });
+    expect(select.textContent).toContain("GPU（CUDA）");
+    fireEvent.click(select);
+    expect(screen.getByRole("option", { name: "GPU（CUDA）" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: "GPU（CUDA）" }));
+
+    // ダウンロード量は CUDA の 2 アーカイブ合計（592 MB）+ モデル（1.61 GB）。
+    expect(screen.getByRole("button", { name: /ダウンロード/ }).textContent).toContain("2.051");
+  });
+
+  it("旧値gpuはGPU（Vulkan）として表示する", async () => {
+    // 旧バージョンの保存値。読み替えないと選択肢と一致せず、保存し直すまで空表示になる。
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings({ device: "gpu" as never }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    expect(screen.getByRole("combobox", { name: "デバイス" }).textContent).toContain("GPU（Vulkan）");
+  });
+
+  it("CUDAが使えない環境に保存されたcudaは、表示だけでなく保存値も代替デバイスへ直す", async () => {
+    // 表示だけ既定へ寄せると、ダウンロードは Vulkan なのに保存値は cuda のままになり、
+    // 取得しても「未準備」が続く。表示した代替デバイスを保存にも反映する。
+    vi.mocked(getAiSettings).mockResolvedValue(plamoSettings({ device: "cuda" }));
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    // cudaOffered: false の既定は vulkan（plamoStatus の devices.default）。
+    expect(screen.getByRole("combobox", { name: "デバイス" }).textContent).toContain("GPU（Vulkan）");
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(saveAiProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "plamo", device: "vulkan" }),
+      undefined,
+    ));
+  });
+
+  it("VulkanのヒントはVulkanを選んだときだけ出す", async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => screen.getByRole("combobox", { name: "プロバイダー" }));
+    await selectPlamo();
+
+    // 既定は Vulkan なのでヒントが出る。
+    expect(screen.getByText("GPU には Vulkan 対応のドライバーが必要です。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("combobox", { name: "デバイス" }));
+    fireEvent.click(screen.getByRole("option", { name: "CPU" }));
+    expect(screen.queryByText("GPU には Vulkan 対応のドライバーが必要です。")).toBeNull();
   });
 });

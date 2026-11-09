@@ -393,7 +393,7 @@ describe("AI translation actions", () => {
         batchSize: 50,
         concurrency: 2,
         customPrompt: "",
-        device: "gpu",
+        device: "vulkan",
       });
     });
 

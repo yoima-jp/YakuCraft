@@ -8,6 +8,7 @@
 mod builds;
 mod download;
 mod error;
+mod gpu;
 mod install;
 mod manager;
 mod server;
@@ -16,13 +17,19 @@ mod server;
 mod tests;
 
 pub use builds::{
-    ArchiveKind, Backend, PINNED_TAG, RUNTIME_BUILDS, RuntimeBuild, current_target_build,
+    ArchiveKind, Backend, CudaVariant, PINNED_TAG, RUNTIME_BUILDS, RuntimeArchive, RuntimeBuild,
+    current_target_build,
 };
 pub use download::{download_verified, validate_download_url};
 pub use error::{LlamaError, Result};
+pub use gpu::{
+    GpuInfo, NvidiaGpu, cuda_backend, cuda_variant_for, detect_gpu_info, gpu_info,
+    parse_nvidia_smi_output, vulkan_backend,
+};
 pub use install::{ensure_runtime, installed_runtime, remove_runtime};
 pub use manager::{DEFAULT_IDLE_TIMEOUT, RuntimeManager, ServerLease};
 pub use server::{
-    DEFAULT_CTX_PER_SLOT, DEFAULT_STARTUP_TIMEOUT, LlamaServer, LlamaServerLauncher, MAX_SLOTS,
-    MIN_SLOTS, ServerConfig, ServerHandle, ServerLauncher,
+    DEFAULT_CTX_PER_SLOT, DEFAULT_STARTUP_TIMEOUT, DeviceEntry, LlamaServer, LlamaServerLauncher,
+    MAX_SLOTS, MIN_SLOTS, ServerConfig, ServerHandle, ServerLauncher, list_devices,
+    parse_list_devices,
 };

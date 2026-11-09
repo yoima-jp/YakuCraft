@@ -23,7 +23,9 @@ interface PlamoSectionProps {
   busy: boolean;
   targetLocale: string;
   onSettingsChange: (patch: Partial<AiSettingsDto>) => void;
-  onSaveSelection: () => Promise<boolean>;
+  // 実際に使うデバイスを渡す。表示した代替デバイスを保存にも反映するため、
+  // 画面が解決した値を親へ渡す（state の同期に頼ると再取得で戻ることがある）。
+  onSaveSelection: (device: PlamoDevice) => Promise<boolean>;
   onRefresh: () => Promise<void>;
   // ダウンロード中はプロバイダーを切り替えられないよう、親へ実行状況を伝える。
   onDownloadingChange: (downloading: boolean) => void;
@@ -42,6 +44,29 @@ function formatSize(bytes: number) {
 
 function failureMessage(cause: unknown, fallback: string) {
   return cause instanceof AppCommandError ? cause.appError.userMessage : fallback;
+}
+
+// 保存値は旧バージョンの "gpu"（Vulkan を指していた）のまま残っていることがある。
+// バックエンドも同じ読み替えをするが、保存し直す前の画面でも選択肢と一致させる。
+function normalizeDevice(value: string | undefined): PlamoDevice | undefined {
+  if (value === "gpu") return "vulkan";
+  return value === "cuda" || value === "vulkan" || value === "cpu" ? value : undefined;
+}
+
+/// 実際に使うデバイスを決める。表示・ダウンロード・保存のすべてがこれを使う。
+///
+/// 保存値が `cuda` でもこのマシンで提供していなければ既定へ寄せる。ここを表示だけに
+/// 適用すると、ダウンロードは代替デバイスなのに保存値は `cuda` のままで、取得しても
+/// 「未準備」が続く。
+export function resolvePlamoDevice(
+  settings: AiSettingsDto,
+  status: PlamoStatusDto | null,
+): PlamoDevice {
+  const saved = normalizeDevice(settings.device);
+  if (saved === "cuda" && status && !status.devices.cudaOffered) {
+    return status.devices.default;
+  }
+  return saved ?? status?.devices.default ?? "cpu";
 }
 
 export function PlamoSection({
@@ -63,14 +88,18 @@ export function PlamoSection({
   const [error, setError] = useState<string | null>(null);
   const [licenseDialogOpen, setLicenseDialogOpen] = useState(false);
 
-  const device: PlamoDevice = settings.device ?? "gpu";
+  // 保存値が無い場合はバックエンドが決めた既定（CUDA → Vulkan → CPU の順）に従う。
+  // 保存値が cuda でもこのマシンで CUDA を提供していなければ既定へ寄せる
+  // （バックエンドも同じ設定を「未準備」として扱う）。
+  const device: PlamoDevice = resolvePlamoDevice(settings, status);
   // 保存済みのモデルが一覧に無い場合でも操作不能にならないよう、既定の 2B に寄せる。
   const selectedModel = status?.models.find((model) => model.id === settings.model)
     ?? status?.models.find((model) => model.id === "plamo-3-translate-2b")
     ?? status?.models[0];
   // 選択中のモデルと、そのデバイス用ランタイムのうち、まだ無いものだけを合計する。
+  // CUDA のランタイムはビルド本体と cudart の 2 アーカイブで、`runtimeSizeBytes` が合計を持つ。
   const missingBytes = status && selectedModel
-    ? (status.runtimeReady[device] ? 0 : status.runtimeSizeBytes[device])
+    ? (status.runtimeReady[device] ? 0 : status.runtimeSizeBytes[device] ?? 0)
       + (selectedModel.downloaded ? 0 : selectedModel.sizeBytes)
     : 0;
   const targetLocaleSupported = status
@@ -104,7 +133,7 @@ export function PlamoSection({
     setError(null);
     // 選択中のモデル・デバイスを先に保存する。保存しないまま取得すると、完了後の再取得で
     // 保存済みの値に戻り、ダウンロードした選択が失われる。
-    if (!(await onSaveSelection())) return;
+    if (!(await onSaveSelection(device))) return;
     setProgress(null);
     setDownloading(true);
     try {
@@ -213,11 +242,19 @@ export function PlamoSection({
               disabled={busy || activeDownload}
               onChange={(value) => onSettingsChange({ device: value as PlamoDevice })}
               options={[
-                { value: "gpu", label: translate("settings.plamoDeviceGpu") },
+                // CUDA は対応する GPU とドライバーがある環境でだけ出す。無い環境で選べると
+                // 「準備できていない」としか言えず、選ぶ意味が無い。
+                ...(status.devices.cudaOffered
+                  ? [{ value: "cuda", label: translate("settings.plamoDeviceCuda") }]
+                  : []),
+                { value: "vulkan", label: translate("settings.plamoDeviceVulkan") },
                 { value: "cpu", label: translate("settings.plamoDeviceCpu") },
               ]}
             />
-            <span className="settings-field__hint">{translate("settings.plamoDeviceHint")}</span>
+            {/* Vulkan のヒントは Vulkan を選んだときだけ出す。CUDA には関係ない。 */}
+            {device === "vulkan" && (
+              <span className="settings-field__hint">{translate("settings.plamoDeviceHint")}</span>
+            )}
             {/* 実測で 8B の CPU 実行は 0.28 件/秒（GPU は 2.8 件/秒）。待ち時間の見積もりが
                 立たないまま選ばれるのを避けるため、この組み合わせのときだけ短く添える。 */}
             {device === "cpu" && selectedModel?.id === "plamo-3-translate-8b" && (

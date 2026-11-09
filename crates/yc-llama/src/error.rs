@@ -39,6 +39,16 @@ pub enum LlamaError {
     ServerSpawn { message: String },
     #[error("llama-server process control failed: {message}")]
     ProcessControl { message: String },
+    /// GPU バックエンドを選んだが、そのデバイスが見えていない。
+    ///
+    /// llama.cpp のリリースビルドはバックエンドを動的ライブラリとして読み込むため、
+    /// ドライバーが壊れていると「起動は成功して CPU で走る」状態になる。黙って CPU へ
+    /// 落ちると利用者は速度の低下に気づけないので、起動前に失敗させる。
+    #[error("the {backend} backend reports no device (available: {devices})")]
+    GpuDeviceUnavailable {
+        backend: &'static str,
+        devices: String,
+    },
 }
 
 impl From<std::io::Error> for LlamaError {

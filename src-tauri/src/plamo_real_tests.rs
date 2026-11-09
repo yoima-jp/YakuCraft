@@ -23,7 +23,7 @@ use yc_ai::{
     GlossaryTerm, TranslationContext, TranslationEntry, TranslationOptions, TranslationProvider,
     translate_entries,
 };
-use yc_llama::{Backend, current_target_build, ensure_runtime, installed_runtime};
+use yc_llama::{current_target_build, ensure_runtime, installed_runtime};
 use yc_plamo::{DEFAULT_MODEL_ID, PlamoProvider, PlamoProviderOptions, default_model};
 use yc_project::AppSettings;
 
@@ -68,8 +68,8 @@ fn prepare_data_dir(cache: &Path) -> PathBuf {
 
     // ランタイムは展開済みディレクトリをそのまま持ってくる。`ensure_runtime` は
     // `<runtime_root>/<install_dir_name>/<server_relative_path>` を見る。
-    for backend in [Backend::Cpu, Backend::Gpu] {
-        let Some(build) = current_target_build(backend) else {
+    for device in PlamoDevice::ALL {
+        let Some(build) = device.backend().and_then(current_target_build) else {
             continue;
         };
         if installed_runtime(build, &runtime_dir).is_some() {
@@ -239,9 +239,20 @@ async fn plamo_real_runtime_translates_on_cpu_and_gpu() {
     println!("data dir: {}", data_dir.display());
     let plamo = PlamoState::new(&data_dir);
 
+    // このマシンで使えるデバイスだけを対象にする。CUDA はドライバーと GPU 次第で、
+    // 使えない環境では `backend()` が `None` になる。
+    let devices: Vec<PlamoDevice> = PlamoDevice::ALL
+        .into_iter()
+        .filter(|device| device.backend().is_some())
+        .collect();
+    println!("devices: {devices:?}");
+
     // キャッシュが無い/足りない場合はダウンロードする（数 GB になることがある）。
-    for device in [PlamoDevice::Cpu, PlamoDevice::Gpu] {
-        let build = current_target_build(device.backend()).expect("current platform build");
+    for device in &devices {
+        let build = device
+            .backend()
+            .and_then(current_target_build)
+            .expect("current platform build");
         if installed_runtime(build, &plamo.runtime_dir).is_none() {
             ensure_runtime(
                 build,
@@ -267,7 +278,7 @@ async fn plamo_real_runtime_translates_on_cpu_and_gpu() {
         .expect("model download");
     }
 
-    for device in [PlamoDevice::Cpu, PlamoDevice::Gpu] {
+    for device in devices {
         println!("\n=== {device:?} ===");
         translate_with_device(&plamo, device).await;
     }

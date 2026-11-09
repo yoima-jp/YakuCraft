@@ -54,6 +54,9 @@ const STARTUP_LOG_LINES: usize = 512;
 /// ヘルスチェックの間隔。
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// `--list-devices` の待ち時間。バックエンドの読み込みだけで、モデルは読まない。
+const DEVICE_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 停止時にプロセスの終了を待つ時間。過ぎたら強制終了する。
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -195,21 +198,136 @@ impl ServerConfig {
         ];
         match self.backend {
             Backend::Cpu => {
-                // CPU ビルドには Vulkan デバイスが無いが、ドライバ由来のデバイスを拾わないよう
+                // CPU ビルドには GPU バックエンドが無いが、ドライバ由来のデバイスを拾わないよう
                 // 明示的に無効化し、レイヤーも 1 枚もオフロードしない。
                 args.push("--device".to_string());
                 args.push("none".to_string());
                 args.push("-ngl".to_string());
                 args.push("0".to_string());
             }
-            Backend::Gpu => {
-                // Vulkan ビルドで全レイヤーを GPU へ載せる。
+            Backend::Vulkan | Backend::Cuda(_) => {
+                // GPU ビルドで全レイヤーを GPU へ載せる。
                 args.push("-ngl".to_string());
                 args.push("all".to_string());
             }
         }
         args
     }
+}
+
+/// `llama-server --list-devices` が返すデバイス 1 つ分。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceEntry {
+    /// バックエンドが付ける名前（例: `CUDA0` / `Vulkan0`）。
+    pub name: String,
+    /// 名前以降の説明（例: `NVIDIA GeForce RTX 3060 (12287 MiB, 11238 MiB free)`）。
+    pub description: String,
+}
+
+/// `--list-devices` の出力を読む。
+///
+/// b12110 の出力は次の形（標準出力へ出る。デバイスが無ければ `(none)`）。
+///
+/// ```text
+/// Available devices:
+///   CUDA0: NVIDIA GeForce RTX 3060 (12287 MiB, 11238 MiB free)
+/// ```
+pub fn parse_list_devices(output: &str) -> Vec<DeviceEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (name, description) = trimmed.split_once(':')?;
+            // `Available devices:` のような見出し行を拾わないよう、名前の形を確かめる。
+            let name = name.trim();
+            if name.is_empty()
+                || !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                || !name.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                return None;
+            }
+            Some(DeviceEntry {
+                name: name.to_owned(),
+                description: description.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// `llama-server --list-devices` を実行してデバイス一覧を返す。
+///
+/// GPU ビルドはバックエンドを動的ライブラリとして読み込むため、ドライバーが壊れていると
+/// 起動自体は成功して CPU で走ってしまう。起動前にここで確かめる。
+pub fn list_devices(server_path: &Path) -> Result<Vec<DeviceEntry>> {
+    use std::io::Read;
+
+    let mut command = std::process::Command::new(server_path);
+    command
+        .arg("--list-devices")
+        .current_dir(server_path.parent().unwrap_or(Path::new(".")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command.spawn().map_err(|error| LlamaError::ServerSpawn {
+        message: error.to_string(),
+    })?;
+    let deadline = Instant::now() + DEVICE_LIST_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(LlamaError::ProcessControl {
+                    message: "llama-server --list-devices did not finish in time".to_string(),
+                });
+            }
+        }
+    }
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        stdout
+            .read_to_string(&mut output)
+            .map_err(|error| LlamaError::Io {
+                message: error.to_string(),
+            })?;
+    }
+    Ok(parse_list_devices(&output))
+}
+
+/// 指定バックエンドのデバイスが実際に見えていることを確かめる。
+///
+/// CPU バックエンドはデバイスを持たないので何もしない。GPU バックエンドで期待する接頭辞の
+/// デバイスが 1 つも無ければ [`LlamaError::GpuDeviceUnavailable`] を返す。ここで止めないと
+/// 「GPU を選んだのに CPU で翻訳していた」ことが利用者にも分からないままになる。
+fn ensure_backend_available(config: &ServerConfig) -> Result<()> {
+    let Some(prefix) = config.backend.device_prefix() else {
+        return Ok(());
+    };
+    let devices = list_devices(&config.server_path)?;
+    if devices.iter().any(|device| device.name.starts_with(prefix)) {
+        return Ok(());
+    }
+    Err(LlamaError::GpuDeviceUnavailable {
+        backend: config.backend.as_str(),
+        devices: if devices.is_empty() {
+            "(none)".to_string()
+        } else {
+            devices
+                .iter()
+                .map(|device| format!("{}: {}", device.name, device.description))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    })
 }
 
 /// 起動済みサーバーの操作面。テストでは偽実装に差し替える。
@@ -295,6 +413,9 @@ impl LlamaServer {
         // 呼び出し元の CWD ではなくそちらを基準に解決されてしまう。検証したときと同じ場所を
         // 指すよう、ここで絶対パスへ直してから起動する。
         let config = config.with_absolute_paths();
+        // GPU バックエンドは動的ライブラリとして読み込まれるため、ドライバーが壊れていると
+        // 起動自体は成功して CPU で走ってしまう。起動前にデバイスが見えていることを確かめる。
+        ensure_backend_available(&config)?;
         let port = free_loopback_port()?;
         let api_key = random_api_key();
         let args = config.arguments(port, &api_key);

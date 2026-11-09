@@ -9,10 +9,10 @@ import { SecondaryButton } from "../../components/button/Buttons";
 import { useAppStore } from "../../stores/appStore";
 import { SETTING_DEFAULTS, useSettingsStore } from "../../stores/settingsStore";
 import { checkForUpdate, loadUpdateSupport, useUpdaterStore } from "../updater/updater";
-import type { AiProviderId, AiSettingsDto, PlamoStatusDto } from "../../types/ai";
+import type { AiProviderId, AiSettingsDto, PlamoDevice, PlamoStatusDto } from "../../types/ai";
 import type { AppInfoDto } from "../../types/settings";
 import { MinecraftJarSection } from "./MinecraftJarSection";
-import { PlamoSection } from "./PlamoSection";
+import { PlamoSection, resolvePlamoDevice } from "./PlamoSection";
 import { TargetLanguagePicker } from "../../components/TargetLanguagePicker";
 import { UI_LANGUAGES, UI_LANGUAGE_INFO, isUiLanguage, t, useT, useUiLanguage, setUiLanguage } from "../../i18n";
 import "./SettingsScreen.css";
@@ -77,7 +77,8 @@ function aiSaveConfig(settings: AiSettingsDto) {
     concurrency: settings.concurrency,
     customPrompt: isPlamo ? "" : settings.customPrompt,
     // PLaMo だけが device を使う。他プロバイダーには送らず、既存の保存内容を変えない。
-    ...(isPlamo ? { device: settings.device ?? "gpu" } : {}),
+    // 未指定なら送らず、バックエンドに既定を決めさせる（このマシンで最速のもの）。
+    ...(isPlamo && settings.device ? { device: settings.device } : {}),
   };
 }
 
@@ -300,12 +301,15 @@ export function SettingsScreen() {
   }, []);
 
   // ダウンロードは選択中のモデル・デバイスで行うため、先に保存してから開始する。
-  const savePlamoSelection = useCallback(async () => {
+  // 画面が解決したデバイスを受け取る。保存済みの値がこのマシンで使えない場合
+  // （cuda が提供されない等）、画面は代替を表示しているので、その値を保存する。
+  const savePlamoSelection = useCallback(async (device: PlamoDevice) => {
     if (!ai || ai.provider !== "plamo") return false;
     setBusy(true);
     setError(null);
     try {
-      setAi(await saveAiProvider(aiSaveConfig(ai)));
+      const config = { ...ai, device };
+      setAi(await saveAiProvider(aiSaveConfig(config)));
       await loadSettings();
       return true;
     } catch (cause: unknown) {
@@ -353,7 +357,12 @@ export function SettingsScreen() {
     setError(null);
     setMessage(null);
     try {
-      const saved = await saveAiProvider(aiSaveConfig(ai), apiKey || undefined);
+      // PLaMo は画面が解決したデバイスを保存する。保存値がこのマシンで使えない場合
+      // （cuda が提供されない等）、画面は代替を表示しているのでその値を保存する。
+      const config = ai.provider === "plamo"
+        ? { ...ai, device: resolvePlamoDevice(ai, plamoStatus) }
+        : ai;
+      const saved = await saveAiProvider(aiSaveConfig(config), apiKey || undefined);
       setAi(saved);
       setApiKey("");
       setMessage(translate("settings.saved"));

@@ -478,15 +478,16 @@ pub async fn save_ai_provider(
                 settings
                     .values
                     .remove(&setting_key(provider, "customPrompt"));
+                // 旧値 `gpu` が来ても Vulkan として保存し直す。読み替えは parse に閉じ込め、
+                // 保存値としては常に現在の 3 値のいずれかにしておく。
+                let device = config
+                    .device
+                    .as_deref()
+                    .and_then(plamo::PlamoDevice::parse)
+                    .unwrap_or_else(plamo::default_device);
                 settings.values.insert(
                     setting_key(provider, "device"),
-                    Value::String(
-                        config
-                            .device
-                            .as_deref()
-                            .unwrap_or(plamo::default_device_str())
-                            .to_owned(),
-                    ),
+                    Value::String(device.as_str().to_owned()),
                 );
             } else {
                 settings.values.insert(
@@ -2412,6 +2413,18 @@ mod tests {
             validate_ai_config(&unknown_device).unwrap_err().code,
             "invalid_ai_settings"
         );
+
+        // 3 値すべてと、旧値 `gpu` を受け付ける。
+        for device in ["cuda", "vulkan", "cpu", "gpu"] {
+            assert!(
+                validate_ai_config(&SaveAiProviderInput {
+                    device: Some(device.into()),
+                    ..valid.clone()
+                })
+                .is_ok(),
+                "{device} must be accepted"
+            );
+        }
 
         // 並列度の範囲は既存プロバイダーと同じ規則。
         let bad_concurrency = SaveAiProviderInput {

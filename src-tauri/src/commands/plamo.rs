@@ -45,14 +45,32 @@ pub struct PlamoModelDto {
 #[serde(rename_all = "camelCase")]
 pub struct PlamoRuntimeReadyDto {
     pub cpu: bool,
-    pub gpu: bool,
+    pub vulkan: bool,
+    /// CUDA を提供しない環境では `null`。UI はこれが `null` かどうかで選択肢を出す。
+    pub cuda: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlamoRuntimeSizeDto {
     pub cpu: u64,
-    pub gpu: u64,
+    pub vulkan: u64,
+    /// CUDA を提供しない環境では `null`。提供する場合は 2 アーカイブの合計。
+    pub cuda: Option<u64>,
+}
+
+/// このマシンで使えるデバイス。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlamoDevicesDto {
+    /// CUDA を提供できるか（対応するビルドがあり、ドライバーと GPU が条件を満たす）。
+    ///
+    /// Vulkan はローダーが無くても取得できるため、ここでは扱わない（選択肢は常に出す）。
+    pub cuda_offered: bool,
+    /// 検出した NVIDIA GPU の名前（複数あれば代表の 1 台）。取れなければ `null`。
+    pub gpu_name: Option<String>,
+    /// 未設定時に選ばれるデバイス。UI の初期値に使う。
+    pub default: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -61,6 +79,7 @@ pub struct PlamoStatusDto {
     pub models: Vec<PlamoModelDto>,
     pub runtime_ready: PlamoRuntimeReadyDto,
     pub runtime_size_bytes: PlamoRuntimeSizeDto,
+    pub devices: PlamoDevicesDto,
     pub license_accepted: bool,
     pub supported_target_locales: Vec<String>,
     pub downloading: bool,
@@ -99,6 +118,7 @@ pub fn get_plamo_status(state: State<'_, AppState>) -> Result<PlamoStatusDto, Ap
 }
 
 fn plamo_status(state: &AppState, settings: &AppSettings) -> PlamoStatusDto {
+    let cuda_offered = PlamoDevice::Cuda.is_offered();
     PlamoStatusDto {
         models: models()
             .iter()
@@ -111,11 +131,22 @@ fn plamo_status(state: &AppState, settings: &AppSettings) -> PlamoStatusDto {
             .collect(),
         runtime_ready: PlamoRuntimeReadyDto {
             cpu: runtime_ready(&state.plamo.runtime_dir, PlamoDevice::Cpu),
-            gpu: runtime_ready(&state.plamo.runtime_dir, PlamoDevice::Gpu),
+            vulkan: runtime_ready(&state.plamo.runtime_dir, PlamoDevice::Vulkan),
+            // 提供しない環境ではサイズも 0 になるので、`null` にして UI から外す。
+            cuda: cuda_offered.then(|| runtime_ready(&state.plamo.runtime_dir, PlamoDevice::Cuda)),
         },
         runtime_size_bytes: PlamoRuntimeSizeDto {
             cpu: runtime_size_bytes(PlamoDevice::Cpu),
-            gpu: runtime_size_bytes(PlamoDevice::Gpu),
+            vulkan: runtime_size_bytes(PlamoDevice::Vulkan),
+            cuda: cuda_offered.then(|| runtime_size_bytes(PlamoDevice::Cuda)),
+        },
+        devices: PlamoDevicesDto {
+            cuda_offered,
+            // 複数 GPU でも UI に出すのは代表の 1 台だけ。
+            gpu_name: yc_llama::gpu_info()
+                .primary_gpu()
+                .map(|gpu| gpu.name.clone()),
+            default: plamo::default_device_str().to_owned(),
         },
         license_accepted: plamo::license_accepted(settings),
         supported_target_locales: supported_target_locales()
@@ -220,12 +251,19 @@ async fn download_files(
     channel: &Channel<PlamoDownloadEvent>,
     cancellation: &CancellationToken,
 ) -> Result<(), DownloadFailure> {
-    let build = current_target_build(device.backend()).ok_or_else(|| {
-        DownloadFailure::Error(AppError::simple(
-            "plamo_unsupported_platform",
-            &yc_locale::t!("ai.taskFailed"),
-        ))
-    })?;
+    // CUDA はビルド本体と cudart の 2 アーカイブを 1 つのディレクトリへ展開する。
+    // `ensure_runtime` が両方をまとめて取得し、進捗の分母も合計になる。
+    // ここではビルドの有無だけを見る（Vulkan ローダーの有無は見ない）。ローダーが無い環境でも
+    // 取得はでき、デバイスが無いことは起動前の確認で理由付きで伝わる。
+    let build = device
+        .runtime_backend()
+        .and_then(current_target_build)
+        .ok_or_else(|| {
+            DownloadFailure::Error(AppError::simple(
+                "plamo_unsupported_platform",
+                &yc_locale::t!("ai.taskFailed"),
+            ))
+        })?;
 
     ensure_runtime(
         build,
@@ -418,18 +456,71 @@ mod tests {
             models: Vec::new(),
             runtime_ready: super::PlamoRuntimeReadyDto {
                 cpu: true,
-                gpu: false,
+                vulkan: false,
+                cuda: Some(true),
             },
-            runtime_size_bytes: super::PlamoRuntimeSizeDto { cpu: 1, gpu: 2 },
+            runtime_size_bytes: super::PlamoRuntimeSizeDto {
+                cpu: 1,
+                vulkan: 2,
+                cuda: Some(3),
+            },
+            devices: super::PlamoDevicesDto {
+                cuda_offered: true,
+                gpu_name: Some("NVIDIA GeForce RTX 3060".into()),
+                default: "cuda".into(),
+            },
             license_accepted: true,
             supported_target_locales: vec!["ja_jp".into()],
             downloading: false,
         };
         let value = serde_json::to_value(status).unwrap();
-        assert_eq!(value["runtimeReady"], json!({"cpu": true, "gpu": false}));
-        assert_eq!(value["runtimeSizeBytes"], json!({"cpu": 1, "gpu": 2}));
+        assert_eq!(
+            value["runtimeReady"],
+            json!({"cpu": true, "vulkan": false, "cuda": true})
+        );
+        assert_eq!(
+            value["runtimeSizeBytes"],
+            json!({"cpu": 1, "vulkan": 2, "cuda": 3})
+        );
+        assert_eq!(value["devices"]["cudaOffered"], json!(true));
+        assert_eq!(
+            value["devices"]["gpuName"],
+            json!("NVIDIA GeForce RTX 3060")
+        );
+        assert_eq!(value["devices"]["default"], json!("cuda"));
         assert_eq!(value["licenseAccepted"], json!(true));
         assert_eq!(value["supportedTargetLocales"], json!(["ja_jp"]));
         assert_eq!(value["downloading"], json!(false));
+    }
+
+    #[test]
+    fn status_reports_cuda_as_null_when_it_is_not_offered() {
+        // CUDA を提供しない環境では `null`。UI はこれを見て選択肢を出すかどうかを決める。
+        let status = PlamoStatusDto {
+            models: Vec::new(),
+            runtime_ready: super::PlamoRuntimeReadyDto {
+                cpu: true,
+                vulkan: true,
+                cuda: None,
+            },
+            runtime_size_bytes: super::PlamoRuntimeSizeDto {
+                cpu: 1,
+                vulkan: 2,
+                cuda: None,
+            },
+            devices: super::PlamoDevicesDto {
+                cuda_offered: false,
+                gpu_name: None,
+                default: "vulkan".into(),
+            },
+            license_accepted: false,
+            supported_target_locales: Vec::new(),
+            downloading: false,
+        };
+        let value = serde_json::to_value(status).unwrap();
+        assert!(value["runtimeReady"]["cuda"].is_null());
+        assert!(value["runtimeSizeBytes"]["cuda"].is_null());
+        assert_eq!(value["devices"]["cudaOffered"], json!(false));
+        assert!(value["devices"]["gpuName"].is_null());
     }
 }
