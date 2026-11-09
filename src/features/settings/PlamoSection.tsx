@@ -218,6 +218,11 @@ export function PlamoSection({
               ]}
             />
             <span className="settings-field__hint">{translate("settings.plamoDeviceHint")}</span>
+            {/* 実測で 8B の CPU 実行は 0.28 件/秒（GPU は 2.8 件/秒）。待ち時間の見積もりが
+                立たないまま選ばれるのを避けるため、この組み合わせのときだけ短く添える。 */}
+            {device === "cpu" && selectedModel?.id === "plamo-3-translate-8b" && (
+              <span className="settings-field__hint">{translate("settings.plamoCpuSlowHint")}</span>
+            )}
           </div>
           {!targetLocaleSupported && (
             <p className="settings-field__hint">
@@ -248,20 +253,22 @@ export function PlamoSection({
                   <progress className="progress-bar" max={100} aria-label={translate("settings.plamoDownloadProgressAria")} />
                 )}
               <div className="settings-actions">
-                <SecondaryButton onClick={() => void cancelDownload()}>{translate("settings.cancel")}</SecondaryButton>
+                <button className="settings-action" type="button" onClick={() => void cancelDownload()}>
+                  {translate("settings.cancel")}
+                </button>
               </div>
             </div>
           ) : (
             <div className="settings-actions">
               {missingBytes > 0 && (
-                <SecondaryButton disabled={busy} onClick={() => void beginDownload()}>
+                <button className="settings-action" type="button" disabled={busy} onClick={() => void beginDownload()}>
                   {translate("settings.plamoDownload", { size: formatSize(missingBytes) })}
-                </SecondaryButton>
+                </button>
               )}
               {selectedModel?.downloaded && (
-                <SecondaryButton disabled={busy} onClick={() => void removeModel()}>
+                <button className="settings-action" type="button" disabled={busy} onClick={() => void removeModel()}>
                   {translate("settings.delete")}
-                </SecondaryButton>
+                </button>
               )}
             </div>
           )}

@@ -88,6 +88,9 @@ export const config = {
     ? [path.resolve(process.env.YAKUCRAFT_E2E_SPEC)]
     : process.env.YAKUCRAFT_E2E_SCREENSHOTS === "1"
     ? [path.join(e2eDirectory, "specs", "screenshots.spec.mjs")]
+    : process.env.YAKUCRAFT_E2E_PLAMO === "1"
+    // PLaMo は実モデルと実ランタイムを使うため、他の spec とは分けて単独で流す。
+    ? [path.join(e2eDirectory, "specs", "plamo-local-translation.spec.mjs")]
     : [
       ...(process.platform === "linux"
         ? [path.join(e2eDirectory, "specs", "linux-runtime.spec.mjs")]
