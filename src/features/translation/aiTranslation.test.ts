@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAiSettings, getAiTargetSupport, listEntries, listModUnits, saveSettings, startAiJob } from "../../lib/tauri";
+import * as tauri from "../../lib/tauri";
 import type { RequestConfirmation } from "../../components/useDialogConfirmation";
 import { translateSelectedWithAi, translateWholeProjectWithAi, translateWithAi } from "./aiTranslation";
 import { EditorToolbar } from "./EditorToolbar";
@@ -39,6 +40,7 @@ vi.mock("../../lib/tauri", () => ({
     origin: entry.origin,
     flags: entry.flags,
   }),
+  downloadPlamoFiles: vi.fn(),
   getAiSettings: vi.fn(),
   getAiTargetSupport: vi.fn(),
   listEntries: vi.fn(),
@@ -395,6 +397,39 @@ describe("AI translation actions", () => {
         customPrompt: "",
         device: "gpu",
       });
+    });
+
+    it("未ダウンロードの既定PLaMoでは設定を開き、ダウンロードを始めない", async () => {
+      // 既定が PLaMo でも、モデルとランタイムは利用者がダウンロードを選ぶまで取得しない。
+      vi.mocked(getAiSettings).mockResolvedValue({
+        provider: "plamo",
+        configured: false,
+        model: "plamo-3-translate-2b",
+        baseUrl: "",
+        batchSize: 50,
+        concurrency: 2,
+        customPrompt: "",
+        device: "gpu",
+      });
+
+      await translateWithAi([1], requestConfirmation);
+
+      expect(useAppStore.getState().openSettings).toHaveBeenCalledWith("ai");
+      expect(tauri.downloadPlamoFiles).not.toHaveBeenCalled();
+      expect(startAiJob).not.toHaveBeenCalled();
+    });
+
+    it("既定のPLaMoが対応しない翻訳先では案内を出し、ジョブを開始しない", async () => {
+      // 既定が PLaMo でも、翻訳先が対応表に無ければ翻訳そのものを始めない。
+      vi.mocked(getAiTargetSupport).mockResolvedValue({ level: "unsupported" });
+
+      await translateWithAi([1], requestConfirmation);
+
+      expect(getAiTargetSupport).toHaveBeenCalledWith("ja_jp");
+      expect(startAiJob).not.toHaveBeenCalled();
+      expect(useAiJobStore.getState().notice).toBe(
+        "PLaMo は 日本語 に対応していません。設定で別の AI プロバイダーを選ぶか、手動で翻訳してください。",
+      );
     });
 
     it("選択項目の翻訳では外部送信の同意を求めず、同意状態も書き換えない", async () => {

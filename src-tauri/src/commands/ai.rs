@@ -252,6 +252,11 @@ pub async fn get_ai_settings(
     provider: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AiSettings, AppError> {
+    // 既定を決める前に移行の完了を待つ。待たずに読むと、移行が保存する前に
+    // 「未保存 = PLaMo」を返し、画面がその結果を保持してしまう。
+    if provider.is_none() {
+        migrate_default_ai_provider(&state).await;
+    }
     let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
     let provider = match provider {
         Some(provider) => parse_provider(&provider)?,
@@ -288,6 +293,8 @@ pub async fn get_ai_target_support(
     target_locale: String,
     state: State<'_, AppState>,
 ) -> Result<AiTargetSupport, AppError> {
+    // 対応可否は既定プロバイダーで変わるため、移行の完了を待ってから判定する。
+    migrate_default_ai_provider(&state).await;
     let settings = load_settings(&state.paths.settings_file).map_err(settings_error)?;
     let provider = provider_from_settings(&settings)?;
     // PLaMo の対応言語はカタログ由来の固定表で決まるため、資格情報もネットワークも要らない。
@@ -1617,13 +1624,115 @@ fn setting_key(provider: ProviderId, field: &str) -> String {
     format!("ai.{}.{}", provider.as_str(), field)
 }
 
+/// 移行時に資格情報を調べる順序。`save_api_key` が受け付けるプロバイダーをすべて含める。
+/// ログインだけで使い始められる ChatGPT を先頭に置き、複数の資格情報が残っている場合は
+/// そちらを優先する。Ollama と LM Studio は画面に API キー欄を出さないが、ストアには
+/// 保存できるため、取りこぼすと保存済みの設定が新しい既定へ置き換わってしまう。
+const CREDENTIAL_PROVIDERS_BY_MIGRATION_PRIORITY: &[ProviderId] = &[
+    ProviderId::ChatGpt,
+    ProviderId::OpenAi,
+    ProviderId::Anthropic,
+    ProviderId::Gemini,
+    ProviderId::OpenRouter,
+    ProviderId::DeepSeek,
+    ProviderId::Groq,
+    ProviderId::OpenAiCompatible,
+    ProviderId::DeepL,
+    ProviderId::Ollama,
+    ProviderId::LmStudio,
+];
+
+/// 既定プロバイダーを PLaMo へ変えたことによる、一度きりの起動時移行。
+///
+/// `ai.provider` を保存していない利用者は、資格情報だけを保存していることがある。既定を
+/// 変えただけでその設定を黙って置き換えないよう、保存済みの資格情報から使っていた
+/// プロバイダーを推定して `ai.provider` に書き戻す。資格情報ストアが使えない環境
+/// （Linux で Secret Service が無い等）や資格情報が無い場合は何も保存せず、新しい既定
+/// （PLaMo）のままにする。資格情報そのものは読むだけで、ログにも出さない。
+pub(crate) async fn migrate_default_ai_provider(state: &AppState) {
+    // 起動時のタスクと最初の設定読み込みが同じセルを通る。先に始めた側だけが実際に判定し、
+    // 後から来た側はその完了を待つ。待つのは読み込み側だけで、起動は止めない。
+    state
+        .ai_provider_migration
+        .get_or_init(|| async {
+            migrate_default_ai_provider_at(
+                &state.paths.settings_file,
+                state.credentials.as_deref(),
+            )
+            .await;
+        })
+        .await;
+}
+
+async fn migrate_default_ai_provider_at(
+    settings_file: &std::path::Path,
+    credentials: Option<&CredentialManager>,
+) {
+    let Some(credentials) = credentials else {
+        tracing::info!(
+            "AI credential store is unavailable, so the default AI provider stays PLaMo"
+        );
+        return;
+    };
+    match load_settings(settings_file) {
+        Ok(settings) if settings.values.contains_key("ai.provider") => return,
+        Ok(_) => {}
+        Err(error) => {
+            tracing::info!(%error, "AI provider migration skipped because settings could not be read");
+            return;
+        }
+    }
+    for provider in CREDENTIAL_PROVIDERS_BY_MIGRATION_PRIORITY {
+        match credentials.status(*provider).await {
+            Ok(status) if status.configured => {
+                persist_migrated_provider(settings_file, *provider);
+                return;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // 壊れたストアでは「資格情報が無い」と区別できないため、何も保存しない。
+                tracing::info!(%error, "AI provider migration skipped because the credential store could not be read");
+                return;
+            }
+        }
+    }
+    tracing::info!("no stored AI credential was found, so the default AI provider stays PLaMo");
+}
+
+fn persist_migrated_provider(settings_file: &std::path::Path, provider: ProviderId) {
+    let result = super::settings::update_settings_file(
+        settings_file,
+        |settings| {
+            // 判定中に利用者が保存した選択を上書きしない。
+            settings
+                .values
+                .entry("ai.provider".to_owned())
+                .or_insert_with(|| Value::String(provider.as_str().to_owned()));
+            Ok(())
+        },
+        settings_error,
+        settings_error,
+    );
+    match result {
+        Ok(_) => tracing::info!(
+            provider = provider.as_str(),
+            "kept the AI provider that already has a stored credential"
+        ),
+        Err(error) => tracing::info!(
+            error_code = error.code,
+            "AI provider migration could not save the settings file"
+        ),
+    }
+}
+
 fn provider_from_settings(settings: &AppSettings) -> Result<ProviderId, AppError> {
     let provider = settings
         .values
         .get("ai.provider")
         .and_then(Value::as_str)
-        // 既定は ChatGPT（サブスクリプション）。API Key を用意せずにログインだけで使い始められるため。
-        .unwrap_or("chatgpt");
+        // 既定は PLaMo。この PC 内だけで動き、無料で、アカウントも要らず、原文が PC の外へ出ない。
+        // モデルとランタイムは自動取得しない（設定画面でダウンロードを選んだときだけ取得する）。
+        .unwrap_or("plamo");
     parse_provider(provider)
 }
 
@@ -1960,9 +2069,10 @@ mod tests {
 
     use super::{
         AiEntryBaseline, AiJobEntry, AiSettings, AiTargetSupportLevel, SaveAiProviderInput,
-        ai_error_for_provider, ai_settings_from, apply_outcome_to_project, parse_provider,
-        prepare_ai_job_entries, provider_base_url, provider_from_settings, provider_is_configured,
-        split_job_batches, target_support_level, validate_ai_config,
+        ai_error_for_provider, ai_settings_from, apply_outcome_to_project,
+        migrate_default_ai_provider_at, parse_provider, prepare_ai_job_entries, provider_base_url,
+        provider_from_settings, provider_is_configured, split_job_batches, target_support_level,
+        validate_ai_config,
     };
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -2052,6 +2162,126 @@ mod tests {
         assert!(!ProviderId::Plamo.uses_credential_store());
         // 資格情報経路を使う他プロバイダーは同じストアで失敗する（分岐の対照）。
         assert!(manager.status(ProviderId::Anthropic).await.is_err());
+    }
+
+    fn settings_file_in(directory: &TemporaryDirectory) -> PathBuf {
+        directory.0.join("settings.json")
+    }
+
+    fn saved_provider(settings_file: &std::path::Path) -> Option<String> {
+        yc_project::load_settings(settings_file)
+            .unwrap()
+            .values
+            .get("ai.provider")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
+    fn chatgpt_credential_json() -> String {
+        serde_json::json!({
+            "type": "oauth",
+            "access": "access-token",
+            "refresh": "refresh-token",
+            "expires": 1_900_000_000_000u64,
+            "accountId": "account-1",
+            "email": "user@example.com",
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn default_provider_is_plamo_when_nothing_was_saved() {
+        let settings = yc_project::AppSettings::new();
+
+        assert_eq!(
+            provider_from_settings(&settings).unwrap(),
+            ProviderId::Plamo
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_keeps_a_stored_chatgpt_credential_as_the_provider() {
+        // 既定を変えても、ログイン済みで ai.provider を持たない利用者の設定を黙って
+        // 置き換えない。ChatGPT を他の資格情報より先に調べる。
+        let temporary = TemporaryDirectory::create();
+        let settings_file = settings_file_in(&temporary);
+        let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
+        manager
+            .save_api_key(ProviderId::OpenAi, "openai-secret")
+            .await
+            .unwrap();
+        manager
+            .save_chatgpt_credential(&chatgpt_credential_json())
+            .await
+            .unwrap();
+
+        migrate_default_ai_provider_at(&settings_file, Some(&manager)).await;
+
+        assert_eq!(saved_provider(&settings_file).as_deref(), Some("chatgpt"));
+    }
+
+    #[tokio::test]
+    async fn migration_keeps_any_other_stored_credential_as_the_provider() {
+        let temporary = TemporaryDirectory::create();
+        let settings_file = settings_file_in(&temporary);
+        let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
+        manager
+            .save_api_key(ProviderId::DeepL, "deepl-secret")
+            .await
+            .unwrap();
+
+        migrate_default_ai_provider_at(&settings_file, Some(&manager)).await;
+
+        assert_eq!(saved_provider(&settings_file).as_deref(), Some("deepl"));
+    }
+
+    #[tokio::test]
+    async fn migration_never_overrides_an_explicitly_saved_provider() {
+        let temporary = TemporaryDirectory::create();
+        let settings_file = settings_file_in(&temporary);
+        yc_project::save_settings(
+            &settings_file,
+            &yc_project::AppSettings {
+                schema_version: 1,
+                values: [(
+                    "ai.provider".to_owned(),
+                    serde_json::Value::String("openai".to_owned()),
+                )]
+                .into_iter()
+                .collect(),
+            },
+        )
+        .unwrap();
+        let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
+        manager
+            .save_chatgpt_credential(&chatgpt_credential_json())
+            .await
+            .unwrap();
+
+        migrate_default_ai_provider_at(&settings_file, Some(&manager)).await;
+
+        assert_eq!(saved_provider(&settings_file).as_deref(), Some("openai"));
+    }
+
+    #[tokio::test]
+    async fn migration_saves_nothing_without_credentials_or_a_usable_store() {
+        // 資格情報が無い新規利用者は新しい既定（PLaMo）のままにする。
+        let temporary = TemporaryDirectory::create();
+        let empty_file = settings_file_in(&temporary);
+        let manager = CredentialManager::new(MemoryCredentialStore::default()).unwrap();
+        migrate_default_ai_provider_at(&empty_file, Some(&manager)).await;
+        assert_eq!(saved_provider(&empty_file), None);
+
+        // Secret Service が無い環境では「資格情報が無い」と区別できないため、何も保存しない。
+        let broken_file = temporary.0.join("broken-settings.json");
+        let broken = CredentialManager::new(FailingCredentialStore).unwrap();
+        migrate_default_ai_provider_at(&broken_file, Some(&broken)).await;
+        assert_eq!(saved_provider(&broken_file), None);
+
+        // ストア自体が作れなかった場合も同じ。
+        let missing_store_file = temporary.0.join("no-store-settings.json");
+        migrate_default_ai_provider_at(&missing_store_file, None).await;
+        assert_eq!(saved_provider(&missing_store_file), None);
     }
 
     struct TemporaryDirectory(PathBuf);

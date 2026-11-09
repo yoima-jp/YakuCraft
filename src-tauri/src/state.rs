@@ -25,6 +25,10 @@ pub struct AppState {
     pub ai_job_tokens: Arc<Mutex<HashMap<String, AiJobControl>>>,
     pub(crate) deleting_projects: Arc<Mutex<HashSet<String>>>,
     pub credentials: Option<Arc<CredentialManager>>,
+    /// 既定プロバイダー移行の single-flight。起動時のタスクと、プロバイダーを省略した
+    /// 設定読み込みが同じセルを通るため、移行の完了前に「未保存 = PLaMo」を返して
+    /// 画面がその結果を保持してしまうことがない。起動はこのセルを待たない。
+    pub(crate) ai_provider_migration: tokio::sync::OnceCell<()>,
     /// PLaMo のローカル実行状態。資格情報ストアが壊れていても翻訳できるよう、ここへ分離する。
     /// 翻訳ジョブのタスクへ渡すため `Arc` で持つ。
     pub plamo: Arc<PlamoState>,
@@ -124,6 +128,7 @@ impl AppState {
             ai_job_tokens: Arc::new(Mutex::new(HashMap::new())),
             deleting_projects: Arc::new(Mutex::new(HashSet::new())),
             credentials,
+            ai_provider_migration: tokio::sync::OnceCell::new(),
             exported_paths: Arc::new(Mutex::new(HashSet::new())),
             recent_lock: Arc::new(Mutex::new(())),
             preview_context: Arc::new(Mutex::new(None)),

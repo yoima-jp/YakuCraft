@@ -489,19 +489,22 @@ describe("全機能の動作確認", () => {
         if ((await button.getText()).trim() === "AI翻訳") await button.click();
       }
       await $('[role="combobox"][aria-label="プロバイダー"]').waitForDisplayed({ timeout: 10_000 });
+      // 既定が PLaMo になったため、開いた直後は PLaMo のパネルが出る。モデル欄は
+      // プロバイダーごとの Select か自由入力欄なので、期待値を明示して確かめる。
       const presets = [
-        ["chatgpt", "ChatGPT（サブスクリプション）", false, false],
-        ["openai", "OpenAI", true, false],
-        ["gemini", "Gemini", true, false],
-        ["openrouter", "OpenRouter", true, false],
-        ["deepseek", "DeepSeek", true, false],
-        ["groq", "Groq", true, false],
-        ["ollama", "Ollama", false, false],
-        ["lm-studio", "LM Studio", false, false],
-        ["anthropic", "Claude（Anthropic）", true, false],
-        ["openai-compatible", "OpenAI 互換（カスタム）", true, true],
+        ["plamo", "PLaMo（ローカル）", false, false, false],
+        ["chatgpt", "ChatGPT（サブスクリプション）", false, false, true],
+        ["openai", "OpenAI", true, false, true],
+        ["gemini", "Gemini", true, false, true],
+        ["openrouter", "OpenRouter", true, false, true],
+        ["deepseek", "DeepSeek", true, false, true],
+        ["groq", "Groq", true, false, true],
+        ["ollama", "Ollama", false, false, true],
+        ["lm-studio", "LM Studio", false, false, true],
+        ["anthropic", "Claude（Anthropic）", true, false, true],
+        ["openai-compatible", "OpenAI 互換（カスタム）", true, true, true],
       ];
-      for (const [provider, label, hasApiKey, hasUrl] of presets) {
+      for (const [provider, label, hasApiKey, hasUrl, hasModelInput] of presets) {
         await selectProvider(provider, label);
         const fields = await browser.execute(() => ({
           apiKey: Boolean(document.querySelector('.settings-fields input[type="password"]')),
@@ -510,8 +513,10 @@ describe("全機能の動作確認", () => {
         }));
         assert.equal(fields.apiKey, hasApiKey, `${label} のAPIキー欄が正しくありません。`);
         assert.equal(fields.url, hasUrl, `${label} の接続先URL欄が正しくありません。`);
-        assert.equal(fields.modelInput, provider !== "deepl", `${label} のモデル欄が正しくありません。`);
+        assert.equal(fields.modelInput, hasModelInput, `${label} のモデル欄が正しくありません。`);
         if (provider === "chatgpt") await $("button=ChatGPTでログイン").waitForDisplayed({ timeout: 5_000 });
+        // PLaMo のモデルとランタイムは自動取得しない。ダウンロードの操作があることだけ確かめる。
+        if (provider === "plamo") await $("button*=ダウンロード").waitForDisplayed({ timeout: 10_000 });
       }
 
       const baseUrl = `${mock.url}/v1`;
