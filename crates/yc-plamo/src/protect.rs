@@ -103,8 +103,9 @@ impl ProtectStrategy {
 
 /// 対になった書式コードでの、保護区間 1 つ分の役割。
 ///
-/// [`ProtectStrategy::PairedTag`] だけが使う。開き側と閉じ側を別の表記にすると、
-/// 挟まれた本文が「訳す対象」であることがモデルへ伝わる。
+/// 表記を変えるのは [`ProtectStrategy::PairedTag`] だけ。開き側と閉じ側を別の表記にすると、
+/// 挟まれた本文が「訳す対象」であることがモデルへ伝わる。開閉の順序の検証
+/// （[`pairs_keep_nesting`]）は、番号を持つマスク方式すべてで使う。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PairRole {
     /// 開き側。`<x0>` で表す。
@@ -167,20 +168,50 @@ fn is_decoration_code(raw: &str) -> bool {
 /// （開き／閉じ／単独）が一致することを要求する。一致を見ないと、モデルが
 /// `</x0>…<x1>` のように開きと閉じを入れ替えた出力でも「番号が揃っている」という
 /// 理由で通り、`$(item)` と `$()` が入れ替わったまま復元される。
-fn pair_roles(spans: &[ProtectedSpan]) -> Vec<PairRole> {
+fn pair_roles(spans: &[ProtectedSpan]) -> (Vec<PairRole>, Vec<Option<usize>>) {
     let mut roles = vec![PairRole::Single; spans.len()];
+    // 閉じ側の区間ごとに、組になった開き側の番号。復元時の順序検証で使う。
+    let mut openers = vec![None; spans.len()];
     let mut open: Vec<usize> = Vec::new();
     for (index, span) in spans.iter().enumerate() {
         if is_closing_code(&span.raw) {
             if let Some(opener) = open.pop() {
                 roles[opener] = PairRole::Open;
                 roles[index] = PairRole::Close;
+                openers[index] = Some(opener);
             }
         } else if is_opening_code(&span.raw) {
             open.push(index);
         }
     }
-    roles
+    (roles, openers)
+}
+
+/// 対になった書式コードが、出力でも原文と同じ組で「開き → 閉じ」の順に入れ子になっているか。
+///
+/// 役割（開き／閉じ）と出現数だけを見ると、`</x1>熱<x0>` や `⟦1⟧熱⟦0⟧` のように開きと閉じの
+/// 位置が入れ替わった出力が通り、`$()熱$(item)` という壊れた書式で復元されてしまう。
+/// 番号で区間を特定できるマスク方式（`Verbatim` 以外）すべてに同じ制約をかけ、代替方式での
+/// 再試行でも書式の範囲が壊れないようにする。対にならない区間（`%s`、単独の `§a` など）は
+/// 訳文で語順が変わるのが正当なので、順序を問わない。
+fn pairs_keep_nesting(
+    markers: &[ScannedMarker],
+    roles: &[PairRole],
+    openers: &[Option<usize>],
+) -> bool {
+    let mut open: Vec<usize> = Vec::new();
+    for marker in markers {
+        match roles.get(marker.index) {
+            Some(PairRole::Open) => open.push(marker.index),
+            Some(PairRole::Close) => {
+                if open.pop() != openers.get(marker.index).copied().flatten() {
+                    return false;
+                }
+            }
+            Some(PairRole::Single) | None => {}
+        }
+    }
+    open.is_empty()
 }
 
 /// 復元時の失敗。呼び出し側は entry を失敗として扱い、代替 strategy で 1 回だけ再試行する。
@@ -227,12 +258,14 @@ pub struct ProtectedSource {
     /// `</x0>…<x1>` のように開きと閉じを入れ替えた出力でも通ってしまい、
     /// `$(item)` と `$()` が入れ替わったまま復元される。
     pair_roles: Vec<PairRole>,
+    /// 閉じ側の区間ごとの、組になった開き側の番号（[`pairs_keep_nesting`] で使う）。
+    pair_openers: Vec<Option<usize>>,
 }
 
 impl ProtectedSource {
     pub fn new(source: &str, profile: PlaceholderProfile, strategy: ProtectStrategy) -> Self {
         let spans = extract_protected_spans(source, profile);
-        let pair_roles = pair_roles(&spans);
+        let (pair_roles, pair_openers) = pair_roles(&spans);
         let (masked, roles, malformed_literals) = mask(source, &spans, &pair_roles, strategy);
         Self {
             source: source.to_owned(),
@@ -243,6 +276,7 @@ impl ProtectedSource {
             roles,
             malformed_literals,
             pair_roles,
+            pair_openers,
         }
     }
 
@@ -338,6 +372,11 @@ impl ProtectedSource {
         // `⟦0⟧` の重複と `⟦1⟧` の欠落が相殺されて通ってしまう。どの区間が戻ったかは
         // 番号でしか区別できないので、期待する番号がちょうど 1 回ずつ現れることを先に要求する。
         if !markers_cover_every_span_once(&markers, self.spans.len(), self.strategy) {
+            return Err(ProtectError::SpanMismatch);
+        }
+        if self.strategy.masks()
+            && !pairs_keep_nesting(&markers, &self.pair_roles, &self.pair_openers)
+        {
             return Err(ProtectError::SpanMismatch);
         }
 
@@ -1177,6 +1216,47 @@ mod tests {
         assert_eq!(
             protected.restore("produces <x0/>熱</x1>, used").err(),
             Some(ProtectError::SpanMismatch)
+        );
+        // 役割と番号は正しくても、閉じが開きより前に来た出力は受け付けない。
+        // 通すと `$()熱$(item)` という範囲の壊れた書式で適用されてしまう。
+        assert_eq!(
+            protected.restore("produces </x1>熱<x0>, used").err(),
+            Some(ProtectError::SpanMismatch)
+        );
+    }
+
+    #[test]
+    fn paired_codes_keep_open_before_close_in_every_masking_strategy() {
+        // Patchouli の代替方式（`BracketedIndex`）でも、開閉の順序が入れ替わった出力は拒否する。
+        for strategy in [
+            ProtectStrategy::BracketedIndex,
+            ProtectStrategy::AsciiMarker,
+        ] {
+            let protected = ProtectedSource::new(
+                "produces $(item)heat$(), used",
+                PlaceholderProfile::Patchouli,
+                strategy,
+            );
+            let open = strategy.marker(0).unwrap();
+            let close = strategy.marker(1).unwrap();
+            assert_eq!(
+                protected
+                    .restore(&format!("produces {open}熱{close}, used"))
+                    .unwrap(),
+                "produces $(item)熱$(), used"
+            );
+            assert_eq!(
+                protected
+                    .restore(&format!("produces {close}熱{open}, used"))
+                    .err(),
+                Some(ProtectError::SpanMismatch),
+                "{strategy:?}"
+            );
+        }
+        // 対にならない区間（printf）は訳文で語順が変わるのが正当なので、入れ替えを許す。
+        assert_eq!(
+            restore_ok("%1$s and %2$s", PlaceholderProfile::Lang, "⟦1⟧ と ⟦0⟧"),
+            "%2$s と %1$s"
         );
     }
 
