@@ -17,14 +17,14 @@ mod server;
 mod tests;
 
 pub use builds::{
-    ArchiveKind, Backend, CudaVariant, PINNED_TAG, RUNTIME_BUILDS, RuntimeArchive, RuntimeBuild,
-    current_target_build,
+    ArchiveKind, Backend, CudaToolchain, CudaVariant, DriverFloor, DriverVersion, PINNED_TAG,
+    RUNTIME_BUILDS, RuntimeArchive, RuntimeBuild, TargetOs, current_target_build,
 };
 pub use download::{download_verified, validate_download_url};
 pub use error::{LlamaError, Result};
 pub use gpu::{
-    GpuInfo, NvidiaGpu, cuda_backend, cuda_variant_for, detect_gpu_info, gpu_info,
-    parse_nvidia_smi_output, vulkan_backend,
+    GpuInfo, NvidiaGpu, cuda_backend, cuda_backend_for, cuda_variant_for, detect_gpu_info,
+    gpu_info, parse_nvidia_smi_output, vulkan_backend, vulkan_backend_for,
 };
 pub use install::{ensure_runtime, installed_runtime, remove_runtime};
 pub use manager::{DEFAULT_IDLE_TIMEOUT, RuntimeManager, ServerLease};

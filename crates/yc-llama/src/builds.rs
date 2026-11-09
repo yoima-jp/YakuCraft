@@ -12,23 +12,41 @@
 //! # CUDA の系統を選ぶ規則
 //!
 //! b12110 は CUDA 12.4 と 13.4 の 2 系統を配布している。どちらを選ぶかは GPU とドライバーで
-//! 決まる（判定は [`crate::gpu::cuda_variant_for`]）。
+//! 決まる（判定は [`crate::gpu::cuda_variant_for`]）。ドライバーは `nvidia-smi` が返す
+//! **完全な版**で比べる（Windows は `591.74`、Linux は `570.26` や `550.54.14`）。メジャー
+//! 番号だけで比べると Windows の `551.23` が CUDA 12.4 の Toolkit 下限 `551.61` を満たすと
+//! 誤判定し、PTX の JIT に失敗する構成を「提供する」ことになる。比較は成分ごとの数値で行い、
+//! 足りない成分は 0 とみなす（[`DriverVersion`]）。
 //!
-//! - CUDA 13.x はドライバー 580 以上が必要（NVIDIA「CUDA Toolkit Release Notes」の
-//!   "CUDA Toolkit and Minimum Required Driver Version for CUDA Minor Version Compatibility"
-//!   で 13.x は >= 580、12.x は >= 525）。また CUDA 13.0 で Maxwell / Pascal / Volta の
-//!   オフラインコンパイルが打ち切られたため、compute capability 7.5（Turing）以上が要る。
-//! - 13.x のビルドに含まれる実アーキテクチャも 7.5 以上に限られる。b12110 の
-//!   `ggml/src/ggml-cuda/CMakeLists.txt` は CTK 13 では 50/61/70 の virtual arch を積まず、
-//!   75-virtual 以上だけを積む（リリース手順も `CMAKE_CUDA_ARCHITECTURES` を指定せず
-//!   この既定集合を使う。`.github/workflows/release.yml` の windows-cuda / ubuntu-cuda を参照）。
-//! - CUDA 12.4 はドライバー 525 以上で動く（マイナーバージョン互換）。compute capability は
-//!   5.0 以上を PTX で覆うが、sm_120（Blackwell / RTX 50）向けの実コードは持たないため、
-//!   新しい GPU では PTX の JIT になる（動くが遅い）。
+//! 下限は NVIDIA の公表値（CUDA Toolkit Release Notes の "CUDA Toolkit and Minimum Required
+//! Driver Version for CUDA Minor Version Compatibility" の表と、CUDA Compatibility Guide の
+//! Minor Version Compatibility のページ）を OS ごとに置く（[`DriverFloor`]）。
 //!
-//! したがって「ドライバー >= 580 かつ compute capability >= 7.5 なら 13.4、そうでなく
-//! ドライバー >= 525 なら 12.4、どちらも満たさなければ CUDA は提供しない」とする。
-//! compute capability が取れない古いドライバーでは 7.5 以上を確認できないため 12.4 を選ぶ。
+//! - マイナーバージョン互換（ビルドが実コードを持つ GPU）: CUDA 12.x は `>= 525`。表は 1 列
+//!   しか無いため、12.0 GA の対応ドライバーを OS ごとの下限にする（Linux `525.60.13` /
+//!   Windows `527.41`）。Windows の `528.33` は 12.0 Update 1 のドライバーで、この下限ではない。
+//!   CUDA 13.x は `>= 580` で、R580 ブランチだけが公表されているため `580.0`。
+//! - Toolkit のドライバー（実コードを持たず PTX の JIT に頼る GPU）: その Toolkit 自身の GA
+//!   ドライバーが要る。12.4 GA は Windows `551.61` / Linux `550.54.14`、12.8 GA は Linux
+//!   `570.26` / Windows `570.65`、13.4 のドライバーブランチは R615 なので `615.0`。
+//!
+//! したがって 13.4 は、実コードを持つ GPU ならドライバー `580.0` 以上、PTX に頼る GPU
+//! （compute capability 7.5 以上）なら `615.0` 以上で選ぶ。13.4 を選べないときは 12 系を
+//! 試し、12.x のマイナーバージョン互換の下限（Windows `527.41` / Linux `525.60.13`）を割る
+//! か、PTX に頼るのに Toolkit の下限（12.4 は Windows `551.61`、12.8 は Linux `570.26`）を
+//! 割れば CUDA は提供しない。12 系の中身はプラットフォームで違う（Windows は 12.4、Linux は
+//! 12.8）ため、Toolkit の下限は [`CudaToolchain`] がビルドごとに持つ。
+//!
+//! 13.x を選ぶ条件はドライバーだけではない。CUDA 13.0 で Maxwell / Pascal / Volta の
+//! オフラインコンパイルが打ち切られたため compute capability 7.5（Turing）以上が要り、
+//! 13.x のビルドに含まれる実アーキテクチャも 7.5 以上に限られる。b12110 の
+//! `ggml/src/ggml-cuda/CMakeLists.txt` は CTK 13 では 50/61/70 の virtual arch を積まず、
+//! 75-virtual 以上だけを積む（リリース手順も `CMAKE_CUDA_ARCHITECTURES` を指定せず
+//! この既定集合を使う。`.github/workflows/release.yml` の windows-cuda / ubuntu-cuda を参照）。
+//!
+//! CUDA 12.4 は compute capability 5.0 以上を PTX で覆うが、sm_120（Blackwell / RTX 50）向けの
+//! 実コードは持たないため、新しい GPU では PTX の JIT になる（動くが遅い）。compute capability
+//! が取れない古いドライバーでは 7.5 以上を確認できないため 12 系を選ぶ。
 //!
 //! Windows ARM64 には CUDA 版を置かない。Windows-on-ARM で NVIDIA GPU を使う構成は
 //! 実質存在せず、上流も x64 向けの cudart しか配布していないため。
@@ -62,6 +80,99 @@ impl CudaVariant {
     }
 }
 
+/// ドライバーの完全な版。`nvidia-smi --query-gpu=driver_version` が返す値そのもの。
+///
+/// Windows は `591.74`、Linux は `570.26` や `550.54.14` のように成分の数が違う。足りない
+/// 成分は 0 とみなし、成分ごとの数値で比べる。メジャー番号だけで比べると、Windows の
+/// `551.23` が CUDA 12.4 の Toolkit 下限 `551.61` を満たすと誤判定し、PTX の JIT に失敗する
+/// 構成を「提供する」ことになる。
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct DriverVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl DriverVersion {
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    /// どの実際のドライバーも満たさない上限。「このビルドでは動かせない」を表す。
+    pub const MAX: Self = Self::new(u32::MAX, u32::MAX, u32::MAX);
+
+    /// `591.74` / `550.54.14` のような文字列を読む。成分は 1〜3 個で、足りない分は 0。
+    ///
+    /// 数字以外や 4 成分以上は `None`。想定外の値を「古いドライバー」と読み替えると別の
+    /// 系統を選んでしまうため、呼び出し側はその GPU ごと捨てる。
+    pub fn parse(raw: &str) -> Option<Self> {
+        let mut parts = raw.trim().split('.');
+        let major = parse_driver_component(parts.next()?)?;
+        let minor = parts.next().map_or(Some(0), parse_driver_component)?;
+        let patch = parts.next().map_or(Some(0), parse_driver_component)?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+/// 版の 1 成分。空文字や数字以外は `None`。
+fn parse_driver_component(raw: &str) -> Option<u32> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
+}
+
+/// ドライバー下限を引く対象 OS。下限は OS ごとに違うため、値を選ぶ前にこれが要る。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TargetOs {
+    Windows,
+    Linux,
+}
+
+impl TargetOs {
+    /// 実行中のプラットフォーム。CUDA のビルドは Windows / Linux の x86_64 にしか無いため、
+    /// それ以外では Linux の値を返す（ビルド自体が見つからないので下限は使われない）。
+    pub fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+/// OS ごとのドライバー下限。
+///
+/// NVIDIA の表は 12.x のマイナーバージョン互換を 1 列（`>= 525`）でしか与えないが、実際の
+/// 対応ドライバーは OS で違う（Linux `525.60.13` / Windows `527.41`）。片方の OS の値を
+/// 他方へ流用すると、その OS で動く構成を「提供しない」またはその逆と誤判定する。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DriverFloor {
+    pub windows: DriverVersion,
+    pub linux: DriverVersion,
+}
+
+impl DriverFloor {
+    /// 対象 OS の下限。
+    pub fn for_os(self, os: TargetOs) -> DriverVersion {
+        match os {
+            TargetOs::Windows => self.windows,
+            TargetOs::Linux => self.linux,
+        }
+    }
+}
+
 /// 実際に固定している CUDA ビルドのツールチェーン情報。
 ///
 /// 系統（12 / 13）だけでは足りない。b12110 の CUDA 12 系は Windows が 12.4、Linux が 12.8 で、
@@ -76,26 +187,31 @@ pub struct CudaToolchain {
     /// このビルドが PTX を積む下限の compute capability。`None` なら PTX を積まない。
     pub ptx_floor: Option<(u32, u32)>,
     /// マイナーバージョン互換の下限ドライバー。実コードで動く GPU 向け。
-    pub minor_compatibility_driver: u32,
+    pub minor_compatibility_driver: DriverFloor,
     /// この Toolkit 自身が同梱するドライバーの下限。PTX を JIT する GPU 向け。
-    pub toolkit_driver: u32,
+    pub toolkit_driver: DriverFloor,
 }
 
 impl CudaToolchain {
-    /// このビルドを載せられる最小のドライバー（メジャーバージョン）。
+    /// このビルドを載せられる最小のドライバー（このプラットフォーム向け）。
     ///
     /// NVIDIA の CUDA Compatibility Guide のとおり、PTX は「古いドライバーでは動かない」。
     /// 実コードを持つ GPU はマイナーバージョン互換の下限で動くが、PTX に頼る GPU は
     /// **PTX を JIT できるドライバー**、すなわちその Toolkit 自身のドライバー下限が要る。
-    pub fn minimum_driver_for(&self, capability: (u32, u32)) -> u32 {
+    pub fn minimum_driver_for(&self, capability: (u32, u32)) -> DriverVersion {
+        self.minimum_driver_for_os(capability, TargetOs::current())
+    }
+
+    /// 対象 OS を明示して下限を引く。単体テストが両方の OS の値を確かめるための入口。
+    pub fn minimum_driver_for_os(&self, capability: (u32, u32), os: TargetOs) -> DriverVersion {
         if self.native_architectures.contains(&capability) {
-            return self.minor_compatibility_driver;
+            return self.minor_compatibility_driver.for_os(os);
         }
         match self.ptx_floor {
             // PTX で動く。古いドライバーでは JIT できないので Toolkit の下限を要求する。
-            Some(floor) if capability >= floor => self.toolkit_driver,
+            Some(floor) if capability >= floor => self.toolkit_driver.for_os(os),
             // 実コードも PTX も無い。このビルドでは動かせない。
-            _ => u32::MAX,
+            _ => DriverVersion::MAX,
         }
     }
 }
@@ -106,11 +222,18 @@ const CUDA_12_4: CudaToolchain = CudaToolchain {
     native_architectures: &[(8, 6), (8, 9)],
     // 50/61/70/75/80/90 を virtual（PTX）で積む。
     ptx_floor: Some((5, 0)),
-    // CUDA 12.x のマイナーバージョン互換は >= 525。
-    minor_compatibility_driver: 525,
+    // CUDA 12.x のマイナーバージョン互換は >= 525（NVIDIA の表は 1 列）。実際の対応
+    // ドライバーは 12.0 GA の値で、Linux 525.60.13 / Windows 527.41。
+    minor_compatibility_driver: DriverFloor {
+        windows: DriverVersion::new(527, 41, 0),
+        linux: DriverVersion::new(525, 60, 13),
+    },
     // CUDA 12.4 GA の Toolkit ドライバー: Windows >= 551.61 / Linux >= 550.54.14。
-    // b12110 は 12.4 を Windows にしか配布しないので Windows の値を使う。
-    toolkit_driver: 551,
+    // b12110 は 12.4 を Windows にしか配布しないが、値は両方の OS の公表値をそのまま持つ。
+    toolkit_driver: DriverFloor {
+        windows: DriverVersion::new(551, 61, 0),
+        linux: DriverVersion::new(550, 54, 14),
+    },
 };
 
 /// Linux x86_64 の CUDA 12.8。Windows の 12.4 とは Toolkit も実コードも下限も違う。
@@ -119,10 +242,16 @@ const CUDA_12_8: CudaToolchain = CudaToolchain {
     // CTK 12.8 は 120a-real を積む（121a は 12.9 以降）。
     native_architectures: &[(8, 6), (8, 9), (12, 0)],
     ptx_floor: Some((5, 0)),
-    minor_compatibility_driver: 525,
+    // 12.x のマイナーバージョン互換は 12.4 と同じ（系統で決まる）。
+    minor_compatibility_driver: DriverFloor {
+        windows: DriverVersion::new(527, 41, 0),
+        linux: DriverVersion::new(525, 60, 13),
+    },
     // CUDA 12.8 GA の Toolkit ドライバー: Linux >= 570.26 / Windows >= 570.65。
-    // このアーカイブは Linux 版なので Linux の値を使う。
-    toolkit_driver: 570,
+    toolkit_driver: DriverFloor {
+        windows: DriverVersion::new(570, 65, 0),
+        linux: DriverVersion::new(570, 26, 0),
+    },
 };
 
 /// CUDA 13.4。Windows / Linux とも同じ既定集合（86 / 89 / 120a / 121a）。
@@ -131,10 +260,17 @@ const CUDA_13_4: CudaToolchain = CudaToolchain {
     native_architectures: &[(8, 6), (8, 9), (12, 0), (12, 1)],
     // CTK 13 は 50/61/70 を積まず、75/80/90 の PTX だけを積む。
     ptx_floor: Some((7, 5)),
-    // CUDA 13.x のマイナーバージョン互換は >= 580。
-    minor_compatibility_driver: 580,
+    // CUDA 13.x のマイナーバージョン互換は >= 580。公表されているのは R580 ブランチだけ
+    // なので、OS を問わず 580.0 を下限にする。
+    minor_compatibility_driver: DriverFloor {
+        windows: DriverVersion::new(580, 0, 0),
+        linux: DriverVersion::new(580, 0, 0),
+    },
     // CUDA 13.4 のドライバーブランチは R615。
-    toolkit_driver: 615,
+    toolkit_driver: DriverFloor {
+        windows: DriverVersion::new(615, 0, 0),
+        linux: DriverVersion::new(615, 0, 0),
+    },
 };
 
 /// 使うバックエンド。GPU は Vulkan と CUDA の 2 系統ある。

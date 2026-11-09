@@ -16,11 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     builds::{
-        ArchiveKind, Backend, CudaVariant, PINNED_TAG, RUNTIME_BUILDS, RuntimeArchive,
-        RuntimeBuild, current_target_build,
+        ArchiveKind, Backend, CudaVariant, DriverVersion, PINNED_TAG, RUNTIME_BUILDS,
+        RuntimeArchive, RuntimeBuild, TargetOs, current_target_build,
     },
     download::{download_verified_for_test, validate_download_url},
-    gpu::{NvidiaGpu, cuda_variant_for, parse_nvidia_smi_output},
+    gpu::{
+        GpuInfo, NvidiaGpu, cuda_backend_for, cuda_variant_for, parse_nvidia_smi_output,
+        toolchain_supports_all, vulkan_backend_for,
+    },
     install::{ensure_runtime, installed_runtime, remove_runtime},
     manager::RuntimeManager,
     server::{ServerConfig, ServerHandle, ServerLauncher, parse_list_devices},
@@ -245,12 +248,105 @@ fn current_target_build_matches_the_running_platform() {
 // GPU 検出
 // ---------------------------------------------------------------------------
 
+/// テスト用の GPU 1 台。ドライバーは完全な版で渡す。
+fn gpu(name: &str, driver: DriverVersion, capability: Option<(u32, u32)>) -> NvidiaGpu {
+    NvidiaGpu {
+        name: name.to_string(),
+        driver,
+        compute_capability: capability,
+    }
+}
+
+/// 表から実際のツールチェーンを引く。OS 別の下限を、実行中のプラットフォームに依存せず
+/// 確かめるために使う。
+fn cuda_toolchain(target: &str, variant: CudaVariant) -> crate::builds::CudaToolchain {
+    RUNTIME_BUILDS
+        .iter()
+        .find(|build| build.target == target && build.backend == Backend::Cuda(variant))
+        .and_then(|build| build.cuda)
+        .unwrap_or_else(|| panic!("{target} {variant:?} must have a toolchain"))
+}
+
+/// このプラットフォームに CUDA の固定ビルドがあるか。
+///
+/// `cuda_variant_for` は系統を選ぶ前にビルド表を引き、ビルドが無ければ `None` を返す。
+/// Windows ARM64 には CUDA のビルドが無いため、CUDA を「提供する」側の期待はプラットフォームで
+/// 条件を付ける（ビルド表を直接見るテストは条件を要さない）。
+fn cuda_builds_shipped_here() -> bool {
+    current_target_build(Backend::Cuda(CudaVariant::Cuda13)).is_some()
+        && current_target_build(Backend::Cuda(CudaVariant::Cuda12)).is_some()
+}
+
+/// 版として 1 つだけ小さい値。成分ごとに繰り下げる（`551.61.0` → `551.60.99`）。
+fn just_below(version: DriverVersion) -> DriverVersion {
+    if version.patch > 0 {
+        DriverVersion::new(version.major, version.minor, version.patch - 1)
+    } else if version.minor > 0 {
+        DriverVersion::new(version.major, version.minor - 1, 99)
+    } else {
+        DriverVersion::new(version.major - 1, 99, 99)
+    }
+}
+
+/// `nvidia-smi` の `driver_version` は OS で成分の数が違う。完全な版として読めていること。
+#[test]
+fn driver_versions_are_parsed_into_all_their_components() {
+    // Windows は 2 成分。
+    assert_eq!(
+        DriverVersion::parse("591.74"),
+        Some(DriverVersion::new(591, 74, 0))
+    );
+    // Linux は 3 成分のこともある。
+    assert_eq!(
+        DriverVersion::parse("550.54.14"),
+        Some(DriverVersion::new(550, 54, 14))
+    );
+    assert_eq!(
+        DriverVersion::parse("570.26"),
+        Some(DriverVersion::new(570, 26, 0))
+    );
+    // メジャーだけでも読む。足りない成分は 0。
+    assert_eq!(
+        DriverVersion::parse("580"),
+        Some(DriverVersion::new(580, 0, 0))
+    );
+    // 前後の空白は無視する（CSV の区切りはカンマ + 空白）。
+    assert_eq!(
+        DriverVersion::parse(" 591.74 "),
+        Some(DriverVersion::new(591, 74, 0))
+    );
+
+    // 壊れた値は読まない。古いドライバーと読み替えると別の系統を選んでしまう。
+    for malformed in [
+        "",
+        " ",
+        "abc",
+        "591.",
+        ".74",
+        "591.74.1.2",
+        "591.74a",
+        "-1.2",
+        "591..74",
+    ] {
+        assert_eq!(DriverVersion::parse(malformed), None, "{malformed:?}");
+    }
+
+    // 成分ごとの数値で比べる。文字列比較では `591.74` < `591.100` を取り違える。
+    assert!(DriverVersion::new(551, 61, 0) > DriverVersion::new(551, 23, 0));
+    assert!(DriverVersion::new(591, 74, 0) > DriverVersion::new(591, 9, 0));
+    assert!(DriverVersion::new(550, 54, 14) > DriverVersion::new(550, 54, 13));
+    assert_eq!(
+        DriverVersion::new(580, 0, 0),
+        DriverVersion::parse("580.0").unwrap()
+    );
+}
+
 #[test]
 fn nvidia_smi_output_is_parsed_into_every_gpu() {
     let gpus = parse_nvidia_smi_output("NVIDIA GeForce RTX 3060, 591.74, 8.6\n");
     assert_eq!(gpus.len(), 1);
     assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 3060");
-    assert_eq!(gpus[0].driver_major, 591);
+    assert_eq!(gpus[0].driver, DriverVersion::new(591, 74, 0));
     assert_eq!(gpus[0].compute_capability, Some((8, 6)));
 
     // 複数 GPU はすべて保持する。llama.cpp は `--device` を指定しない限り全部を使うため、
@@ -269,7 +365,7 @@ fn nvidia_smi_output_without_compute_capability_still_detects_the_gpu() {
     // `compute_cap` 列を持たない古いドライバーは 2 列だけを返す。
     let gpus = parse_nvidia_smi_output("NVIDIA GeForce GTX 980, 470.256.02\n");
     assert_eq!(gpus.len(), 1);
-    assert_eq!(gpus[0].driver_major, 470);
+    assert_eq!(gpus[0].driver, DriverVersion::new(470, 256, 2));
     assert_eq!(gpus[0].compute_capability, None);
 
     // 列はあるが値が `[N/A]` のドライバーもある。
@@ -280,44 +376,218 @@ fn nvidia_smi_output_without_compute_capability_still_detects_the_gpu() {
     // GPU が無ければ空文字が返る。
     assert!(parse_nvidia_smi_output("").is_empty());
     assert!(parse_nvidia_smi_output("No devices were found\n").is_empty());
+    // ドライバーの版が読めない行は捨てる（版を推測しない）。
+    assert!(parse_nvidia_smi_output("NVIDIA GeForce RTX 3060, unknown, 8.6\n").is_empty());
+}
+
+/// ドライバーの版をメジャー番号だけで比べると、Windows の `551.23` が CUDA 12.4 の Toolkit
+/// 下限 `551.61` を満たすと誤判定する。551.60 と 551.61 の境目で分かれること。
+#[test]
+fn the_cuda_12_4_toolkit_floor_is_compared_by_the_full_version() {
+    let windows = cuda_toolchain("windows-x86_64", CudaVariant::Cuda12);
+    // PTX に頼る GPU（cc 6.1）。Windows の 12.4 は Toolkit の 551.61 が要る。
+    assert_eq!(
+        windows.minimum_driver_for_os((6, 1), TargetOs::Windows),
+        DriverVersion::new(551, 61, 0)
+    );
+    let ptx_gpu = |driver| gpu("GTX 1080", driver, Some((6, 1)));
+    assert!(!toolchain_supports_all(
+        &windows,
+        &[ptx_gpu(DriverVersion::new(551, 60, 0))],
+        TargetOs::Windows
+    ));
+    assert!(toolchain_supports_all(
+        &windows,
+        &[ptx_gpu(DriverVersion::new(551, 61, 0))],
+        TargetOs::Windows
+    ));
+
+    // 実コードを持つ GPU（cc 8.6）はマイナーバージョン互換の Windows 527.41 で動く。
+    assert_eq!(
+        windows.minimum_driver_for_os((8, 6), TargetOs::Windows),
+        DriverVersion::new(527, 41, 0)
+    );
+    let native_gpu = |driver| gpu("RTX 3060", driver, Some((8, 6)));
+    assert!(!toolchain_supports_all(
+        &windows,
+        &[native_gpu(DriverVersion::new(527, 40, 0))],
+        TargetOs::Windows
+    ));
+    assert!(toolchain_supports_all(
+        &windows,
+        &[native_gpu(DriverVersion::new(527, 41, 0))],
+        TargetOs::Windows
+    ));
+    // メジャー番号だけを見ていた旧実装が取り違えた値。551.23 は 551.61 を満たさない。
+    assert!(!toolchain_supports_all(
+        &windows,
+        &[ptx_gpu(DriverVersion::new(551, 23, 0))],
+        TargetOs::Windows
+    ));
+}
+
+/// Linux の 12.x マイナーバージョン互換は 525.60.13。Windows の 527.41 を流用しないこと。
+#[test]
+fn the_linux_minor_compatibility_floor_is_525_60_13() {
+    let linux = cuda_toolchain("linux-x86_64", CudaVariant::Cuda12);
+    assert_eq!(
+        linux.minimum_driver_for_os((8, 6), TargetOs::Linux),
+        DriverVersion::new(525, 60, 13)
+    );
+    let native_gpu = |driver| gpu("RTX 3060", driver, Some((8, 6)));
+    assert!(!toolchain_supports_all(
+        &linux,
+        &[native_gpu(DriverVersion::new(525, 60, 12))],
+        TargetOs::Linux
+    ));
+    assert!(toolchain_supports_all(
+        &linux,
+        &[native_gpu(DriverVersion::new(525, 60, 13))],
+        TargetOs::Linux
+    ));
+    // Linux の 12.8 は Toolkit の 570.26 が要る（Windows の 551.61 を流用しない）。
+    assert_eq!(
+        linux.minimum_driver_for_os((6, 1), TargetOs::Linux),
+        DriverVersion::new(570, 26, 0)
+    );
+    let ptx_gpu = |driver| gpu("GTX 1080", driver, Some((6, 1)));
+    assert!(!toolchain_supports_all(
+        &linux,
+        &[ptx_gpu(DriverVersion::new(570, 25, 0))],
+        TargetOs::Linux
+    ));
+    assert!(toolchain_supports_all(
+        &linux,
+        &[ptx_gpu(DriverVersion::new(570, 26, 0))],
+        TargetOs::Linux
+    ));
+}
+
+/// CUDA 13.4 は実コードを持つ GPU なら 580.0、PTX に頼る GPU なら R615 の 615.0 が要る。
+#[test]
+fn the_cuda_13_4_floors_are_580_for_native_and_615_for_ptx() {
+    for target in ["windows-x86_64", "linux-x86_64"] {
+        let toolchain = cuda_toolchain(target, CudaVariant::Cuda13);
+        for os in [TargetOs::Windows, TargetOs::Linux] {
+            assert_eq!(
+                toolchain.minimum_driver_for_os((8, 6), os),
+                DriverVersion::new(580, 0, 0),
+                "{target} {os:?}"
+            );
+            assert_eq!(
+                toolchain.minimum_driver_for_os((7, 5), os),
+                DriverVersion::new(615, 0, 0),
+                "{target} {os:?}"
+            );
+        }
+        // 実コードを持つ GPU（cc 8.6）は 580.0 から。
+        let native_gpu = |driver| gpu("RTX 3060", driver, Some((8, 6)));
+        assert!(!toolchain_supports_all(
+            &toolchain,
+            &[native_gpu(DriverVersion::new(579, 99, 0))],
+            TargetOs::Windows
+        ));
+        assert!(toolchain_supports_all(
+            &toolchain,
+            &[native_gpu(DriverVersion::new(580, 0, 0))],
+            TargetOs::Windows
+        ));
+        // PTX に頼る GPU（cc 7.5）は 615.0 から。
+        let ptx_gpu = |driver| gpu("RTX 2080", driver, Some((7, 5)));
+        for below in [
+            DriverVersion::new(614, 0, 0),
+            DriverVersion::new(614, 99, 0),
+        ] {
+            assert!(
+                !toolchain_supports_all(&toolchain, &[ptx_gpu(below)], TargetOs::Windows),
+                "{target} driver {below:?}"
+            );
+        }
+        assert!(toolchain_supports_all(
+            &toolchain,
+            &[ptx_gpu(DriverVersion::new(615, 0, 0))],
+            TargetOs::Windows
+        ));
+    }
 }
 
 #[test]
 fn cuda_variant_follows_the_driver_and_compute_capability() {
-    let gpu = |driver_major, capability| NvidiaGpu {
-        name: "test".to_string(),
-        driver_major,
-        compute_capability: capability,
-    };
-    let single = |driver_major, capability| cuda_variant_for(&[gpu(driver_major, capability)]);
+    // `cuda_variant_for` はビルド表も見る。CUDA のビルドが無いプラットフォーム（Windows ARM64）
+    // では常に `None` になるため、系統の選択はここでは確かめられない。
+    if !cuda_builds_shipped_here() {
+        return;
+    }
+    let single = |driver, capability| cuda_variant_for(&[gpu("test", driver, capability)]);
+    let v = |major, minor, patch| DriverVersion::new(major, minor, patch);
 
     // 実コード（86 / 89）を持つ GPU は、新しいドライバーで CUDA 13。
-    assert_eq!(single(591, Some((8, 6))), Some(CudaVariant::Cuda13));
-    assert_eq!(single(580, Some((8, 9))), Some(CudaVariant::Cuda13));
+    assert_eq!(
+        single(v(591, 74, 0), Some((8, 6))),
+        Some(CudaVariant::Cuda13)
+    );
+    assert_eq!(
+        single(v(580, 0, 0), Some((8, 9))),
+        Some(CudaVariant::Cuda13)
+    );
     // 13.x の下限を割るドライバーは 12.x。
-    assert_eq!(single(579, Some((8, 6))), Some(CudaVariant::Cuda12));
+    assert_eq!(
+        single(v(579, 99, 0), Some((8, 6))),
+        Some(CudaVariant::Cuda12)
+    );
     // 13.x が対象外にした古い GPU も 12.x（PTX を JIT できるドライバーが要る）。
-    assert_eq!(single(591, Some((6, 1))), Some(CudaVariant::Cuda12));
+    assert_eq!(
+        single(v(591, 74, 0), Some((6, 1))),
+        Some(CudaVariant::Cuda12)
+    );
     // 7.5 は CTK 13 の既定集合では virtual（PTX）だけ。実コードが無いので、PTX を JIT
     // できるドライバー（615 系）が要る。580 では CUDA 13 を提供しない。
-    assert_eq!(single(580, Some((7, 5))), Some(CudaVariant::Cuda12));
-    assert_eq!(single(615, Some((7, 5))), Some(CudaVariant::Cuda13));
+    assert_eq!(
+        single(v(580, 0, 0), Some((7, 5))),
+        Some(CudaVariant::Cuda12)
+    );
+    assert_eq!(
+        single(v(615, 0, 0), Some((7, 5))),
+        Some(CudaVariant::Cuda13)
+    );
     // compute capability が取れないと実コードの有無を判定できないので、PTX 前提で 12.x。
-    assert_eq!(single(591, None), Some(CudaVariant::Cuda12));
-    // 12.x の下限も割れば CUDA は提供しない。
-    assert_eq!(single(524, Some((8, 6))), None);
-    assert_eq!(single(470, None), None);
+    assert_eq!(single(v(591, 74, 0), None), Some(CudaVariant::Cuda12));
     // Kepler（3.x）は CUDA 12 の対象外。
-    assert_eq!(single(591, Some((3, 5))), None);
+    assert_eq!(single(v(591, 74, 0), Some((3, 5))), None);
     // GPU が 1 台も無ければ CUDA は提供しない。
     assert_eq!(cuda_variant_for(&[]), None);
 }
 
+/// 12 系の下限も割れば CUDA は提供しない。下限は OS で違うので、実行中のプラットフォームの
+/// 実際のビルドから引く。
+#[test]
+fn a_driver_below_the_cuda_12_floor_gets_no_cuda() {
+    let Some(toolchain) =
+        current_target_build(Backend::Cuda(CudaVariant::Cuda12)).and_then(|build| build.cuda)
+    else {
+        return;
+    };
+    let floor = toolchain.minimum_driver_for((8, 6));
+    assert!(floor > DriverVersion::new(500, 0, 0), "sanity: {floor:?}");
+
+    let below = |driver| gpu("RTX 3060", driver, Some((8, 6)));
+    assert_eq!(
+        cuda_variant_for(&[below(DriverVersion::new(470, 0, 0))]),
+        None
+    );
+    assert_eq!(
+        cuda_variant_for(&[below(DriverVersion::new(524, 99, 99))]),
+        None
+    );
+    // 下限ちょうどなら 12 系（13 系の下限 580 は割っている）。
+    assert_eq!(cuda_variant_for(&[below(floor)]), Some(CudaVariant::Cuda12));
+}
+
 /// 実コードを持たない GPU は PTX の JIT に頼る。NVIDIA の CUDA Compatibility Guide のとおり
-/// PTX は古いドライバーでは動かないため、マイナーバージョン互換の下限（525）では提供しない。
+/// PTX は古いドライバーでは動かないため、マイナーバージョン互換の下限では提供しない。
 ///
-/// 下限はプラットフォームの実際のアーカイブで違う（12 系は Windows 12.4 = 551、
-/// Linux 12.8 = 570）。ここではビルドから下限を引いて、両方の OS で正しく判定されることを見る。
+/// 下限はプラットフォームの実際のアーカイブで違う（12 系は Windows 12.4 = 551.61、
+/// Linux 12.8 = 570.26）。ここではビルドから下限を引いて、両方の OS で正しく判定されることを見る。
 #[test]
 fn a_ptx_only_gpu_requires_a_driver_that_can_jit_its_ptx() {
     let Some(toolchain) =
@@ -325,32 +595,31 @@ fn a_ptx_only_gpu_requires_a_driver_that_can_jit_its_ptx() {
     else {
         return;
     };
-    let floor = toolchain.minimum_driver_for((6, 1));
+    let os = TargetOs::current();
+    let floor = toolchain.minimum_driver_for_os((6, 1), os);
     assert_eq!(
-        floor, toolchain.toolkit_driver,
+        floor,
+        toolchain.toolkit_driver.for_os(os),
         "cc 6.1 has no native code, so it must need the toolkit driver"
     );
     assert!(
-        floor > toolchain.minor_compatibility_driver,
+        floor > toolchain.minor_compatibility_driver.for_os(os),
         "PTX must require more than minor-version compatibility"
     );
 
-    let gpu = |driver_major| NvidiaGpu {
-        name: "GTX 1080".to_string(),
-        driver_major,
-        compute_capability: Some((6, 1)),
-    };
+    let ptx_gpu = |driver| gpu("GTX 1080", driver, Some((6, 1)));
 
     // 下限の 1 つ手前までは提供しない。
-    for driver in [toolchain.minor_compatibility_driver, floor - 2, floor - 1] {
-        assert_eq!(cuda_variant_for(&[gpu(driver)]), None, "driver {driver}");
+    let just_below = just_below(floor);
+    for driver in [toolchain.minor_compatibility_driver.for_os(os), just_below] {
+        assert_eq!(cuda_variant_for(&[ptx_gpu(driver)]), None, "{driver:?}");
     }
     // 下限ちょうどから動く。
-    for driver in [floor, floor + 1, 580] {
+    for driver in [floor, DriverVersion::new(591, 74, 0)] {
         assert_eq!(
-            cuda_variant_for(&[gpu(driver)]),
+            cuda_variant_for(&[ptx_gpu(driver)]),
             Some(CudaVariant::Cuda12),
-            "driver {driver}"
+            "{driver:?}"
         );
     }
 }
@@ -359,39 +628,38 @@ fn a_ptx_only_gpu_requires_a_driver_that_can_jit_its_ptx() {
 /// 片方の値を他方へ流用すると、Linux の 551〜569 で「提供する」と誤判定してしまう。
 #[test]
 fn the_cuda_12_toolchain_matches_the_archive_that_is_actually_shipped() {
-    let windows = RUNTIME_BUILDS
-        .iter()
-        .find(|build| {
-            build.target == "windows-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
-        })
-        .and_then(|build| build.cuda)
-        .expect("windows cuda 12 build");
-    let linux = RUNTIME_BUILDS
-        .iter()
-        .find(|build| {
-            build.target == "linux-x86_64" && build.backend == Backend::Cuda(CudaVariant::Cuda12)
-        })
-        .and_then(|build| build.cuda)
-        .expect("linux cuda 12 build");
+    let windows = cuda_toolchain("windows-x86_64", CudaVariant::Cuda12);
+    let linux = cuda_toolchain("linux-x86_64", CudaVariant::Cuda12);
 
     // 実際のアセット名と Toolkit の版が一致していること。
     assert_eq!(windows.toolkit_version, "12.4");
     assert_eq!(linux.toolkit_version, "12.8");
     assert_eq!(
-        windows.toolkit_driver, 551,
+        windows.toolkit_driver.windows,
+        DriverVersion::new(551, 61, 0),
         "CUDA 12.4 GA Windows is >= 551.61"
     );
-    assert_eq!(linux.toolkit_driver, 570, "CUDA 12.8 GA Linux is >= 570.26");
+    assert_eq!(
+        linux.toolkit_driver.linux,
+        DriverVersion::new(570, 26, 0),
+        "CUDA 12.8 GA Linux is >= 570.26"
+    );
     assert!(
-        linux.toolkit_driver > windows.toolkit_driver,
+        linux.toolkit_driver.linux > windows.toolkit_driver.windows,
         "the Linux 12.8 archive must not reuse the Windows 12.4 floor"
     );
 
     // 12.8 は 120a の実コードを持つ（12.4 は持たない）。sm_120 は 12.8 なら実コードで動く。
     assert!(linux.native_architectures.contains(&(12, 0)));
     assert!(!windows.native_architectures.contains(&(12, 0)));
-    assert_eq!(linux.minimum_driver_for((12, 0)), 525);
-    assert_eq!(windows.minimum_driver_for((12, 0)), windows.toolkit_driver);
+    assert_eq!(
+        linux.minimum_driver_for_os((12, 0), TargetOs::Linux),
+        DriverVersion::new(525, 60, 13)
+    );
+    assert_eq!(
+        windows.minimum_driver_for_os((12, 0), TargetOs::Windows),
+        windows.toolkit_driver.windows
+    );
 
     // インストール先は実際の Toolkit の版で分かれる（同じディレクトリを共有しない）。
     let windows_build = RUNTIME_BUILDS
@@ -412,51 +680,120 @@ fn the_cuda_12_toolchain_matches_the_archive_that_is_actually_shipped() {
 
 #[test]
 fn cuda_variant_covers_every_exposed_gpu() {
-    let gpu = |name: &str, capability| NvidiaGpu {
-        name: name.to_string(),
-        driver_major: 591,
-        compute_capability: Some(capability),
-    };
+    // `cuda_variant_for` はビルド表も見る。CUDA のビルドが無いプラットフォーム（Windows ARM64）
+    // では常に `None` になるため、この判定はここでは確かめられない。
+    if !cuda_builds_shipped_here() {
+        return;
+    }
+    let driver = DriverVersion::new(591, 74, 0);
+    let gpu_with = |name: &str, capability| gpu(name, driver, Some(capability));
 
     // 1 台目が新しくても、2 台目が 7.5 未満なら 13.x は選べない。llama.cpp は `--device` を
     // 指定しない限り見えている GPU をすべて使うため、13.x の実コードが無い GPU が混ざる。
     assert_eq!(
-        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("GTX 1050", (6, 1))]),
+        cuda_variant_for(&[gpu_with("RTX 4090", (8, 9)), gpu_with("GTX 1050", (6, 1))]),
         Some(CudaVariant::Cuda12)
     );
     // 13.x が対象外にした GPU が混ざれば、CUDA 12 の下限すら割るなら提供しない。
     assert_eq!(
-        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("GTX 780", (3, 5))]),
+        cuda_variant_for(&[gpu_with("RTX 4090", (8, 9)), gpu_with("GTX 780", (3, 5))]),
         None
     );
     // 両方とも実コードを持つなら 13.x。
     assert_eq!(
-        cuda_variant_for(&[gpu("RTX 4090", (8, 9)), gpu("RTX 3060", (8, 6))]),
+        cuda_variant_for(&[gpu_with("RTX 4090", (8, 9)), gpu_with("RTX 3060", (8, 6))]),
         Some(CudaVariant::Cuda13)
     );
     // 1 台でも compute capability が取れないと実コードの有無を判定できないので 12.x。
     assert_eq!(
-        cuda_variant_for(&[
-            gpu("RTX 4090", (8, 9)),
-            NvidiaGpu {
-                name: "unknown".to_string(),
-                driver_major: 591,
-                compute_capability: None,
-            },
-        ]),
+        cuda_variant_for(&[gpu_with("RTX 4090", (8, 9)), gpu("unknown", driver, None)]),
         Some(CudaVariant::Cuda12)
+    );
+    // 最も弱い GPU が下限を割れば、その系統は選べない。1 台目だけ見ると 13.x になる構成。
+    //
+    // 下限は OS で違う（12.4 は Windows 551.61 / Linux 550.54.14、12.8 は Linux 570.26）ため、
+    // 値を直書きせず、実行中のプラットフォームの実際のビルドから引く。
+    let Some(cuda12) =
+        current_target_build(Backend::Cuda(CudaVariant::Cuda12)).and_then(|build| build.cuda)
+    else {
+        return;
+    };
+    let ptx_floor = cuda12.minimum_driver_for((6, 1));
+    assert_eq!(
+        cuda_variant_for(&[
+            gpu("RTX 3060", DriverVersion::new(591, 74, 0), Some((8, 6))),
+            gpu("GTX 1080", just_below(ptx_floor), Some((6, 1))),
+        ]),
+        None,
+        "the weakest GPU decides ({ptx_floor:?})"
+    );
+    // 弱い側がちょうど下限なら、その系統を選ぶ。
+    assert_eq!(
+        cuda_variant_for(&[
+            gpu("RTX 3060", DriverVersion::new(591, 74, 0), Some((8, 6))),
+            gpu("GTX 1080", ptx_floor, Some((6, 1))),
+        ]),
+        Some(CudaVariant::Cuda12),
+        "{ptx_floor:?}"
     );
 }
 
+/// バックエンドの選択は検出結果だけを見る。実機の `nvidia-smi` や Vulkan ローダーに
+/// 依存しないので、`GpuInfo` を組み立てて確かめられる。
 #[test]
+fn backend_selection_uses_only_the_injected_detection_result() {
+    // GPU もローダーも無ければ、どちらも提供しない。
+    let empty = GpuInfo::default();
+    assert_eq!(cuda_backend_for(&empty), None);
+    assert_eq!(vulkan_backend_for(&empty), None);
+
+    // 実コードを持つ GPU と新しいドライバーなら CUDA 13。Vulkan はローダーが無いので出さない。
+    // CUDA のビルドが無いプラットフォーム（Windows ARM64）ではビルド表で弾かれる。
+    let cuda13 = cuda_builds_shipped_here().then_some(Backend::Cuda(CudaVariant::Cuda13));
+    let nvidia = GpuInfo {
+        nvidia: vec![gpu(
+            "RTX 3060",
+            DriverVersion::new(591, 74, 0),
+            Some((8, 6)),
+        )],
+        vulkan: false,
+    };
+    assert_eq!(cuda_backend_for(&nvidia), cuda13);
+    assert_eq!(vulkan_backend_for(&nvidia), None);
+
+    // ローダーがあれば Vulkan も提供する。CUDA とは独立。
+    let both = GpuInfo {
+        nvidia: nvidia.nvidia.clone(),
+        vulkan: true,
+    };
+    assert_eq!(cuda_backend_for(&both), cuda13);
+    assert_eq!(vulkan_backend_for(&both), Some(Backend::Vulkan));
+
+    // CUDA の下限を割る GPU は CUDA を提供しない（CPU へ黙って落とす判定はしない）。
+    let old = GpuInfo {
+        nvidia: vec![gpu(
+            "GTX 980",
+            DriverVersion::new(470, 256, 2),
+            Some((5, 2)),
+        )],
+        vulkan: true,
+    };
+    assert_eq!(cuda_backend_for(&old), None);
+    assert_eq!(vulkan_backend_for(&old), Some(Backend::Vulkan));
+}
+
+/// 実機の検出結果と、そこから選んだバックエンドの整合性。実機の `nvidia-smi` と Vulkan
+/// ローダーを見るため、通常のテストでは実行しない。
+#[test]
+#[ignore = "reads the real nvidia-smi output and the Vulkan loader of this machine"]
 fn detected_gpu_info_has_consistent_backend_selection() {
-    // 実機の検出結果そのものは環境依存なので、整合性だけを見る。
     let info = crate::gpu::detect_gpu_info();
-    let cuda = crate::gpu::cuda_backend();
+    println!("detected: {info:?}");
+    let cuda = cuda_backend_for(&info);
     if let Some(backend) = cuda {
         let variant = match backend {
             Backend::Cuda(variant) => variant,
-            other => panic!("cuda_backend returned {other:?}"),
+            other => panic!("cuda_backend_for returned {other:?}"),
         };
         assert_eq!(
             Some(variant),
@@ -464,9 +801,19 @@ fn detected_gpu_info_has_consistent_backend_selection() {
             "the selected variant must match the detected GPUs"
         );
     }
-    if crate::gpu::vulkan_backend().is_some() {
+    if vulkan_backend_for(&info).is_some() {
         assert!(info.vulkan, "Vulkan must only be offered with a loader");
     }
+}
+
+/// このマシンで選ばれる CUDA の系統を表示する。実機を見るので通常のテストでは実行しない。
+#[test]
+#[ignore = "reads the real nvidia-smi output of this machine"]
+fn report_the_selected_cuda_variant() {
+    let info = crate::gpu::detect_gpu_info();
+    println!("detected: {info:?}");
+    println!("cuda backend: {:?}", cuda_backend_for(&info));
+    println!("vulkan backend: {:?}", vulkan_backend_for(&info));
 }
 
 // ---------------------------------------------------------------------------
